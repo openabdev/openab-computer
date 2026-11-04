@@ -190,4 +190,158 @@ final class ReverseAttachLivenessTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(runtime.clientPings, 3, "keepalive pings reach the runtime")
         await client.cancel()
     }
+
+    func watchedClient(port: UInt16, tool: WatchedTool) -> ReverseAttachClient {
+        var cfg = ReverseAttachClient.Config(runtime: URL(string: "ws://127.0.0.1:\(port)")!, session: "laptop",
+                                             secret: "s", profile: .owner, deadline: Date().addingTimeInterval(30))
+        cfg.keepaliveInterval = 0
+        cfg.initialBackoff = 0.2
+        return ReverseAttachClient(config: cfg, server: MCPServer(name: "t", version: "0", tools: [tool]))
+    }
+
+    /// A call still running when its socket closes is cancelled, and nothing of
+    /// it reaches the next connection: the runtime already failed it.
+    func testCallsRunningWhenTheSocketClosesAreCancelled() async throws {
+        let runtime = try DroppingRuntime(closeAfter: 0.3)
+        defer { runtime.stop() }
+        let tool = WatchedTool(seconds: 3)
+        let client = watchedClient(port: runtime.port, tool: tool)
+        await client.start()
+        await fulfillment(of: [runtime.secondAttach], timeout: 10)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(tool.counts.started, 1)
+        XCTAssertEqual(tool.counts.cancelled, 1, "the dropped call was cancelled")
+        try await Task.sleep(nanoseconds: 3_000_000_000)
+        XCTAssertEqual(tool.counts.completed, 0, "the dropped call never finished")
+        XCTAssertEqual(runtime.repliesOnSecondConnection, [1], "only the new initialize is answered")
+        await client.cancel()
+    }
+
+    /// Our own cancel (grant revoked) reaches calls in flight.
+    func testRevokingTheGrantCancelsCallsInFlight() async throws {
+        let runtime = try DroppingRuntime(closeAfter: nil)
+        defer { runtime.stop() }
+        let tool = WatchedTool(seconds: 3)
+        let client = watchedClient(port: runtime.port, tool: tool)
+        await client.start()
+        await fulfillment(of: [runtime.callSent], timeout: 10)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(tool.counts.started, 1)
+        await client.cancel()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(tool.counts.cancelled, 1)
+        XCTAssertEqual(tool.counts.completed, 0)
+    }
+}
+
+/// A slow tool that records whether it finished or was cancelled.
+struct WatchedTool: Tool {
+    final class Counts: @unchecked Sendable {
+        private let lock = NSLock()
+        private var s = 0, c = 0, d = 0
+        var started: Int { lock.lock(); defer { lock.unlock() }; return s }
+        var cancelled: Int { lock.lock(); defer { lock.unlock() }; return c }
+        var completed: Int { lock.lock(); defer { lock.unlock() }; return d }
+        func start() { lock.lock(); s += 1; lock.unlock() }
+        func cancel() { lock.lock(); c += 1; lock.unlock() }
+        func complete() { lock.lock(); d += 1; lock.unlock() }
+    }
+    let name = "watched"
+    let description = "sleeps, cancellation-aware"
+    let inputSchema: JSONValue = ["type": "object"]
+    let seconds: Double
+    let counts = Counts()
+    func call(arguments: JSONValue) async throws -> ToolResult {
+        counts.start()
+        do { try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) } catch {
+            counts.cancel(); throw error
+        }
+        counts.complete()
+        return .text("watched done")
+    }
+}
+
+/// On the first connection: `initialize`, then a slow `watched` call, then
+/// (if `closeAfter` is set) a plain 1000 close while the call runs. On the
+/// second connection: `initialize` only, recording every reply id.
+final class DroppingRuntime: @unchecked Sendable {
+    private(set) var port: UInt16 = 0
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "dropping-runtime")
+    let closeAfter: TimeInterval?
+    private var conns: [NWConnection] = []
+    private var _second: [Int] = []
+    let callSent = XCTestExpectation(description: "slow call sent")
+    let secondAttach = XCTestExpectation(description: "redialled and initialized")
+
+    var repliesOnSecondConnection: [Int] { queue.sync { _second } }
+
+    init(closeAfter: TimeInterval?) throws {
+        self.closeAfter = closeAfter
+        let params = NWParameters.tcp
+        params.defaultProtocolStack.applicationProtocols.insert(NWProtocolWebSocket.Options(), at: 0)
+        listener = try NWListener(using: params, on: .any)
+        let sem = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { [weak self] st in
+            if case .ready = st { self?.port = self?.listener.port?.rawValue ?? 0; sem.signal() }
+            if case .failed = st { sem.signal() }
+        }
+        listener.newConnectionHandler = { [weak self] c in self?.accept(c) }
+        listener.start(queue: queue)
+        sem.wait()
+    }
+
+    func stop() {
+        queue.sync { conns.forEach { $0.cancel() } }
+        listener.cancel()
+    }
+
+    private func accept(_ c: NWConnection) {
+        conns.append(c)
+        let index = conns.count
+        c.stateUpdateHandler = { [weak self] st in
+            guard let self, case .ready = st else { return }
+            self.receiveLoop(c, index)
+            self.sendText(c, ["jsonrpc": "2.0", "id": 1, "method": "initialize",
+                              "params": ["protocolVersion": "2025-06-18", "capabilities": [:],
+                                         "clientInfo": ["name": "openab-pty", "version": "t"]]])
+        }
+        c.start(queue: queue)
+    }
+
+    private func sendText(_ c: NWConnection, _ v: JSONValue) {
+        let meta = NWProtocolWebSocket.Metadata(opcode: .text)
+        let ctx = NWConnection.ContentContext(identifier: "t", metadata: [meta])
+        c.send(content: try! JSONCoding.encoder.encode(v), contentContext: ctx, isComplete: true, completion: .idempotent)
+    }
+
+    private func close(_ c: NWConnection) {
+        let meta = NWProtocolWebSocket.Metadata(opcode: .close)
+        meta.closeCode = .protocolCode(.normalClosure)
+        let ctx = NWConnection.ContentContext(identifier: "close", metadata: [meta])
+        c.send(content: nil, contentContext: ctx, isComplete: true, completion: .contentProcessed { _ in c.cancel() })
+    }
+
+    private func receiveLoop(_ c: NWConnection, _ index: Int) {
+        c.receiveMessage { [weak self] data, context, _, error in
+            guard let self, error == nil else { return }
+            let meta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
+            if meta?.opcode == .close { return }
+            if meta?.opcode == .text, let data, let v = try? JSONCoding.decoder.decode(JSONValue.self, from: data),
+               let id = v["id"]?.intValue {
+                if index == 1, id == 1 {
+                    self.sendText(c, ["jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                      "params": ["name": "watched", "arguments": [:]]])
+                    self.callSent.fulfill()
+                    if let after = self.closeAfter {
+                        self.queue.asyncAfter(deadline: .now() + after) { self.close(c) }
+                    }
+                } else if index == 2 {
+                    self._second.append(id)
+                    if id == 1 { self.secondAttach.fulfill() }
+                }
+            }
+            self.receiveLoop(c, index)
+        }
+    }
 }

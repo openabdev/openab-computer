@@ -14,9 +14,10 @@ import Foundation
 /// a `receive()` is outstanding, so a `receive()` is **always** outstanding: each
 /// frame is answered in its own task, replies go out through one writer task, and
 /// a slow tool call no longer silences the socket. Calls also run concurrently
-/// (the runtime allows many in flight). As a second safeguard we send our own
-/// ping every `keepaliveInterval` while attached; any inbound frame counts as
-/// alive on the runtime side.
+/// (the runtime allows many in flight). When a socket ends, for any reason, the
+/// calls it still has running are cancelled, and `exec` kills its process group.
+/// As a second safeguard we send our own ping every `keepaliveInterval` while
+/// attached; any inbound frame counts as alive on the runtime side.
 ///
 /// Retry ownership is ours (the pod cannot reach us). Close codes decide:
 ///
@@ -198,6 +199,9 @@ public actor ReverseAttachClient {
         runLoopTask = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
+        // Directly, not via the receive loop: during a redial backoff there is
+        // no loop left to do it.
+        cancelInflight()
         set(.ended(.cancelled))
     }
 
@@ -293,6 +297,13 @@ public actor ReverseAttachClient {
         }
         var keepalive: Task<Void, Never>?
         defer {
+            // Every exit (stop code, retryable close, send failure, our own
+            // cancel) ends this socket's calls. The runtime has already failed
+            // them for the caller, so nothing they do can be delivered, and an
+            // `exec` left running would outlive the grant (it kills its process
+            // group on cancellation). Long work belongs in `exec_start`, whose
+            // jobs are not tied to a socket.
+            cancelInflight()
             outboxIn.finish()
             writer.cancel()
             keepalive?.cancel()
@@ -306,7 +317,7 @@ public actor ReverseAttachClient {
             do {
                 message = try await ws.receive()
             } catch {
-                if Task.isCancelled { cancelInflight(); return .stop(.cancelled) }
+                if Task.isCancelled { return .stop(.cancelled) }
                 if let http = ws.response as? HTTPURLResponse, http.statusCode != 101, firstFrame {
                     log("attach \(config.session): handshake rejected \(http.statusCode)")
                     return Self.disposition(handshakeStatus: http.statusCode, kind: config.kind)
@@ -335,6 +346,10 @@ public actor ReverseAttachClient {
             case .data(let d): text = String(decoding: d, as: UTF8.self)
             @unknown default: continue
             }
+            // No per-socket cap: the runtime already bounds calls in flight (64),
+            // as the HTTP endpoint relies on its clients. Calls pipelined on one
+            // socket may finish out of order (each reply carries its id), so a
+            // caller that needs UI steps in order must wait for each reply.
             let id = UUID()
             inflight[id] = Task { [weak self] in
                 guard let self else { return }
@@ -365,8 +380,8 @@ public actor ReverseAttachClient {
 
     private func inflightDone(_ id: UUID) { inflight[id] = nil }
 
-    /// Only on our own cancellation (grant revoked or replaced). After a drop the
-    /// calls already running finish on their own; their replies are discarded.
+    /// On every socket exit and on our own `cancel()`: the calls of a dead
+    /// socket cannot be answered, so none of them carries into the next one.
     private func cancelInflight() {
         for t in inflight.values { t.cancel() }
         inflight.removeAll()
@@ -396,22 +411,24 @@ public actor ReverseAttachClient {
         return encode(response)
     }
 
-    /// The longest `exec` timeout we accept on an openab-pty attach. The runtime
-    /// fails any call that has no reply after 120 s (`REQUEST_TIMEOUT`), so a
-    /// longer exec could only end in an error for the caller.
+    /// The longest `exec` / `osascript` timeout we accept on an openab-pty
+    /// attach. The runtime fails any call that has no reply after 120 s
+    /// (`REQUEST_TIMEOUT`), so a longer one could only end in an error for the
+    /// caller.
     public static let maxAttachedExecTimeout: TimeInterval = 100
 
-    /// An `exec` over `maxAttachedExecTimeout` on an openab-pty attach is refused
-    /// as a tool error (the model sees it) pointing at `exec_start`, rather than
-    /// clamped, so the caller is not surprised by a silent early kill.
+    /// An `exec` or `osascript` over `maxAttachedExecTimeout` on an openab-pty
+    /// attach is refused as a tool error (the model sees it) pointing at
+    /// `exec_start`, rather than clamped, so the caller is not surprised by a
+    /// silent early kill.
     func refuseLongExec(_ rpc: JSONRPCRequest) -> JSONRPCResponse? {
         guard config.kind == .openabPty, rpc.method == "tools/call",
-              rpc.params?["name"]?.stringValue == "exec",
+              let tool = rpc.params?["name"]?.stringValue, tool == "exec" || tool == "osascript",
               let asked = rpc.params?["arguments"]?["timeout_secs"]?.doubleValue,
               asked > Self.maxAttachedExecTimeout else { return nil }
         let limit = Int(Self.maxAttachedExecTimeout)
         return JSONRPCResponse(id: rpc.id ?? .null, result: ToolResult.error(
-            "exec timeout_secs \(Int(asked)) is over this attach's limit of \(limit) s: the runtime fails " +
+            "\(tool) timeout_secs \(Int(asked)) is over this attach's limit of \(limit) s: the runtime fails " +
             "any call still running after 120 s. For long work use exec_start, then check it with " +
             "exec_poll; never sleep inside exec.").json)
     }

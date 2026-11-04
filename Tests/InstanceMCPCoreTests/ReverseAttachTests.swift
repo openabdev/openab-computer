@@ -96,6 +96,12 @@ final class ReverseAttachPolicyTests: XCTestCase {
         XCTAssertTrue(message.contains("exec_start"), message)
         XCTAssertTrue(message.contains("100"), message)
 
+        // osascript has the same limit (its own cap is 300 s).
+        let osa = await client.answer(String(decoding: rpc("tools/call", id: 11, params: ["name": "osascript", "arguments": ["script": "delay 200", "timeout_secs": 200]]), as: UTF8.self))
+        let osaResult = decodeJSON(Data(osa!.utf8))["result"]
+        XCTAssertEqual(osaResult?["isError"]?.boolValue, true, "\(String(describing: osaResult))")
+        XCTAssertTrue((osaResult?["content"]?.arrayValue?.first?["text"]?.stringValue ?? "").hasPrefix("osascript timeout_secs 200"))
+
         for ok: JSONValue in [["command": "id"], ["command": "id", "timeout_secs": 100]] {
             let r = await call(ok)
             XCTAssertEqual(r["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue, "ran exec", "\(ok)")
