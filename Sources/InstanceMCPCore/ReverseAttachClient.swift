@@ -6,9 +6,17 @@ import Foundation
 ///
 /// The runtime is the MCP client here — it sends `initialize` first, then relays
 /// the CLI's `tools/list` / `tools/call` with its own integer ids. We answer each
-/// frame with the same id and otherwise treat the socket exactly like an HTTP
-/// request/response pair: one frame in, one frame out, no server-initiated
+/// frame with the same id: one frame in, one frame out, no server-initiated
 /// messages.
+///
+/// Liveness: the runtime pings every 20 s and drops a Mac that stays silent for
+/// more than three intervals. `URLSessionWebSocketTask` only answers a ping while
+/// a `receive()` is outstanding, so a `receive()` is **always** outstanding: each
+/// frame is answered in its own task, replies go out through one writer task, and
+/// a slow tool call no longer silences the socket. Calls also run concurrently
+/// (the runtime allows many in flight). As a second safeguard we send our own
+/// ping every `keepaliveInterval` while attached; any inbound frame counts as
+/// alive on the runtime side.
 ///
 /// Retry ownership is ours (the pod cannot reach us). Close codes decide:
 ///
@@ -19,7 +27,11 @@ import Foundation
 /// | 4004 | session ended | stop |
 /// | 4006 | runtime replaced | redial with backoff while the grant is valid |
 /// | 4010 | grant revoked | stop |
+/// | 4011 | liveness: we were silent past the runtime's ping budget | redial with backoff while the grant is valid |
 /// | 1000 / error | dropped | redial with backoff while the grant is valid |
+///
+/// A connection that stayed up for `stableAfter` resets the backoff, so a drop
+/// after a long attach redials in about a second.
 ///
 /// A `401` on the handshake means the verifier is gone (expired, revoked, or the
 /// pod was replaced): stop and report it, there is nothing to wait for.
@@ -81,8 +93,11 @@ public actor ReverseAttachClient {
         public var secretFile: URL? = nil
         /// How long to wait after a credential refusal before trying again.
         public var credentialRetry: TimeInterval = 300
-        /// A connection that stayed up this long resets the backoff (switchboard).
+        /// A connection that stayed up this long resets the backoff.
         public var stableAfter: TimeInterval = 60
+        /// How often we ping the peer while attached, below the runtime's 20 s
+        /// ping interval. 0 turns our own pings off (tests).
+        public var keepaliveInterval: TimeInterval = 15
 
         public init(runtime: URL, session: String, secret: String, profile: ToolProfile, deadline: Date) {
             self.runtime = runtime; self.session = session; self.secret = secret
@@ -131,6 +146,7 @@ public actor ReverseAttachClient {
         case 4002: return .stop(.replaced)
         case 4004: return .stop(.sessionEnded)
         case 4010: return .stop(.revoked)
+        case 4011: return .redial            // liveness: silent past the ping budget (openab-pty#86)
         default:   return .redial            // 1000, 1006, 4006, anything else
         }
     }
@@ -159,6 +175,8 @@ public actor ReverseAttachClient {
     /// Frames answered on the current socket; surfaced for status.
     public private(set) var callsServed: Int = 0
     public private(set) var attachedSince: Date?
+    /// Calls still running, so our own cancellation can reach them.
+    private var inflight: [UUID: Task<Void, Never>] = [:]
 
     /// `server` should already be `scoped(to: config.profile)`; this type does
     /// not re-scope so a caller can pass a pre-built, instruction-tailored server.
@@ -197,7 +215,7 @@ public actor ReverseAttachClient {
             let started = Date()
             let outcome = await dialOnce()
             if Task.isCancelled { return }
-            if config.kind == .switchboard, Date().timeIntervalSince(started) >= config.stableAfter {
+            if Date().timeIntervalSince(started) >= config.stableAfter {
                 backoff = config.initialBackoff
             }
             let base: TimeInterval
@@ -246,6 +264,10 @@ public actor ReverseAttachClient {
     }
 
     /// One connection lifetime. Returns what to do next.
+    ///
+    /// The receive loop never waits on a tool: each frame is answered in its own
+    /// task and the reply is queued to a single writer, so a `receive()` is
+    /// always outstanding and URLSession keeps answering the runtime's pings.
     private func dialOnce() async -> Disposition {
         let req = attachRequest()
         let session = URLSession(configuration: .ephemeral)
@@ -255,23 +277,43 @@ public actor ReverseAttachClient {
         task = ws
         ws.resume()
 
+        // One writer per socket: WebSocket sends must not interleave.
+        let (outbox, outboxIn) = AsyncStream<String>.makeStream()
+        let sendFailed = LockedFlag()
+        let writer = Task { [weak self] in
+            for await reply in outbox {
+                do { try await ws.send(.string(reply)) } catch {
+                    // The socket is broken; wake the receive loop so it redials.
+                    _ = sendFailed.trySet()
+                    ws.cancel()
+                    return
+                }
+                await self?.noteServed()
+            }
+        }
+        var keepalive: Task<Void, Never>?
+        defer {
+            outboxIn.finish()
+            writer.cancel()
+            keepalive?.cancel()
+        }
+
         // The handshake outcome is only observable by receiving. A rejected
         // upgrade surfaces as an error whose task has an HTTPURLResponse.
-        var served = 0
         var firstFrame = true
         while true {
             let message: URLSessionWebSocketTask.Message
             do {
                 message = try await ws.receive()
             } catch {
-                if Task.isCancelled { return .stop(.cancelled) }
+                if Task.isCancelled { cancelInflight(); return .stop(.cancelled) }
                 if let http = ws.response as? HTTPURLResponse, http.statusCode != 101, firstFrame {
                     log("attach \(config.session): handshake rejected \(http.statusCode)")
                     return Self.disposition(handshakeStatus: http.statusCode, kind: config.kind)
                 }
                 let code = ws.closeCode.rawValue
-                if code != 0 {
-                    log("attach \(config.session): closed \(code) after \(served) calls")
+                if code != 0, !sendFailed.isSet {
+                    log("attach \(config.session): closed \(code) after \(callsServed) calls")
                     finishAttached()
                     return Self.disposition(closeCode: code, kind: config.kind)
                 }
@@ -282,8 +324,10 @@ public actor ReverseAttachClient {
             if firstFrame {
                 firstFrame = false
                 attachedSince = Date()
+                callsServed = 0
                 set(.attached)
                 log("attach \(config.session): attached as \(config.profile.rawValue) to \(config.runtime.host ?? "?")")
+                keepalive = startKeepalive(ws)
             }
             let text: String
             switch message {
@@ -291,15 +335,41 @@ public actor ReverseAttachClient {
             case .data(let d): text = String(decoding: d, as: UTF8.self)
             @unknown default: continue
             }
-            if let reply = await answer(text) {
-                do { try await ws.send(.string(reply)) } catch {
-                    finishAttached()
-                    return .redial
-                }
-                served += 1
-                callsServed = served
+            let id = UUID()
+            inflight[id] = Task { [weak self] in
+                guard let self else { return }
+                if let reply = await self.answer(text) { outboxIn.yield(reply) }
+                await self.inflightDone(id)
             }
         }
+    }
+
+    /// Our own ping, so the runtime hears from us even if nothing else is sent.
+    private func startKeepalive(_ ws: URLSessionWebSocketTask) -> Task<Void, Never>? {
+        let interval = config.keepaliveInterval
+        guard interval > 0 else { return nil }
+        let session = config.session
+        let log = self.log
+        return Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                if Task.isCancelled { return }
+                ws.sendPing { error in
+                    if let error { log("attach \(session): keepalive ping failed: \(error.localizedDescription)") }
+                }
+            }
+        }
+    }
+
+    private func noteServed() { callsServed += 1 }
+
+    private func inflightDone(_ id: UUID) { inflight[id] = nil }
+
+    /// Only on our own cancellation (grant revoked or replaced). After a drop the
+    /// calls already running finish on their own; their replies are discarded.
+    private func cancelInflight() {
+        for t in inflight.values { t.cancel() }
+        inflight.removeAll()
     }
 
     private func finishAttached() {
@@ -317,12 +387,33 @@ public actor ReverseAttachClient {
             return encode(JSONRPCResponse(id: .null, error: e))
         case .success(let r): rpc = r
         }
+        if let refusal = refuseLongExec(rpc) { return encode(refusal) }
         guard let response = await server.handle(rpc) else { return nil }
         if rpc.method == "tools/call" {
             let name = rpc.params?["name"]?.stringValue ?? "?"
             log("sandbox[\(config.session)] tools/call \(name)\(response.error != nil ? " -> rpc error" : "")")
         }
         return encode(response)
+    }
+
+    /// The longest `exec` timeout we accept on an openab-pty attach. The runtime
+    /// fails any call that has no reply after 120 s (`REQUEST_TIMEOUT`), so a
+    /// longer exec could only end in an error for the caller.
+    public static let maxAttachedExecTimeout: TimeInterval = 100
+
+    /// An `exec` over `maxAttachedExecTimeout` on an openab-pty attach is refused
+    /// as a tool error (the model sees it) pointing at `exec_start`, rather than
+    /// clamped, so the caller is not surprised by a silent early kill.
+    func refuseLongExec(_ rpc: JSONRPCRequest) -> JSONRPCResponse? {
+        guard config.kind == .openabPty, rpc.method == "tools/call",
+              rpc.params?["name"]?.stringValue == "exec",
+              let asked = rpc.params?["arguments"]?["timeout_secs"]?.doubleValue,
+              asked > Self.maxAttachedExecTimeout else { return nil }
+        let limit = Int(Self.maxAttachedExecTimeout)
+        return JSONRPCResponse(id: rpc.id ?? .null, result: ToolResult.error(
+            "exec timeout_secs \(Int(asked)) is over this attach's limit of \(limit) s: the runtime fails " +
+            "any call still running after 120 s. For long work use exec_start, then check it with " +
+            "exec_poll; never sleep inside exec.").json)
     }
 
     private func encode(_ r: JSONRPCResponse) -> String {
