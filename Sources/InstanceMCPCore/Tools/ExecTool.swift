@@ -110,7 +110,7 @@ public struct ExecTool: Tool {
         timer.resume()
 
         // Cancelling the calling task (the caller went away, or the grant was
-        // revoked) kills the process group too, so nothing outlives the call.
+        // revoked) kills the process group while its leader is alive.
         let status: Int32 = await withTaskCancellationHandler {
             await withCheckedContinuation { cont in
                 DispatchQueue.global().async {
@@ -129,8 +129,17 @@ public struct ExecTool: Tool {
         }
         timer.cancel()
         // Pipes reach EOF once every writer in the (now dead) session has exited.
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            group.notify(queue: .global()) { cont.resume() }
+        // A child backgrounded by the shell (`cmd &`) can hold them open after the
+        // leader exits; it can no longer be killed safely (the pid may be
+        // recycled), but a cancelled call stops waiting for it and returns.
+        let drained = OneShotResume()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                drained.set(cont)
+                group.notify(queue: .global()) { drained.fire() }
+            }
+        } onCancel: {
+            drained.fire()
         }
 
         let exitCode: Int32
@@ -181,6 +190,22 @@ final class ProcessGroupKiller: @unchecked Sendable {
     init(_ pid: pid_t) { self.pid = pid }
     func kill() { lock.lock(); defer { lock.unlock() }; if !exited { killpg(pid, SIGKILL) } }
     func markExited() { lock.lock(); exited = true; lock.unlock() }
+}
+
+/// Resumes a continuation exactly once, whether `fire()` comes before or after `set`.
+final class OneShotResume: @unchecked Sendable {
+    private let lock = NSLock(); private var cont: CheckedContinuation<Void, Never>?; private var fired = false
+    func set(_ c: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        if fired { lock.unlock(); c.resume(); return }
+        cont = c; lock.unlock()
+    }
+    func fire() {
+        lock.lock()
+        if fired { lock.unlock(); return }
+        fired = true; let c = cont; cont = nil; lock.unlock()
+        c?.resume()
+    }
 }
 
 final class LockedFlag: @unchecked Sendable {

@@ -229,6 +229,13 @@ public actor AttachManager {
         tools are listed); never `sleep` inside `exec`.
         """
 
+    /// Calls on one attach run concurrently (#68), so parallel input calls can
+    /// interleave on the screen.
+    static let uiOrderNotice = """
+        Tool calls run concurrently: issue `mouse`, `key` and `osascript` steps one at a time and \
+        wait for each result before sending the next.
+        """
+
     static func desktopInstructions(profile: ToolProfile, base: String?) -> String? {
         let head = base.map { $0 + "\n\n" } ?? ""
         switch profile {
@@ -248,9 +255,9 @@ public actor AttachManager {
                 the browser directly: `browser_navigate` then `browser_snapshot` gives you the page as text, \
                 no screenshot needed. If a tool starts failing with "not attached", the grant ended; ask the \
                 human to lend the Mac again.
-                """ + "\n\n" + longCallNotice
+                """ + "\n\n" + uiOrderNotice + "\n\n" + longCallNotice
         case .owner:
-            return head + longCallNotice
+            return head + uiOrderNotice + "\n\n" + longCallNotice
         }
     }
 

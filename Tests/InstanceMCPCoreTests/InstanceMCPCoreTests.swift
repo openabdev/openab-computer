@@ -312,6 +312,19 @@ final class ExecToolTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "the shell's children died with it")
     }
 
+    func testCancelledCallDoesNotWaitForABackgroundedChildHoldingThePipes() async throws {
+        let started = Date()
+        let call = Task {
+            try await ExecTool.run(command: "sleep 4 & exit 0", cwd: "/tmp",
+                                   env: ProcessInfo.processInfo.environment, timeout: 30, cap: 1024)
+        }
+        try await Task.sleep(nanoseconds: 500_000_000)
+        call.cancel()
+        let r = try await call.value
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2.5, "the call returns once cancelled, not when the child exits")
+        XCTAssertEqual(r.exitCode, 0)
+    }
+
     func testStdoutStderrExit() async throws {
         let r = try await tool.call(arguments: ["command": "echo out; echo err 1>&2; exit 3"])
         XCTAssertTrue(r.isError)

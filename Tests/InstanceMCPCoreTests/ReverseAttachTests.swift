@@ -125,8 +125,10 @@ final class ReverseAttachPolicyTests: XCTestCase {
             XCTAssertTrue(text.contains("60 seconds"), p.rawValue)
             XCTAssertTrue(text.contains("`exec_start`") && text.contains("`exec_poll`"), p.rawValue)
             XCTAssertTrue(text.contains("never `sleep` inside `exec`"), p.rawValue)
+            XCTAssertEqual(text.contains("one at a time"), p != .observe, p.rawValue)
         }
-        XCTAssertEqual(AttachManager.desktopInstructions(profile: .owner, base: nil), AttachManager.longCallNotice)
+        XCTAssertEqual(AttachManager.desktopInstructions(profile: .owner, base: nil),
+                       AttachManager.uiOrderNotice + "\n\n" + AttachManager.longCallNotice)
     }
 
     func testHandshakeRejectionStopsButThrottleWaits() {
