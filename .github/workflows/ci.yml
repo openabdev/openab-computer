@@ -87,6 +87,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: poc/reverse-attach-linux
+      - name: Release version from main.swift
+        # Build the way release.yml does: OAB_RELEASE_VERSION is compiled into the binary and
+        # smoke.sh fails unless sys_info reports it (#74). Job-wide, so every cargo step
+        # shares one build.
+        run: |
+          set -euo pipefail
+          V=$(sed -n 's/^let version = "\([0-9][0-9.]*\)"$/\1/p' ../../Sources/oab-instance-mcp/main.swift)
+          [ -n "$V" ] || { echo "no 'let version' in main.swift" >&2; exit 65; }
+          echo "OAB_RELEASE_VERSION=$V" >> "$GITHUB_ENV"
+          echo "EXPECT_AGENT_VERSION=$V" >> "$GITHUB_ENV"
       - name: Format
         run: cargo fmt --check
       - name: Clippy
