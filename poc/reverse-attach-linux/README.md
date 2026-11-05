@@ -20,13 +20,13 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
   expired / `4002` replaced / `4004` session ended / `4010` revoked and handshake non-2xx/429/5xx
   → **stop**; `1000` / `4006` / `4011` (liveness) / other / 2xx / 429 / 5xx → **redial**. A
   connection that stayed up for 60 s resets the backoff. Same table the
-  `reverse-attach-conformance` suite (#24) checks 23/23 against the Swift oracle.
+  `reverse-attach-conformance` suite (#24) checks 24/24 against the Swift oracle.
 - Liveness (#70): the runtime pings every 20 s and closes an attach that stays silent for more
   than three intervals (`4011`). The read loop never waits on a tool: each frame is answered on
-  its own thread and the loop, the socket's only writer, sends the replies between 20 ms reads,
-  so pings are answered while a call runs. We also ping the runtime every 15 s. When a socket
-  ends (close, error, `DELETE`), its running calls are cancelled and `bash` kills its process
-  group.
+  its own thread and the loop, the socket's only writer, sends the replies between reads
+  (20 ms while a call runs, up to 250 ms when idle), so pings are answered while a call runs.
+  We also ping the runtime every 15 s. When a socket ends (close, error, `DELETE`), its running
+  calls are cancelled and `bash` kills its process group.
 - MCP over the socket: `initialize` (with instructions: keep calls under ~60 s, issue `mouse` /
   `key` steps one at a time), `tools/list`, `tools/call`; notifications get no reply;
   ping → pong. Tools: `sys_info`, `screenshot`, `bash`, `mouse`, `key` — in **both** profiles

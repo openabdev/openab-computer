@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -168,10 +168,16 @@ impl Default for DialTuning {
     }
 }
 
-/// How long one `read` may block. The attached loop is also the socket's only
-/// writer, so this bounds how long a finished call's reply, a keepalive ping or a
-/// DELETE waits.
+/// How long one `read` may block while a call is running. The attached loop is
+/// also the socket's only writer, so this bounds how long a finished call's reply
+/// waits to be sent.
 const READ_POLL: Duration = Duration::from_millis(20);
+
+/// How long one `read` may block on an idle attach (no call running), capped at
+/// the next keepalive ping. Inbound frames, including the runtime's pings, end
+/// the read at once; this only bounds how long a DELETE waits to close the
+/// socket.
+const IDLE_READ_POLL: Duration = Duration::from_millis(250);
 
 pub(crate) fn dial_loop(config: DialGrant) {
     let DialGrant {
@@ -213,9 +219,6 @@ pub(crate) fn dial_loop(config: DialGrant) {
 
         match tungstenite::connect(req) {
             Ok((mut socket, _resp)) => {
-                // A short read timeout keeps this loop turning while no frame
-                // arrives, so it can send replies and pings and see DELETE.
-                set_read_timeout(&mut socket, READ_POLL);
                 let connected_at = Instant::now();
                 set_state(&registry, &grant_id, "attached");
                 let end = serve_socket(&mut socket, &profile, cancelled.as_ref(), &tuning);
@@ -285,9 +288,11 @@ impl Drop for CancelOnDrop {
 /// The runtime pings every 20 s and closes an attach that stays silent for more
 /// than three intervals (4011). So this loop never waits on a tool: each frame is
 /// answered on its own thread, replies come back over a channel, and this loop,
-/// the socket's only writer, sends them between short reads. Reads keep going
-/// while a tool runs, which answers the runtime's pings, and we also ping the
-/// runtime every `tuning.keepalive`.
+/// the socket's only writer, sends them between reads. Reads keep going while a
+/// tool runs, which answers the runtime's pings, and we also ping the runtime
+/// every `tuning.keepalive`. A read blocks for `READ_POLL` while a call runs and
+/// up to `IDLE_READ_POLL` (or the next keepalive) when none does, so an idle
+/// attach wakes a few times a second rather than fifty.
 fn serve_socket(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     profile: &str,
@@ -297,7 +302,9 @@ fn serve_socket(
     let (replies, outbox) = mpsc::channel::<String>();
     let calls_cancelled = Arc::new(AtomicBool::new(false));
     let _cancel_calls = CancelOnDrop(calls_cancelled.clone());
+    let in_flight = Arc::new(AtomicUsize::new(0));
     let mut next_ping = tuning.keepalive.map(|every| Instant::now() + every);
+    let mut read_timeout: Option<Duration> = None;
 
     loop {
         if cancelled.load(Ordering::Acquire) {
@@ -305,6 +312,9 @@ fn serve_socket(
             let _ = socket.flush();
             return SocketEnd::Cancelled;
         }
+        // Read before draining the outbox: a call sends its reply before it
+        // stops counting, so a count of zero means its reply is already queued.
+        let busy = in_flight.load(Ordering::Acquire) > 0;
         while let Ok(reply) = outbox.try_recv() {
             if socket.send(Message::Text(reply)).is_err() {
                 return SocketEnd::Redial;
@@ -318,14 +328,27 @@ fn serve_socket(
                 next_ping = Some(Instant::now() + every);
             }
         }
+        let wait = if busy {
+            READ_POLL
+        } else {
+            next_ping
+                .map(|at| at.saturating_duration_since(Instant::now()))
+                .map_or(IDLE_READ_POLL, |left| left.min(IDLE_READ_POLL))
+                .max(Duration::from_millis(1))
+        };
+        if read_timeout != Some(wait) {
+            set_read_timeout(socket, wait);
+            read_timeout = Some(wait);
+        }
+        let calls = Calls {
+            profile,
+            replies: &replies,
+            cancel: &calls_cancelled,
+            in_flight: &in_flight,
+        };
         match socket.read() {
-            Ok(Message::Text(t)) => spawn_call(t, profile, &replies, &calls_cancelled),
-            Ok(Message::Binary(b)) => spawn_call(
-                String::from_utf8_lossy(&b).into_owned(),
-                profile,
-                &replies,
-                &calls_cancelled,
-            ),
+            Ok(Message::Text(t)) => spawn_call(t, &calls),
+            Ok(Message::Binary(b)) => spawn_call(String::from_utf8_lossy(&b).into_owned(), &calls),
             Ok(Message::Ping(p)) => {
                 let _ = socket.send(Message::Pong(p));
             }
@@ -349,16 +372,40 @@ fn serve_socket(
     }
 }
 
+/// What a call thread needs from its socket's loop.
+struct Calls<'a> {
+    profile: &'a str,
+    replies: &'a Sender<String>,
+    cancel: &'a Arc<AtomicBool>,
+    in_flight: &'a Arc<AtomicUsize>,
+}
+
+/// Counts one call as running until dropped, also when the call panics or its
+/// thread never starts.
+struct InFlight(Arc<AtomicUsize>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
 /// Answer one frame on its own thread. No per-socket cap: the runtime already
 /// bounds calls in flight. Calls pipelined on one socket may finish out of
-/// order; each reply carries its id.
-fn spawn_call(text: String, profile: &str, replies: &Sender<String>, cancel: &Arc<AtomicBool>) {
-    let profile = profile.to_string();
-    let replies = replies.clone();
-    let cancel = cancel.clone();
+/// order; each reply carries its id. If the thread cannot start, a request gets
+/// a JSON-RPC error at once instead of waiting out the runtime's timeout.
+fn spawn_call(text: String, calls: &Calls) {
+    let text: Arc<str> = text.into();
+    let frame = text.clone();
+    let profile = calls.profile.to_string();
+    let replies = calls.replies.clone();
+    let cancel = calls.cancel.clone();
+    calls.in_flight.fetch_add(1, Ordering::AcqRel);
+    let running = InFlight(calls.in_flight.clone());
     let spawned = thread::Builder::new()
         .name("attach-call".into())
         .spawn(move || {
+            let _running = running;
             if let Some(reply) = answer_attached(&text, &profile, &cancel) {
                 // A cancelled call's socket is gone; its reply goes nowhere.
                 if !cancel.load(Ordering::Acquire) {
@@ -368,7 +415,26 @@ fn spawn_call(text: String, profile: &str, replies: &Sender<String>, cancel: &Ar
         });
     if let Err(e) = spawned {
         eprintln!("attach: could not start a call thread: {e}");
+        if let Some(reply) = spawn_failed_reply(&frame) {
+            let _ = calls.replies.send(reply);
+        }
     }
+}
+
+/// The JSON-RPC error for a request whose call thread could not start; `None`
+/// for a notification or a frame that is not JSON, which `answer` would not
+/// answer either.
+fn spawn_failed_reply(text: &str) -> Option<String> {
+    let req: Value = serde_json::from_str(text).ok()?;
+    let id = req.get("id").cloned()?;
+    Some(
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32603, "message": "node busy: could not start the call" }
+        })
+        .to_string(),
+    )
 }
 
 /// Bound how long one read on the attached socket blocks, on ws:// and wss://.
