@@ -197,6 +197,17 @@ const GRANT: &str = "grant-liveness-test";
 
 impl Client {
     fn start(port: u16, keepalive: Option<Duration>) -> Client {
+        Client::start_tuned(
+            port,
+            DialTuning {
+                keepalive,
+                stable_after: Duration::from_secs(60),
+                idle_read_poll: IDLE_READ_POLL,
+            },
+        )
+    }
+
+    fn start_tuned(port: u16, tuning: DialTuning) -> Client {
         let runtime = format!("ws://127.0.0.1:{port}");
         let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -224,10 +235,7 @@ impl Client {
             registry: registry.clone(),
             grant_id: GRANT.to_string(),
             cancelled: cancelled.clone(),
-            tuning: DialTuning {
-                keepalive,
-                stable_after: Duration::from_secs(60),
-            },
+            tuning,
         };
         let handle = thread::spawn(move || dial_loop(grant));
         Client {
@@ -488,4 +496,111 @@ fn initialize_carries_the_long_call_and_ui_order_instructions() {
     let observe = instructions("observe");
     assert!(observe.contains("60 seconds"), "{observe}");
     assert!(!observe.contains("bash"), "observe has no bash: {observe}");
+}
+
+/// #75: a finished call's reply goes out within a busy read, not after the next
+/// idle read timeout. The idle read is stretched to 5 s and nothing else
+/// (runtime ping, keepalive) ends it, so a reply that waits for it arrives about
+/// 5 s after the call starts instead of about 0.3 s.
+#[test]
+fn a_finished_call_is_answered_before_the_idle_read_timeout() {
+    let runtime = Runtime::start(Plan {
+        ping_every: None,
+        max_missed: 3,
+        calls: vec![bash_call(2, "sleep 0.3")],
+        close_first: None,
+    });
+    let started = Instant::now();
+    let _client = Client::start_tuned(
+        runtime.port,
+        DialTuning {
+            keepalive: None,
+            stable_after: Duration::from_secs(60),
+            idle_read_poll: Duration::from_secs(5),
+        },
+    );
+    let answered = wait_until(Duration::from_secs(8), || {
+        runtime.conns().first().is_some_and(|c| c.replies == [2])
+    });
+    let took = started.elapsed();
+    assert!(answered, "the call was not answered: {:?}", runtime.conns());
+    assert!(
+        took < Duration::from_secs(2),
+        "the reply waited for the idle read timeout: {took:?}"
+    );
+}
+
+/// #75: the socket loop reads the in-flight count, then drains the outbox, and
+/// relies on a call queuing its reply before it stops counting. Applies the
+/// loop's rule to many quick calls: once the count reads zero the reply must
+/// already be queued.
+#[test]
+fn a_call_queues_its_reply_before_it_stops_counting() {
+    let (replies, outbox) = mpsc::channel::<String>();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let calls = Calls {
+        profile: "owner",
+        replies: &replies,
+        cancel: &cancel,
+        in_flight: &in_flight,
+    };
+    for id in 0..500 {
+        let frame = json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"});
+        spawn_call(frame.to_string(), &calls);
+        while in_flight.load(Ordering::Acquire) > 0 {
+            std::hint::spin_loop();
+        }
+        let reply = outbox
+            .try_recv()
+            .unwrap_or_else(|_| panic!("call {id}: count was zero before its reply was queued"));
+        let v: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["id"], id, "{v}");
+    }
+}
+
+/// #75: a request whose call thread cannot start is answered at once with a
+/// JSON-RPC internal error carrying its id, and stops counting as in flight.
+#[test]
+fn a_call_thread_that_cannot_start_is_answered_with_an_error() {
+    let (replies, outbox) = mpsc::channel::<String>();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let calls = Calls {
+        profile: "owner",
+        replies: &replies,
+        cancel: &cancel,
+        in_flight: &in_flight,
+    };
+    let fail = |_job: CallJob| Err(std::io::Error::other("injected spawn failure"));
+
+    for id in [json!(7), json!("call-7")] {
+        let frame = json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"});
+        spawn_call_on(frame.to_string(), &calls, fail);
+        let reply: Value =
+            serde_json::from_str(&outbox.try_recv().expect("an error reply")).unwrap();
+        assert_eq!(reply["jsonrpc"], "2.0", "{reply}");
+        assert_eq!(reply["id"], id, "{reply}");
+        assert_eq!(reply["error"]["code"], -32603, "{reply}");
+        assert!(reply.get("result").is_none(), "{reply}");
+        assert_eq!(
+            in_flight.load(Ordering::Acquire),
+            0,
+            "the busy count leaked"
+        );
+    }
+
+    // A notification or a frame that is not JSON gets no reply, as from `answer`.
+    for frame in [
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string(),
+        "not json".to_string(),
+    ] {
+        spawn_call_on(frame.clone(), &calls, fail);
+        assert!(outbox.try_recv().is_err(), "{frame} was answered");
+        assert_eq!(
+            in_flight.load(Ordering::Acquire),
+            0,
+            "the busy count leaked"
+        );
+    }
 }
