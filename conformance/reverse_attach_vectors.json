@@ -7,6 +7,7 @@
     {"code": 4004, "expect": {"stop": "sessionEnded"}},
     {"code": 4010, "expect": {"stop": "revoked"}},
     {"code": 4006, "expect": {"redial": true}},
+    {"code": 4011, "expect": {"redial": true}},
     {"code": 1000, "expect": {"redial": true}},
     {"code": 1006, "expect": {"redial": true}},
     {"code": 4999, "expect": {"redial": true}},

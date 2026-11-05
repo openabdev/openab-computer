@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::attach::client::{dial_loop, mint, DialGrant};
+use crate::attach::client::{dial_loop, mint, DialGrant, DialTuning};
 use crate::attach::store;
 use crate::attach::{
     grant_json, new_grant_id, now_epoch_secs, valid_session, GrantInfo, Registry, GRANT_COUNTER,
@@ -403,6 +403,7 @@ fn spawn_dial(
             registry,
             grant_id,
             cancelled,
+            tuning: DialTuning::default(),
         });
     });
 }

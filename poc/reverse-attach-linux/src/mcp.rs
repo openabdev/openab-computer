@@ -1,5 +1,6 @@
 //! MCP JSON-RPC dispatch (`initialize`, `tools/list`, `tools/call`), the local tool table, and re-serving an upstream MCP (e.g. @playwright/mcp) filtered by profile.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -290,6 +291,23 @@ pub(crate) fn upstream_owning(name: &str, profile: &str) -> Option<Arc<Upstream>
 // ---------------------------------------------------------------------------
 
 pub(crate) fn answer(text: &str, profile: &str) -> Option<String> {
+    answer_with(text, profile, None)
+}
+
+/// The longest `bash` `timeout_secs` accepted on a reverse attach. The
+/// openab-pty runtime fails any call that has no reply after 120 s
+/// (`REQUEST_TIMEOUT`), so a longer one could only end in an error for the
+/// caller.
+pub(crate) const MAX_ATTACHED_BASH_TIMEOUT_SECS: u64 = 100;
+
+/// `answer` for a frame on a reverse-attach socket: `cancel` is set when that
+/// socket ends (a running `bash` then kills its process group), and a `bash`
+/// with `timeout_secs` over `MAX_ATTACHED_BASH_TIMEOUT_SECS` is refused.
+pub(crate) fn answer_attached(text: &str, profile: &str, cancel: &AtomicBool) -> Option<String> {
+    answer_with(text, profile, Some(cancel))
+}
+
+fn answer_with(text: &str, profile: &str, cancel: Option<&AtomicBool>) -> Option<String> {
     let req: Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(_) => return None,
@@ -308,10 +326,14 @@ pub(crate) fn answer(text: &str, profile: &str) -> Option<String> {
             "serverInfo": {
                 "name": "instance-mcp-rpi",
                 "version": "0.3.0"
-            }
+            },
+            "instructions": instructions(profile)
         })),
         "tools/list" => Ok(json!({ "tools": tool_list(profile) })),
-        "tools/call" => handle_tool_call(&params, profile),
+        "tools/call" => match cancel.and_then(|_| refuse_long_bash(&params)) {
+            Some(refusal) => Ok(refusal),
+            None => handle_tool_call(&params, profile, cancel),
+        },
         other => Err((-32601, format!("method not found: {other}"))),
     };
 
@@ -325,6 +347,55 @@ pub(crate) fn answer(text: &str, profile: &str) -> Option<String> {
     };
 
     Some(response.to_string())
+}
+
+/// Every profile is told how long a call may run: the runtime fails a call with
+/// no reply after 120 s, and older clients were dropped during long calls (#70).
+const LONG_CALL_NOTICE: &str = "Keep each tool call on this node under about 60 seconds: a \
+    longer call can time out or disconnect you.";
+
+/// For profiles with `bash`: how to do long work without one long call.
+const LONG_WORK_NOTICE: &str = "For long work, start it in the background with `bash` (for \
+    example `nohup cmd > /tmp/job.log 2>&1 &`) and check on it with short `bash` calls; never \
+    `sleep` inside `bash`.";
+
+/// Calls on one attach run concurrently (#70), so parallel input calls can
+/// interleave on the screen.
+const UI_ORDER_NOTICE: &str = "Tool calls run concurrently: issue `mouse` and `key` steps one at \
+    a time and wait for each result before sending the next.";
+
+pub(crate) fn instructions(profile: &str) -> String {
+    if local_tool_allowed("bash", profile) {
+        format!("{UI_ORDER_NOTICE}\n\n{LONG_CALL_NOTICE} {LONG_WORK_NOTICE}")
+    } else {
+        LONG_CALL_NOTICE.to_string()
+    }
+}
+
+/// A `bash` call over `MAX_ATTACHED_BASH_TIMEOUT_SECS` on an attach, refused as
+/// a tool error the model sees rather than clamped, so a long command is not
+/// killed early by surprise.
+fn refuse_long_bash(params: &Value) -> Option<Value> {
+    if params.get("name").and_then(|n| n.as_str()) != Some("bash") {
+        return None;
+    }
+    let asked = params
+        .get("arguments")
+        .and_then(|a| a.get("timeout_secs"))
+        .and_then(|t| t.as_f64())?;
+    if asked <= MAX_ATTACHED_BASH_TIMEOUT_SECS as f64 {
+        return None;
+    }
+    let message = format!(
+        "bash timeout_secs {asked} is over this attach's limit of {MAX_ATTACHED_BASH_TIMEOUT_SECS} s: \
+         the runtime fails any call still running after 120 s. For long work start the command in \
+         the background (nohup cmd > /tmp/job.log 2>&1 &) and check on it with short bash calls; \
+         never sleep inside bash."
+    );
+    Some(json!({
+        "content": [ { "type": "text", "text": message } ],
+        "isError": true
+    }))
 }
 
 pub(crate) const LOCAL_TOOL_NAMES: &[&str] = &["sys_info", "screenshot", "bash", "mouse", "key"];
@@ -360,7 +431,7 @@ pub(crate) fn tool_list(profile: &str) -> Value {
             "properties": {
                 "command":          { "type": "string" },
                 "cwd":              { "type": "string", "description": "working directory; leading ~ expands to $HOME" },
-                "timeout_secs":     { "type": "integer", "description": "default 60, max 600" },
+                "timeout_secs":     { "type": "integer", "description": "default 60, max 600 (100 on a reverse attach; run longer work in the background)" },
                 "max_output_bytes": { "type": "integer", "description": "per stream, default 65536, max 1048576" }
             },
             "required": ["command"],
@@ -417,7 +488,11 @@ pub(crate) fn tool_list(profile: &str) -> Value {
     Value::Array(tools)
 }
 
-pub(crate) fn handle_tool_call(params: &Value, profile: &str) -> Result<Value, (i64, String)> {
+pub(crate) fn handle_tool_call(
+    params: &Value,
+    profile: &str,
+    cancel: Option<&AtomicBool>,
+) -> Result<Value, (i64, String)> {
     let name = params
         .get("name")
         .and_then(|n| n.as_str())
@@ -432,7 +507,7 @@ pub(crate) fn handle_tool_call(params: &Value, profile: &str) -> Result<Value, (
     match name {
         "sys_info" => Ok(tool_result(tool_sys_info())),
         "screenshot" => tool_screenshot(&arguments),
-        "bash" => tool_bash(&arguments),
+        "bash" => tool_bash(&arguments, cancel),
         "mouse" => tool_mouse(&arguments),
         "key" => tool_key(&arguments),
         other => match upstream_owning(other, profile) {
