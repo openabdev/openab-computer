@@ -131,5 +131,10 @@ jobs:
           path: poc/reverse-attach-linux/target/release/reverse-attach
       - name: Smoke a plain build (reports -dev)
         # After the upload: rebuilds only this crate without OAB_RELEASE_VERSION, so smoke.sh
-        # checks the "<crate>-dev" fallback a local build reports (#74).
-        run: env -u OAB_RELEASE_VERSION -u EXPECT_AGENT_VERSION bash -c 'cargo build --release && bash smoke.sh'
+        # checks the "<crate>-dev" fallback a local build reports (#74). The first smoke run
+        # leaves `sleep 30` orphans from its later attaches; wait them out (bounded), or this
+        # run's "no sleep leaked" check sees them.
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 40); do pgrep -f 'slee[p] 30' >/dev/null || break; sleep 1; done
+          env -u OAB_RELEASE_VERSION -u EXPECT_AGENT_VERSION bash -c 'cargo build --release && bash smoke.sh'
