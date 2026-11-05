@@ -18,15 +18,26 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
 - Dial loop: `GET ws://…/tools/attach/{session}` with `Authorization: Bearer <secret>`, redial
   1 s → 30 s backoff until the grant deadline. Disposition per openab-pty §9.2: close `4001`
   expired / `4002` replaced / `4004` session ended / `4010` revoked and handshake non-2xx/429/5xx
-  → **stop**; `1000` / `4006` / other / 2xx / 429 / 5xx → **redial**. Same table the
+  → **stop**; `1000` / `4006` / `4011` (liveness) / other / 2xx / 429 / 5xx → **redial**. A
+  connection that stayed up for 60 s resets the backoff. Same table the
   `reverse-attach-conformance` suite (#24) checks 23/23 against the Swift oracle.
-- MCP over the socket: `initialize`, `tools/list`, `tools/call`; notifications get no reply;
+- Liveness (#70): the runtime pings every 20 s and closes an attach that stays silent for more
+  than three intervals (`4011`). The read loop never waits on a tool: each frame is answered on
+  its own thread and the loop, the socket's only writer, sends the replies between 20 ms reads,
+  so pings are answered while a call runs. We also ping the runtime every 15 s. When a socket
+  ends (close, error, `DELETE`), its running calls are cancelled and `bash` kills its process
+  group.
+- MCP over the socket: `initialize` (with instructions: keep calls under ~60 s, issue `mouse` /
+  `key` steps one at a time), `tools/list`, `tools/call`; notifications get no reply;
   ping → pong. Tools: `sys_info`, `screenshot`, `bash`, `mouse`, `key` — in **both** profiles
   (decision 2026-09-28: a lent node is only useful if the agent can act on it, and the macOS
   `desktop` profile already hands out a shell through `osascript`'s `do shell script`). Neither
   profile is a security boundary on Linux either (#45): lend a dedicated node. `bash` = `bash -c`
   as the daemon user with `cwd` (`~` expands), `timeout_secs` (default 60, max 600; the whole
   process group is killed → exit 137, `timed_out=true`), `max_output_bytes` per stream (≤1 MiB).
+  On a reverse attach `bash` refuses `timeout_secs` over 100 s, because the runtime fails any
+  call still running after 120 s; run long work in the background (`nohup cmd > log 2>&1 &`)
+  and poll it with short calls.
 
 Deps: `serde_json` + `tungstenite` (rustls). Sync std threads, no tokio. ~28 KB.
 

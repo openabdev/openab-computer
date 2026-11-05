@@ -3,17 +3,18 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tungstenite::http::Request;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::Message;
+use tungstenite::{Message, WebSocket};
 
 use super::*;
-use crate::mcp::answer;
+use crate::mcp::answer_attached;
 
 // mint(): replicate the Swift runtimeMintRequest contract (http/ws only)
 // ---------------------------------------------------------------------------
@@ -144,7 +145,33 @@ pub(crate) struct DialGrant {
     pub(crate) registry: Registry,
     pub(crate) grant_id: String,
     pub(crate) cancelled: Arc<AtomicBool>,
+    pub(crate) tuning: DialTuning,
 }
+
+/// Timers of one attached socket. Production uses `Default`; tests shrink them.
+#[derive(Clone, Copy)]
+pub(crate) struct DialTuning {
+    /// How often we ping the runtime while attached, below its 20 s ping
+    /// interval (any inbound frame counts as alive there). `None` turns our own
+    /// pings off (tests).
+    pub(crate) keepalive: Option<Duration>,
+    /// A connection that stayed up this long resets the redial backoff.
+    pub(crate) stable_after: Duration,
+}
+
+impl Default for DialTuning {
+    fn default() -> Self {
+        DialTuning {
+            keepalive: Some(Duration::from_secs(15)),
+            stable_after: Duration::from_secs(60),
+        }
+    }
+}
+
+/// How long one `read` may block. The attached loop is also the socket's only
+/// writer, so this bounds how long a finished call's reply, a keepalive ping or a
+/// DELETE waits.
+const READ_POLL: Duration = Duration::from_millis(20);
 
 pub(crate) fn dial_loop(config: DialGrant) {
     let DialGrant {
@@ -156,6 +183,7 @@ pub(crate) fn dial_loop(config: DialGrant) {
         registry,
         grant_id,
         cancelled,
+        tuning,
     } = config;
     let mut backoff: u64 = 1;
     let cap: u64 = 30;
@@ -185,62 +213,25 @@ pub(crate) fn dial_loop(config: DialGrant) {
 
         match tungstenite::connect(req) {
             Ok((mut socket, _resp)) => {
-                // DELETE must revoke an attached node promptly. The early PoC
-                // blocked in read until the runtime sent another frame. A short
-                // read timeout lets the cancellation flag close the socket in
-                // at most one second on plain ws:// (the deployed rpi1 path).
-                if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
-                }
-                backoff = 1; // successful attach resets transient retry history
+                // A short read timeout keeps this loop turning while no frame
+                // arrives, so it can send replies and pings and see DELETE.
+                set_read_timeout(&mut socket, READ_POLL);
+                let connected_at = Instant::now();
                 set_state(&registry, &grant_id, "attached");
-                loop {
-                    if cancelled.load(Ordering::Acquire) {
-                        let _ = socket.close(None);
+                let end = serve_socket(&mut socket, &profile, cancelled.as_ref(), &tuning);
+                // Only a connection that stayed up resets the backoff, so a
+                // runtime that accepts and drops at once is not redialled every
+                // second.
+                if connected_at.elapsed() >= tuning.stable_after {
+                    backoff = 1;
+                }
+                match end {
+                    SocketEnd::Cancelled => return,
+                    SocketEnd::Stop(reason) => {
+                        set_ended(&registry, &grant_id, &reason);
                         return;
                     }
-                    match socket.read() {
-                        Ok(Message::Text(t)) => {
-                            if let Some(reply) = answer(t.as_str(), &profile) {
-                                if socket.send(Message::Text(reply)).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(Message::Binary(b)) => {
-                            let t = String::from_utf8_lossy(&b).to_string();
-                            if let Some(reply) = answer(&t, &profile) {
-                                if socket.send(Message::Text(reply)).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(Message::Ping(p)) => {
-                            let _ = socket.send(Message::Pong(p));
-                        }
-                        Ok(Message::Pong(_)) => {}
-                        Ok(Message::Close(frame)) => {
-                            let _ = socket.flush();
-                            let code = frame.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
-                            match disposition_close(code) {
-                                Disposition::Stop(reason) => {
-                                    set_ended(&registry, &grant_id, &reason);
-                                    return;
-                                }
-                                Disposition::Redial => break,
-                            }
-                        }
-                        Ok(Message::Frame(_)) => {}
-                        Err(tungstenite::Error::Io(ref error))
-                            if matches!(
-                                error.kind(),
-                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                            ) =>
-                        {
-                            continue;
-                        }
-                        Err(_) => break,
-                    }
+                    SocketEnd::Redial => {}
                 }
             }
             Err(error) => {
@@ -265,6 +256,129 @@ pub(crate) fn dial_loop(config: DialGrant) {
     if !cancelled.load(Ordering::Acquire) {
         set_ended(&registry, &grant_id, "deadline");
     }
+}
+
+/// How one attached socket ended.
+enum SocketEnd {
+    /// DELETE: the grant was revoked locally.
+    Cancelled,
+    /// A terminal close code (§9.2): end the grant with this reason.
+    Stop(String),
+    /// A retryable close (1000, 4006, 4011 liveness, …), a read or a send error.
+    Redial,
+}
+
+/// Sets the flag when dropped: every exit from `serve_socket` cancels the calls
+/// still running on that socket. The runtime has already failed them for the
+/// caller, so nothing they return can be delivered, and a `bash` left running
+/// would outlive the attach.
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Serve MCP on one attached socket until it ends.
+///
+/// The runtime pings every 20 s and closes an attach that stays silent for more
+/// than three intervals (4011). So this loop never waits on a tool: each frame is
+/// answered on its own thread, replies come back over a channel, and this loop,
+/// the socket's only writer, sends them between short reads. Reads keep going
+/// while a tool runs, which answers the runtime's pings, and we also ping the
+/// runtime every `tuning.keepalive`.
+fn serve_socket(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    profile: &str,
+    cancelled: &AtomicBool,
+    tuning: &DialTuning,
+) -> SocketEnd {
+    let (replies, outbox) = mpsc::channel::<String>();
+    let calls_cancelled = Arc::new(AtomicBool::new(false));
+    let _cancel_calls = CancelOnDrop(calls_cancelled.clone());
+    let mut next_ping = tuning.keepalive.map(|every| Instant::now() + every);
+
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            let _ = socket.close(None);
+            let _ = socket.flush();
+            return SocketEnd::Cancelled;
+        }
+        while let Ok(reply) = outbox.try_recv() {
+            if socket.send(Message::Text(reply)).is_err() {
+                return SocketEnd::Redial;
+            }
+        }
+        if let (Some(at), Some(every)) = (next_ping, tuning.keepalive) {
+            if Instant::now() >= at {
+                if socket.send(Message::Ping(Vec::new())).is_err() {
+                    return SocketEnd::Redial;
+                }
+                next_ping = Some(Instant::now() + every);
+            }
+        }
+        match socket.read() {
+            Ok(Message::Text(t)) => spawn_call(t, profile, &replies, &calls_cancelled),
+            Ok(Message::Binary(b)) => spawn_call(
+                String::from_utf8_lossy(&b).into_owned(),
+                profile,
+                &replies,
+                &calls_cancelled,
+            ),
+            Ok(Message::Ping(p)) => {
+                let _ = socket.send(Message::Pong(p));
+            }
+            Ok(Message::Pong(_)) => {}
+            Ok(Message::Close(frame)) => {
+                let _ = socket.flush();
+                let code = frame.as_ref().map(|f| u16::from(f.code)).unwrap_or(1000);
+                return match disposition_close(code) {
+                    Disposition::Stop(reason) => SocketEnd::Stop(reason),
+                    Disposition::Redial => SocketEnd::Redial,
+                };
+            }
+            Ok(Message::Frame(_)) => {}
+            Err(tungstenite::Error::Io(ref error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return SocketEnd::Redial,
+        }
+    }
+}
+
+/// Answer one frame on its own thread. No per-socket cap: the runtime already
+/// bounds calls in flight. Calls pipelined on one socket may finish out of
+/// order; each reply carries its id.
+fn spawn_call(text: String, profile: &str, replies: &Sender<String>, cancel: &Arc<AtomicBool>) {
+    let profile = profile.to_string();
+    let replies = replies.clone();
+    let cancel = cancel.clone();
+    let spawned = thread::Builder::new()
+        .name("attach-call".into())
+        .spawn(move || {
+            if let Some(reply) = answer_attached(&text, &profile, &cancel) {
+                // A cancelled call's socket is gone; its reply goes nowhere.
+                if !cancel.load(Ordering::Acquire) {
+                    let _ = replies.send(reply);
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("attach: could not start a call thread: {e}");
+    }
+}
+
+/// Bound how long one read on the attached socket blocks, on ws:// and wss://.
+fn set_read_timeout(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, timeout: Duration) {
+    let stream: &TcpStream = match socket.get_mut() {
+        MaybeTlsStream::Plain(s) => s,
+        MaybeTlsStream::Rustls(s) => &s.sock,
+        _ => return,
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
 }
 
 // Sleep min(backoff, remaining_to_deadline), checking DELETE cancellation every
@@ -333,5 +447,9 @@ fn handshake_status(err: &tungstenite::Error) -> Option<u16> {
 #[cfg(test)]
 #[path = "client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "liveness_tests.rs"]
+mod liveness_tests;
 
 // ---------------------------------------------------------------------------

@@ -127,6 +127,9 @@ pub(crate) fn disposition_close(code: u16) -> Disposition {
         4002 => Disposition::Stop("replaced".to_string()),
         4004 => Disposition::Stop("session_ended".to_string()),
         4010 => Disposition::Stop("revoked".to_string()),
+        // Liveness: we were silent past the runtime's ping budget
+        // (openab-pty CLIENT-CONTRACT §9). Spelled out so it is not lost in `_`.
+        4011 => Disposition::Redial,
         _ => Disposition::Redial,
     }
 }
@@ -213,7 +216,7 @@ mod conformance {
                 failures.push(format!("attach_url: got {got}, want {want}"));
             }
         }
-        assert!(n >= 23, "vector file shrank: {n}");
+        assert!(n >= 24, "vector file shrank: {n}");
         assert!(
             failures.is_empty(),
             "drift from Swift oracle:\n{}",

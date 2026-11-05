@@ -196,6 +196,7 @@ fn dial_loop_against_refusing_runtime(
         registry: registry.clone(),
         grant_id: grant_id.clone(),
         cancelled: Arc::new(AtomicBool::new(false)),
+        tuning: DialTuning::default(),
     });
     let (state, ended) = {
         let map = registry.lock().unwrap();

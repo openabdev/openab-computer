@@ -1,6 +1,7 @@
 //! `bash`: `bash -c` as the daemon user, process-group timeout, per-stream output caps.
 
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -8,8 +9,12 @@ use serde_json::{json, Value};
 
 use super::tool_result;
 
-pub fn tool_bash(arguments: &Value) -> Result<Value, (i64, String)> {
+/// `cancel`: set when the reverse-attach socket that asked for this call ends.
+/// The whole process group is then killed and the call returns without waiting
+/// for its output.
+pub fn tool_bash(arguments: &Value, cancel: Option<&AtomicBool>) -> Result<Value, (i64, String)> {
     use std::process::Stdio;
+    let is_cancelled = || cancel.is_some_and(|c| c.load(Ordering::Acquire));
 
     let command = arguments
         .get("command")
@@ -78,12 +83,18 @@ pub fn tool_bash(arguments: &Value) -> Result<Value, (i64, String)> {
 
     let deadline = started + Duration::from_secs(timeout_secs);
     let mut timed_out = false;
+    let mut cancelled = false;
+    // `kill(-pid)` only while `try_wait` says the leader has not been reaped: we
+    // are its only reaper, so until then neither its pid nor its process group
+    // id can belong to anyone else.
     let status = loop {
         match child.try_wait() {
             Ok(Some(st)) => break Some(st),
             Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    timed_out = true;
+                let expired = std::time::Instant::now() >= deadline;
+                if expired || is_cancelled() {
+                    timed_out = expired;
+                    cancelled = !expired;
                     unsafe {
                         kill(-pid, 9); // whole process group (setsid made pid the leader)
                     }
@@ -94,6 +105,15 @@ pub fn tool_bash(arguments: &Value) -> Result<Value, (i64, String)> {
             Err(_) => break None,
         }
     };
+    // A child backgrounded by the command (`cmd &`) can hold the pipes open after
+    // the leader exits. It can no longer be killed safely, but a cancelled call
+    // stops waiting for it.
+    while !(out_t.is_finished() && err_t.is_finished()) {
+        if cancelled || is_cancelled() {
+            return Err((-32000, "cancelled: the attach ended".to_string()));
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
     let (stdout, out_trunc) = out_t.join().unwrap_or_default();
     let (stderr, err_trunc) = err_t.join().unwrap_or_default();
 
