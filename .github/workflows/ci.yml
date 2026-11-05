@@ -90,13 +90,28 @@ jobs:
       - name: Release version from main.swift
         # Build the way release.yml does: OAB_RELEASE_VERSION is compiled into the binary and
         # smoke.sh fails unless sys_info reports it (#74). Job-wide, so every cargo step
-        # shares one build.
+        # shares one build. Same parser as the release gate (scripts/release-version.sh).
         run: |
           set -euo pipefail
-          V=$(sed -n 's/^let version = "\([0-9][0-9.]*\)"$/\1/p' ../../Sources/oab-instance-mcp/main.swift)
-          [ -n "$V" ] || { echo "no 'let version' in main.swift" >&2; exit 65; }
+          V=$(../../scripts/release-version.sh)
           echo "OAB_RELEASE_VERSION=$V" >> "$GITHUB_ENV"
           echo "EXPECT_AGENT_VERSION=$V" >> "$GITHUB_ENV"
+      - name: Release gate rejects inexact tags
+        # release.yml's gate is exact string equality, not a pattern match (#74).
+        run: |
+          set -euo pipefail
+          G=../../scripts/release-version.sh
+          V=$OAB_RELEASE_VERSION
+          # `! cmd` alone is exempt from set -e, hence the explicit exits.
+          rejects() { if "$@" 2>/dev/null; then echo "accepted: $*" >&2; exit 1; fi; }
+          [ "$($G "v$V")" = "$V" ]
+          rejects $G "v$V-beta"
+          rejects $G "v${V//./x}"
+          T=$(mktemp)
+          echo "let version = \"$V-beta\"" > "$T"
+          RELEASE_VERSION_SOURCE=$T rejects $G "v$V"
+          printf 'let version = "%s"\nlet version = "%s"\n' "$V" "$V" > "$T"
+          RELEASE_VERSION_SOURCE=$T rejects $G "v$V"
       - name: Format
         run: cargo fmt --check
       - name: Clippy
@@ -114,3 +129,7 @@ jobs:
         with:
           name: reverse-attach-linux-${{ matrix.arch }}
           path: poc/reverse-attach-linux/target/release/reverse-attach
+      - name: Smoke a plain build (reports -dev)
+        # After the upload: rebuilds only this crate without OAB_RELEASE_VERSION, so smoke.sh
+        # checks the "<crate>-dev" fallback a local build reports (#74).
+        run: env -u OAB_RELEASE_VERSION -u EXPECT_AGENT_VERSION bash -c 'cargo build --release && bash smoke.sh'

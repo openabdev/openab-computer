@@ -116,8 +116,10 @@ The Linux hands node reports the release version in `sys_info.agent.version` and
 - The release workflow's Linux job checks that the tag equals `let version` in
   `Sources/oab-instance-mcp/main.swift`, the same gate as the macOS job, then builds with
   `OAB_RELEASE_VERSION=<tag without v>`, which `option_env!` compiles into the binary.
+  Both jobs and PR CI read the version with `scripts/release-version.sh [tag]`, which
+  requires one `MAJOR.MINOR.PATCH` line and exact string equality with the tag.
 - `smoke.sh` runs with `EXPECT_AGENT_VERSION=<same>` and fails unless both fields report it.
-  PR CI does the same with the version read from `main.swift`.
+  PR CI does the same with the version read from `main.swift`, then smokes a plain build.
 - A build without `OAB_RELEASE_VERSION` (local `cargo build`, `cargo test`) reports
   `<crate version>-dev`, so it can never pass for a release.
 
