@@ -1,5 +1,6 @@
 [package]
 name = "reverse-attach"
+# Not the release version: releases compile in OAB_RELEASE_VERSION from the tag (#74).
 version = "0.4.0"
 edition = "2021"
 

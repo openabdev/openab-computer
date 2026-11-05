@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::http::{http_post, parse_mcp_body, HttpReply};
+use crate::tools::sysinfo::AGENT_VERSION;
 use crate::tools::{tool_bash, tool_key, tool_mouse, tool_result, tool_screenshot, tool_sys_info};
 
 // Upstream MCP (e.g. @playwright/mcp on loopback), re-served under our tools/list.
@@ -64,7 +65,7 @@ impl Upstream {
         let r = self.post(&json!({
             "jsonrpc": "2.0", "id": 0, "method": "initialize",
             "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "instance-mcp-rpi", "version": "0.4.0"}}
+                       "clientInfo": {"name": "instance-mcp-rpi", "version": AGENT_VERSION}}
         }))?;
         if !(200..300).contains(&r.status) {
             return Err(format!(
@@ -325,7 +326,7 @@ fn answer_with(text: &str, profile: &str, cancel: Option<&AtomicBool>) -> Option
             "capabilities": { "tools": {} },
             "serverInfo": {
                 "name": "instance-mcp-rpi",
-                "version": "0.3.0"
+                "version": AGENT_VERSION
             },
             "instructions": instructions(profile)
         })),

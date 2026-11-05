@@ -88,6 +88,8 @@ def byid(i):
     return [e["reply"] for e in rpcs if e["reply"].get("id")==i][0]
 q=sys.argv[2]
 if q=="init":   print(find("initialize")["result"]["serverInfo"]["name"])
+if q=="srvver": print(find("initialize")["result"]["serverInfo"]["version"])
+if q=="sysver": print(byid(3)["result"]["structuredContent"]["agent"]["version"])
 if q=="tools":  print(",".join(t["name"] for t in find("tools/list")["result"]["tools"]))
 if q=="sys":    print(byid(3)["result"]["structuredContent"]["hostname"])
 if q=="exec":   print(byid(4)["result"]["structuredContent"]["stdout"].strip().replace("\n"," "))
@@ -101,6 +103,14 @@ EOF
 check "initialize → serverInfo instance-mcp-rpi" "[[ \$(py init) == instance-mcp-rpi ]]"
 check "owner tools/list = sys_info,screenshot,bash" "[[ \$(py tools) == sys_info,screenshot,bash,mouse,key ]]"
 check "sys_info hostname = $(hostname)" "[[ \$(py sys) == $(hostname) ]]"
+# Release builds set OAB_RELEASE_VERSION at compile time and EXPECT_AGENT_VERSION here (#74);
+# a plain build must say "-dev", never pass for a release.
+if [[ -n "${EXPECT_AGENT_VERSION:-}" ]]; then
+  check "sys_info agent.version = $EXPECT_AGENT_VERSION" "[[ \$(py sysver) == '$EXPECT_AGENT_VERSION' ]]"
+else
+  check "sys_info agent.version is a -dev build" "[[ \$(py sysver) == *-dev ]]"
+fi
+check "serverInfo.version = sys_info agent.version" "[[ \$(py srvver) == \$(py sysver) ]]"
 check "bash ran on node with cwd ~" "[[ \$(py exec) == \"hands-node-$(hostname) $HOME\" ]]"
 check "bash timeout → 137 + group killed" "[[ \$(py timeout) == 137,True ]]"
 check "unknown tool → -32601" "[[ \$(py unk) == -32601* ]]"
