@@ -77,8 +77,8 @@ deleted in an `always()` cleanup step.
 3. Tag the exact main commit and push:
 
    ```sh
-   git tag v0.8.0
-   git push origin v0.8.0
+   git tag v0.8.1
+   git push origin v0.8.1
    ```
 
 4. The `Release macOS installer` workflow builds/tests, signs, notarizes and publishes the macOS
@@ -89,15 +89,15 @@ deleted in an `always()` cleanup step.
    `main` is rejected before any job starts ("Branch main is not allowed to deploy to release"):
 
    ```sh
-   gh workflow run release.yml --ref v0.8.0 -f tag=v0.8.0
+   gh workflow run release.yml --ref v0.8.1 -f tag=v0.8.1
    ```
 
 5. Download both artifacts and verify before installing:
 
    ```sh
    scripts/verify-release.sh \
-     oab-instance-mcp-0.8.0-universal.app.zip \
-     oab-instance-mcp-0.8.0-universal.pkg
+     oab-instance-mcp-0.8.1-universal.app.zip \
+     oab-instance-mcp-0.8.1-universal.pkg
    shasum -a 256 -c SHA256SUMS
    ```
 
@@ -129,8 +129,8 @@ lipo -create /tmp/imcp-arm64/release/oab-instance-mcp \
              /tmp/imcp-x86_64/release/oab-instance-mcp \
              -output /tmp/oab-instance-mcp
 chmod +x /tmp/oab-instance-mcp
-scripts/assemble-app.sh /tmp/oab-instance-mcp /tmp/oab-instance-mcp.app 0.8.0
-ALLOW_UNSIGNED=1 scripts/package-pkg.sh /tmp/oab-instance-mcp.app /tmp/oab-instance-mcp.pkg 0.8.0
+scripts/assemble-app.sh /tmp/oab-instance-mcp /tmp/oab-instance-mcp.app 0.8.1
+ALLOW_UNSIGNED=1 scripts/package-pkg.sh /tmp/oab-instance-mcp.app /tmp/oab-instance-mcp.pkg 0.8.1
 ```
 
 Unsigned artifacts are testing inputs only; do not install or publish them.
