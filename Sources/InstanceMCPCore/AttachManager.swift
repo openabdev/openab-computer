@@ -220,27 +220,45 @@ public actor AttachManager {
 
     // MARK: helpers
 
+    /// Every grant, whatever its profile, is told how long a call may run. The
+    /// openab-pty runtime fails a call with no reply after 120 s, and older
+    /// runtimes or clients also drop the Mac during long calls (#68).
+    static let longCallNotice = """
+        Keep each tool call on this Mac under about 60 seconds: a longer call can time out or \
+        disconnect you. For long work use `exec_start`, then check it with `exec_poll` (when those \
+        tools are listed); never `sleep` inside `exec`.
+        """
+
+    /// Calls on one attach run concurrently (#68), so parallel input calls can
+    /// interleave on the screen.
+    static let uiOrderNotice = """
+        Tool calls run concurrently: issue `mouse`, `key` and `osascript` steps one at a time and \
+        wait for each result before sending the next.
+        """
+
     static func desktopInstructions(profile: ToolProfile, base: String?) -> String? {
-        if profile == .observe {
-            let head = base.map { $0 + "\n\n" } ?? ""
+        let head = base.map { $0 + "\n\n" } ?? ""
+        switch profile {
+        case .observe:
             return head + """
                 You reached this computer through OpenAB Connect under the `observe` profile: a human lets \
                 you look, not act. Only `sys_info` and `screenshot` are available — you cannot click, type \
                 or run anything here. If the task needs input on this computer, ask the human to grant \
                 the `desktop` profile instead.
-                """
+                """ + "\n\n" + longCallNotice
+        case .desktop:
+            return head + """
+                You reached this Mac through OpenAB Connect: a human lent it to your sandbox session for a \
+                limited time and is likely watching the screen. This is the `desktop` profile — there is no \
+                `exec` tool here (prefer the shell in your own session for local work); drive the Mac through \
+                `screenshot`, `mouse`, `key` and `osascript`, and — when `browser_*` tools are listed — through \
+                the browser directly: `browser_navigate` then `browser_snapshot` gives you the page as text, \
+                no screenshot needed. If a tool starts failing with "not attached", the grant ended; ask the \
+                human to lend the Mac again.
+                """ + "\n\n" + uiOrderNotice + "\n\n" + longCallNotice
+        case .owner:
+            return head + uiOrderNotice + "\n\n" + longCallNotice
         }
-        guard profile == .desktop else { return base }
-        let head = base.map { $0 + "\n\n" } ?? ""
-        return head + """
-            You reached this Mac through OpenAB Connect: a human lent it to your sandbox session for a \
-            limited time and is likely watching the screen. This is the `desktop` profile — there is no \
-            `exec` tool here (prefer the shell in your own session for local work); drive the Mac through \
-            `screenshot`, `mouse`, `key` and `osascript`, and — when `browser_*` tools are listed — through \
-            the browser directly: `browser_navigate` then `browser_snapshot` gives you the page as text, \
-            no screenshot needed. If a tool starts failing with "not attached", the grant ended; ask the \
-            human to lend the Mac again.
-            """
     }
 
     /// Build the exact runtime mint request. Keeping the body shape in a pure

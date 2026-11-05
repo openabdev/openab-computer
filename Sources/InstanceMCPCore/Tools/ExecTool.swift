@@ -15,7 +15,7 @@ public struct ExecTool: Tool {
         "properties": [
             "command": ["type": "string", "description": "Shell command line, run via `zsh -c`."],
             "cwd": ["type": "string", "description": "Working directory. Default: user's home."],
-            "timeout_secs": ["type": "number", "description": "Kill after this many seconds. Default 60, max 600."],
+            "timeout_secs": ["type": "number", "description": "Kill after this many seconds. Default 60, max 600 (100 on openab-pty attaches; use exec_start + exec_poll for longer work)."],
             "max_output_bytes": ["type": "integer", "description": "Per-stream cap. Default 65536, max 1048576."],
             "env": ["type": "object", "additionalProperties": ["type": "string"], "description": "Extra environment variables."],
         ],
@@ -103,22 +103,43 @@ public struct ExecTool: Tool {
         }
 
         let fired = LockedFlag()
+        let killer = ProcessGroupKiller(pid)
         let timer = DispatchSource.makeTimerSource(queue: .global())
         timer.schedule(deadline: .now() + timeout)
-        timer.setEventHandler { if fired.trySet() { killpg(pid, SIGKILL) } }
+        timer.setEventHandler { if fired.trySet() { killer.kill() } }
         timer.resume()
 
-        let status: Int32 = await withCheckedContinuation { cont in
-            DispatchQueue.global().async {
-                var st: Int32 = 0
-                while waitpid(pid, &st, 0) < 0 && errno == EINTR {}
-                cont.resume(returning: st)
+        // Cancelling the calling task (the caller went away, or the grant was
+        // revoked) kills the process group while its leader is alive.
+        let status: Int32 = await withTaskCancellationHandler {
+            await withCheckedContinuation { cont in
+                DispatchQueue.global().async {
+                    // Wait without reaping first, so a kill racing the exit can
+                    // never hit a recycled pid.
+                    var info = siginfo_t()
+                    while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) < 0 && errno == EINTR {}
+                    killer.markExited()
+                    var st: Int32 = 0
+                    while waitpid(pid, &st, 0) < 0 && errno == EINTR {}
+                    cont.resume(returning: st)
+                }
             }
+        } onCancel: {
+            killer.kill()
         }
         timer.cancel()
         // Pipes reach EOF once every writer in the (now dead) session has exited.
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            group.notify(queue: .global()) { cont.resume() }
+        // A child backgrounded by the shell (`cmd &`) can hold them open after the
+        // leader exits; it can no longer be killed safely (the pid may be
+        // recycled), but a cancelled call stops waiting for it and returns.
+        let drained = OneShotResume()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                drained.set(cont)
+                group.notify(queue: .global()) { drained.fire() }
+            }
+        } onCancel: {
+            drained.fire()
         }
 
         let exitCode: Int32
@@ -159,6 +180,31 @@ final class OutputCollector: @unchecked Sendable {
     func snapshot() -> (Data, Bool, Data, Bool) {
         lock.lock(); defer { lock.unlock() }
         return (bufs[0], truncated[0], bufs[1], truncated[1])
+    }
+}
+
+/// `killpg(pid, SIGKILL)` until the leader has exited, never after: once it is
+/// reaped its pid may belong to someone else.
+final class ProcessGroupKiller: @unchecked Sendable {
+    private let lock = NSLock(); private let pid: pid_t; private var exited = false
+    init(_ pid: pid_t) { self.pid = pid }
+    func kill() { lock.lock(); defer { lock.unlock() }; if !exited { killpg(pid, SIGKILL) } }
+    func markExited() { lock.lock(); exited = true; lock.unlock() }
+}
+
+/// Resumes a continuation exactly once, whether `fire()` comes before or after `set`.
+final class OneShotResume: @unchecked Sendable {
+    private let lock = NSLock(); private var cont: CheckedContinuation<Void, Never>?; private var fired = false
+    func set(_ c: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        if fired { lock.unlock(); c.resume(); return }
+        cont = c; lock.unlock()
+    }
+    func fire() {
+        lock.lock()
+        if fired { lock.unlock(); return }
+        fired = true; let c = cont; cont = nil; lock.unlock()
+        c?.resume()
     }
 }
 

@@ -69,9 +69,66 @@ final class ReverseAttachPolicyTests: XCTestCase {
     }
 
     func testRecoverableCloseCodesRedial() {
-        for code in [1000, 1001, 1006, 4006, 4009] {
+        for code in [1000, 1001, 1006, 4006, 4009, 4011] {
             XCTAssertEqual(ReverseAttachClient.disposition(closeCode: code), .redial, "code \(code)")
         }
+    }
+
+    /// openab-pty#86: the runtime closes a Mac that went silent past its ping
+    /// budget with 4011. That is a drop, not an ending: the grant is still good.
+    func testLivenessCloseRedials() {
+        XCTAssertEqual(ReverseAttachClient.disposition(closeCode: 4011), .redial)
+        XCTAssertEqual(ReverseAttachClient.disposition(closeCode: 4011, kind: .switchboard), .redial)
+    }
+
+    func testLongExecIsRefusedOnARuntimeAttachWithAPointerToExecStart() async {
+        let c = ReverseAttachClient.Config(runtime: URL(string: "ws://h:1")!, session: "s", secret: "x",
+                                           profile: .owner, deadline: .distantFuture)
+        let client = ReverseAttachClient(config: c, server: fullServer())
+        func call(_ args: JSONValue) async -> JSONValue {
+            let text = await client.answer(String(decoding: rpc("tools/call", id: 9, params: ["name": "exec", "arguments": args]), as: UTF8.self))
+            return decodeJSON(Data(text!.utf8))
+        }
+        let refused = await call(["command": "sleep 1500", "timeout_secs": 600])
+        XCTAssertEqual(refused["id"]?.intValue, 9)
+        XCTAssertEqual(refused["result"]?["isError"]?.boolValue, true, "a tool error the model can read: \(refused)")
+        let message = refused["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(message.contains("exec_start"), message)
+        XCTAssertTrue(message.contains("100"), message)
+
+        // osascript has the same limit (its own cap is 300 s).
+        let osa = await client.answer(String(decoding: rpc("tools/call", id: 11, params: ["name": "osascript", "arguments": ["script": "delay 200", "timeout_secs": 200]]), as: UTF8.self))
+        let osaResult = decodeJSON(Data(osa!.utf8))["result"]
+        XCTAssertEqual(osaResult?["isError"]?.boolValue, true, "\(String(describing: osaResult))")
+        XCTAssertTrue((osaResult?["content"]?.arrayValue?.first?["text"]?.stringValue ?? "").hasPrefix("osascript timeout_secs 200"))
+
+        for ok: JSONValue in [["command": "id"], ["command": "id", "timeout_secs": 100]] {
+            let r = await call(ok)
+            XCTAssertEqual(r["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue, "ran exec", "\(ok)")
+        }
+        // Other tools keep their own limits.
+        let start = await client.answer(String(decoding: rpc("tools/call", id: 10, params: ["name": "exec_start", "arguments": ["command": "x", "timeout_secs": 3600]]), as: UTF8.self))
+        XCTAssertEqual(decodeJSON(Data(start!.utf8))["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue, "ran exec_start")
+    }
+
+    func testLongExecIsNotRefusedOnASwitchboardAttach() async {
+        let c = ReverseAttachClient.Config.switchboard(url: URL(string: "ws://127.0.0.1:1/vm/attach")!, secret: "x", profile: .owner)
+        let client = ReverseAttachClient(config: c, server: fullServer())
+        let text = await client.answer(String(decoding: rpc("tools/call", id: 1, params: ["name": "exec", "arguments": ["command": "id", "timeout_secs": 600]]), as: UTF8.self))
+        XCTAssertEqual(decodeJSON(Data(text!.utf8))["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue, "ran exec")
+    }
+
+    func testEveryGrantProfileIsToldToKeepCallsShort() {
+        for p in ToolProfile.allCases {
+            let text = AttachManager.desktopInstructions(profile: p, base: "base") ?? ""
+            XCTAssertTrue(text.hasPrefix("base\n\n"), p.rawValue)
+            XCTAssertTrue(text.contains("60 seconds"), p.rawValue)
+            XCTAssertTrue(text.contains("`exec_start`") && text.contains("`exec_poll`"), p.rawValue)
+            XCTAssertTrue(text.contains("never `sleep` inside `exec`"), p.rawValue)
+            XCTAssertEqual(text.contains("one at a time"), p != .observe, p.rawValue)
+        }
+        XCTAssertEqual(AttachManager.desktopInstructions(profile: .owner, base: nil),
+                       AttachManager.uiOrderNotice + "\n\n" + AttachManager.longCallNotice)
     }
 
     func testHandshakeRejectionStopsButThrottleWaits() {
@@ -376,6 +433,26 @@ final class ReverseAttachEndToEndTests: XCTestCase {
         let final_ = await client.state
         XCTAssertEqual(final_, .ended(.deadline), "gives up at the grant deadline: \(states.all)")
         XCTAssertTrue(states.all.contains { if case .waitingToRedial = $0 { return true }; return false })
+    }
+
+    /// A connection that stayed up for `stableAfter` resets the backoff on an
+    /// openab-pty attach too, not just on a switchboard.
+    func testRuntimeAttachResetsBackoffAfterAStableConnection() async throws {
+        let runtime = try FakeRuntime(secret: "s3", closeWith: .privateCode(4006))
+        defer { runtime.stop() }
+        let states = StateSink()
+        var cfg = ReverseAttachClient.Config(runtime: URL(string: "ws://127.0.0.1:\(runtime.port)")!, session: "laptop",
+                                             secret: "s3", profile: .owner, deadline: Date().addingTimeInterval(3))
+        cfg.initialBackoff = 0.2
+        cfg.stableAfter = 0      // every connection counts as stable
+        let client = ReverseAttachClient(config: cfg, server: fullServer(), onStateChange: { states.push($0) })
+        await client.start()
+        try await Task.sleep(nanoseconds: 3_500_000_000)
+        let waits = states.all.compactMap { s -> Double? in
+            if case .waitingToRedial(let w) = s { return w }; return nil
+        }
+        XCTAssertGreaterThanOrEqual(waits.count, 3, "\(states.all)")
+        XCTAssertTrue(waits.allSatisfy { $0 <= 0.2 + 1e-9 }, "backoff must not double after a stable attach: \(waits)")
     }
 
     func testHandshakeRefusalStops() async throws {

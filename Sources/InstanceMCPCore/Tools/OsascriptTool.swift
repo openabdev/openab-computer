@@ -17,7 +17,7 @@ public struct OsascriptTool: Tool {
         "properties": [
             "script": ["type": "string"],
             "language": ["type": "string", "enum": ["applescript", "javascript"], "default": "applescript"],
-            "timeout_secs": ["type": "number", "description": "Default 15, max 300."],
+            "timeout_secs": ["type": "number", "description": "Default 15, max 300 (100 on openab-pty attaches)."],
         ],
         "required": ["script"],
     ]

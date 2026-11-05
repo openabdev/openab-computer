@@ -202,7 +202,11 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
   runtime with a lower operator ceiling rejects the request rather than silently shortening it.
 - **Redial policy** (openab-pty §9.2): stop on `4001` expired · `4002` replaced · `4004` session
   ended · `4010` revoked · handshake `401`; redial with backoff (1 s → 30 s) on `1000` / `4006` /
-  errors until the grant deadline. Nothing on the attached socket is trusted as identity — the
+  `4011` (liveness) / errors until the grant deadline. A connection that stayed up for 60 s resets
+  the backoff. The Mac keeps a receive outstanding during tool calls, so it answers the runtime's
+  pings, and pings the runtime itself every 15 s. On these attaches `exec` refuses a
+  `timeout_secs` over 100 s, because the runtime fails any call still running after 120 s; use
+  `exec_start` + `exec_poll` for long work. Nothing on the attached socket is trusted as identity — the
   grant is the identity; `Tailscale-User-Login` there would be pod-supplied.
 - `--no-attach` disables the plane (`/attach` → 404).
 
