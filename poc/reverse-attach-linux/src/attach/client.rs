@@ -148,7 +148,7 @@ pub(crate) struct DialGrant {
     pub(crate) tuning: DialTuning,
 }
 
-/// Timers of one attached socket. Production uses `Default`; tests shrink them.
+/// Timers of one attached socket. Production uses `Default`; tests change them.
 #[derive(Clone, Copy)]
 pub(crate) struct DialTuning {
     /// How often we ping the runtime while attached, below its 20 s ping
@@ -157,6 +157,8 @@ pub(crate) struct DialTuning {
     pub(crate) keepalive: Option<Duration>,
     /// A connection that stayed up this long resets the redial backoff.
     pub(crate) stable_after: Duration,
+    /// How long one read may block while no call runs (`IDLE_READ_POLL`).
+    pub(crate) idle_read_poll: Duration,
 }
 
 impl Default for DialTuning {
@@ -164,6 +166,7 @@ impl Default for DialTuning {
         DialTuning {
             keepalive: Some(Duration::from_secs(15)),
             stable_after: Duration::from_secs(60),
+            idle_read_poll: IDLE_READ_POLL,
         }
     }
 }
@@ -333,7 +336,9 @@ fn serve_socket(
         } else {
             next_ping
                 .map(|at| at.saturating_duration_since(Instant::now()))
-                .map_or(IDLE_READ_POLL, |left| left.min(IDLE_READ_POLL))
+                .map_or(tuning.idle_read_poll, |left| {
+                    left.min(tuning.idle_read_poll)
+                })
                 .max(Duration::from_millis(1))
         };
         if read_timeout != Some(wait) {
@@ -395,6 +400,21 @@ impl Drop for InFlight {
 /// order; each reply carries its id. If the thread cannot start, a request gets
 /// a JSON-RPC error at once instead of waiting out the runtime's timeout.
 fn spawn_call(text: String, calls: &Calls) {
+    spawn_call_on(text, calls, |call| {
+        thread::Builder::new()
+            .name("attach-call".into())
+            .spawn(call)
+            .map(drop)
+    });
+}
+
+/// A call thread's body, handed to the thread starter.
+type CallJob = Box<dyn FnOnce() + Send + 'static>;
+
+/// `spawn_call` with the thread start passed in, so a test can make it fail.
+/// `start` drops the job when it cannot run it, as `thread::Builder::spawn`
+/// does.
+fn spawn_call_on(text: String, calls: &Calls, start: impl FnOnce(CallJob) -> std::io::Result<()>) {
     let text: Arc<str> = text.into();
     let frame = text.clone();
     let profile = calls.profile.to_string();
@@ -402,17 +422,15 @@ fn spawn_call(text: String, calls: &Calls) {
     let cancel = calls.cancel.clone();
     calls.in_flight.fetch_add(1, Ordering::AcqRel);
     let running = InFlight(calls.in_flight.clone());
-    let spawned = thread::Builder::new()
-        .name("attach-call".into())
-        .spawn(move || {
-            let _running = running;
-            if let Some(reply) = answer_attached(&text, &profile, &cancel) {
-                // A cancelled call's socket is gone; its reply goes nowhere.
-                if !cancel.load(Ordering::Acquire) {
-                    let _ = replies.send(reply);
-                }
+    let spawned = start(Box::new(move || {
+        let _running = running;
+        if let Some(reply) = answer_attached(&text, &profile, &cancel) {
+            // A cancelled call's socket is gone; its reply goes nowhere.
+            if !cancel.load(Ordering::Acquire) {
+                let _ = replies.send(reply);
             }
-        });
+        }
+    }));
     if let Err(e) = spawned {
         eprintln!("attach: could not start a call thread: {e}");
         if let Some(reply) = spawn_failed_reply(&frame) {
