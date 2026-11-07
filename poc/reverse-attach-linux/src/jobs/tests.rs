@@ -325,6 +325,55 @@ fn old_job_logs_are_collected_and_others_kept() {
 }
 
 #[test]
+fn finished_job_logs_expire_seven_days_after_it_finished() {
+    let dir = scratch("gc-finished");
+    let reg = Registry::open(dir.clone()).unwrap();
+    let id = start(&reg, json!({"command": "echo secret"}));
+    terminal(&reg, &id);
+    let (out, err) = (dir.join(format!("{id}.out")), dir.join(format!("{id}.err")));
+    // Still among the ten kept, and not yet a week old: nothing goes.
+    assert_eq!(reg.gc_logs(SystemTime::now()), 0);
+    assert!(out.exists() && err.exists());
+    // Eight days on, with no newer job pushing it out of the ten, it goes anyway.
+    assert_eq!(
+        reg.gc_logs(SystemTime::now() + LOG_MAX_AGE + Duration::from_secs(86_400)),
+        2
+    );
+    assert!(!out.exists() && !err.exists());
+    let p = call(&reg, "exec_poll", json!({"job_id": id}));
+    assert_eq!(
+        p["isError"], true,
+        "the job is forgotten with its logs: {p}"
+    );
+}
+
+#[test]
+fn cancel_after_the_group_drained_does_not_mark_the_job_killed() {
+    let reg = reg("drained-cancel");
+    let id = start(&reg, json!({"command": "sleep 0.1 & echo $!; exit 2"}));
+    let p = poll_until(&reg, &id, |s| {
+        s["stdout"].as_str().is_some_and(|o| o.ends_with('\n'))
+    });
+    let leftover: u32 = sc(&p)["stdout"].as_str().unwrap().trim().parse().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive(leftover) {
+        assert!(Instant::now() < deadline, "leftover {leftover} still alive");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Usually inside the drain window: the shell and the leftover are gone but
+    // the supervisor has not reaped the shell yet.
+    let c = call(&reg, "exec_cancel", json!({"job_id": id}));
+    if sc(&c)["dropped"] == true {
+        assert_eq!(sc(&c)["state"], "exited", "{c}");
+        return;
+    }
+    assert_eq!(sc(&c)["signalled"], false, "{c}");
+    let t = terminal(&reg, &id);
+    assert_eq!(sc(&t)["state"], "exited", "{t}");
+    assert_eq!(sc(&t)["exit_code"], 2, "{t}");
+}
+
+#[test]
 fn log_directory_and_files_are_owner_only() {
     let dir = scratch("perms");
     std::fs::create_dir_all(&dir).unwrap();

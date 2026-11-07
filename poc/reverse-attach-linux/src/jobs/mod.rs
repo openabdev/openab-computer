@@ -15,11 +15,13 @@
 //! A job stays `running` until its shell has exited *and* nothing it started is
 //! left in its process group, so `exec_cancel` and `timeout_secs` still reach a
 //! `server &` the shell left behind. Only a process that leaves the group
-//! (`setsid`, a daemonizing double fork) escapes the job.
+//! (`setsid` or `setpgid`, as daemonizing code usually does) escapes the job; a
+//! plain double fork stays in the group.
 //!
 //! Lifetime: every running job, plus the `KEEP_FINISHED` most recently finished
-//! ones, stay in the registry. Log files older than `LOG_MAX_AGE` are deleted when
-//! the registry opens and on each `exec_start`.
+//! ones, stay in the registry, a finished one for at most `LOG_MAX_AGE`. Logs of
+//! finished jobs and unowned logs older than `LOG_MAX_AGE` are deleted when the
+//! registry opens and on each `exec_start`; a running job's logs are kept.
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -145,14 +147,19 @@ impl Job {
         self.lock().finished_at
     }
 
-    /// Signal the whole process group. False once the leader has been reaped:
-    /// its pid may then be recycled, so nothing is sent.
+    /// Signal the whole process group. False once the leader has been reaped
+    /// (its pid may then be recycled) or once the job has drained (shell exited,
+    /// group empty, not yet reaped by the supervisor): nothing is sent, and the
+    /// job ends `exited`, not `killed`.
     pub(crate) fn signal(&self, sig: i32) -> bool {
         let mut g = self.lock();
         if g.child.is_none() {
             return false;
         }
         if shell_exited(self.pid) {
+            if !group_has_others(self.pid) {
+                return false;
+            }
             g.late_signal = Some(sig);
         }
         unsafe { kill(-(self.pid as i32), sig) };
@@ -167,7 +174,10 @@ impl Job {
             return Step::Terminal;
         }
         let exited = shell_exited(self.pid);
-        if !g.timed_out && self.deadline.is_some_and(|d| Instant::now() >= d) {
+        // The zombie leader holds the group id, so nothing outside the job can
+        // join the group: once it is empty it stays empty.
+        let drained = exited && !group_has_others(self.pid);
+        if !drained && !g.timed_out && self.deadline.is_some_and(|d| Instant::now() >= d) {
             if exited {
                 g.late_signal = Some(SIGKILL);
             }
@@ -177,9 +187,7 @@ impl Job {
         if !exited {
             return Step::Running;
         }
-        // The zombie leader holds the group id, so nothing outside the job can
-        // join the group: once it is empty it stays empty.
-        if group_has_others(self.pid) {
+        if !drained {
             return Step::Draining;
         }
         let status = g.child.as_mut().and_then(|c| c.try_wait().ok().flatten());
@@ -228,7 +236,9 @@ fn shell_exited(pid: u32) -> bool {
     info[0] != 0
 }
 
-/// Some process other than the leader is in process group `pgid`.
+/// Some live process other than the leader is in process group `pgid`. Zombies
+/// do not count: in a container whose PID 1 does not reap orphans, an exited
+/// leftover would otherwise keep the job running forever.
 fn group_has_others(pgid: u32) -> bool {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         // Cannot tell; keep the job running rather than end it early.
@@ -246,11 +256,13 @@ fn group_has_others(pgid: u32) -> bool {
             continue; // gone meanwhile
         };
         // After "(comm) ": state ppid pgrp ...
-        let pgrp = stat
-            .rsplit_once(')')
-            .and_then(|(_, rest)| rest.split_whitespace().nth(2))
-            .and_then(|f| f.parse::<u32>().ok());
-        if pgrp == Some(pgid) {
+        let Some((_, rest)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        let mut fields = rest.split_whitespace();
+        let state = fields.next();
+        let pgrp = fields.nth(1).and_then(|f| f.parse::<u32>().ok());
+        if pgrp == Some(pgid) && state != Some("Z") {
             return true;
         }
     }
@@ -342,7 +354,7 @@ impl Registry {
 
     pub(crate) fn start(&self, spec: StartSpec<'_>) -> Result<Arc<Job>, String> {
         let mut map = self.jobs();
-        self.gc_logs_except(SystemTime::now(), &map);
+        self.gc_logs_in(SystemTime::now(), &mut map);
         let running = map
             .values()
             .filter(|j| j.state() == JobState::Running)
@@ -471,23 +483,40 @@ impl Registry {
         }
     }
 
-    /// Delete job log files last modified more than `LOG_MAX_AGE` before `now`.
-    /// Returns how many were deleted.
+    /// Delete job logs more than `LOG_MAX_AGE` old at `now`, and forget the
+    /// finished jobs they belonged to. Returns how many files were deleted.
     pub(crate) fn gc_logs(&self, now: SystemTime) -> usize {
-        let map = self.jobs();
-        self.gc_logs_except(now, &map)
+        let mut map = self.jobs();
+        self.gc_logs_in(now, &mut map)
     }
 
-    /// Files of jobs still in the registry are kept whatever their age (a quiet
-    /// job with no timeout can run for longer than a week).
-    fn gc_logs_except(&self, now: SystemTime, known: &HashMap<String, Arc<Job>>) -> usize {
+    /// Age is counted from `finished_at` for a finished job in the registry and
+    /// from the file's modification time for a log no job here owns. A running
+    /// job's files are kept whatever their age (a quiet job with no timeout can
+    /// run for longer than a week).
+    fn gc_logs_in(&self, now: SystemTime, known: &mut HashMap<String, Arc<Job>>) -> usize {
         let Some(cutoff) = now.checked_sub(LOG_MAX_AGE) else {
             return 0;
         };
-        let Ok(entries) = std::fs::read_dir(&self.dir) else {
-            return 0;
-        };
+        // Expired finished jobs leave the registry, so their files below are
+        // judged like any other unowned log.
         let mut removed = 0;
+        known.retain(|_, j| {
+            let st = j.status();
+            let expired =
+                st.state != JobState::Running && st.finished_at.is_some_and(|t| t < cutoff);
+            if expired {
+                for p in [&j.out_path, &j.err_path] {
+                    if std::fs::remove_file(p).is_ok() {
+                        removed += 1;
+                    }
+                }
+            }
+            !expired
+        });
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return removed;
+        };
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };

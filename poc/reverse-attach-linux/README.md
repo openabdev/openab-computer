@@ -46,7 +46,8 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
   group is empty; the shell is reaped only then, so cancel and timeout can signal the group
   (children the shell left behind included) without ever hitting a recycled pid (#72's rule). Jobs belong to the daemon, so they **survive a reverse-attach
   socket drop** (in-flight calls do not); a daemon restart forgets them. Running jobs plus the
-  10 most recently finished are kept; logs older than 7 days are deleted.
+  10 most recently finished are kept, a finished one for at most 7 days; logs of jobs finished
+  more than 7 days ago are deleted (a running job's are kept).
 
 Deps: `serde_json` + `tungstenite` (rustls). Sync std threads, no tokio. ~28 KB.
 

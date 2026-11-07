@@ -316,14 +316,15 @@ point the agent here. `desktop` keeps `bash` but not the job tools, as on macOS,
 - **Cancel**: `exec_cancel` sends `KILL` (default) or `TERM` to the job's process group (each job
   runs in its own session), children the shell left behind included. The shell is reaped only
   once the group is empty, and the group is signalled only before that, so a recycled pid is never
-  hit (#72). Only a process that leaves the group (`setsid`, a daemonizing double fork) escapes the
-  job and its cancel.
+  hit (#72). Only a process that leaves the group (`setsid` or `setpgid`, as daemonizing code
+  usually does) escapes the job and its cancel; a plain double fork stays in the group.
 - **Lifetime**: jobs belong to the daemon, not to a connection. When a reverse-attach socket drops,
   its in-flight calls are cancelled, but a job it started keeps running and the next attach can
   poll it. A daemon restart forgets the jobs: their processes keep running (the unit uses
   `KillMode=process`) and their logs stay on disk. Running jobs plus the 10 most recently finished
-  are listed; older finished jobs are forgotten, and log files older than 7 days are deleted at
-  start-up and on each `exec_start`.
+  are listed; older finished jobs are forgotten. Seven days after a job finishes, its logs are
+  deleted and the job is forgotten even if it is among those 10; a running job's logs are kept
+  whatever their age. GC runs at start-up and on each `exec_start`.
 
 ```sh
 ls -lt ~/.local/state/oab-instance-mcp/jobs/            # <job_id>.out / .err
