@@ -55,7 +55,7 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
 
 Deps: `serde_json` + `tungstenite` (rustls). Sync std threads, no tokio. ~28 KB.
 
-## Verified on rpi1 (Debian 13, aarch64, Rust 1.98) — 2026-09-27
+## Verified on a Raspberry Pi (Debian 13, aarch64, Rust 1.98) — 2026-09-27
 
 ```sh
 cargo build --release          # 31 s cold, 2.2 MB binary
@@ -71,7 +71,7 @@ bash smoke.sh                  # RESULT: 55 passed, 0 failed
 | mint path | `ttl_secs=60` seen by the runtime's mint endpoint; `expires_in_secs=60` in the grant |
 | control contract | `POST /attach` 202 with every Connect-required grant field; `GET /attach` wrapper; `GET /attach/{id}`; `DELETE` 204 + removal; principal and dynamic expiry |
 | redial / stop | close `1000` → redialed after 1 s; close `4010` → `state=ended, ended=revoked`; wrong secret → `ended=handshake_rejected_401` with exactly one attempt; unreachable runtime → `ended=deadline` |
-| MCP | `serverInfo.name=instance-mcp-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=rpi1`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
+| MCP | `serverInfo.name=instance-mcp-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=<node>`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
 | desktop | list = `sys_info,screenshot`; forced `exec` → error, not executed (2026-09-28 run, before `bash` joined both profiles) |
 | close handshake | client echoes the Close frame (was a bare EOF before the `socket.flush()` fix in `dial_loop`) |
 
@@ -92,15 +92,15 @@ served, `GET /mcp` and other methods are 405. `screenshot` returns MCP `image` c
 Debian's grim has no libjpeg, so for JPEG the daemon asks grim for raw PPM and encodes it
 in-process (`jpeg-encoder`, pure Rust); grim still does the crop (`-g`) and the scaling (`-s`).
 `structuredContent` carries `points` (layout size), `region`, `image` {width,height,bytes} and
-`scale`, as on macOS. On rpi2's labwc seat (#32 item 5): 1920×1080 at scale 1, q0.6 → 49 KiB
+`scale`, as on macOS. On a Raspberry Pi's labwc seat (#32 item 5): 1920×1080 at scale 1, q0.6 → 49 KiB
 JPEG in 0.07 s vs a 2.0 MB PNG in 1.0 s.
 `sys_info` carries the `host` / `displays` / `permissions.screen_recording` / `agent.version`
 fields the Screens pane reads.
 
-On rpi1: systemd user unit `oab-instance-mcp.service` (BIND 127.0.0.1:8795, seat env
+On a Raspberry Pi: systemd user unit `oab-instance-mcp.service` (BIND 127.0.0.1:8795, seat env
 `WAYLAND_DISPLAY=wayland-0`, linger on) + `tailscale serve --bg --https=8444 http://127.0.0.1:8795`
 → `https://<node>.<tailnet>.ts.net:8444/mcp`. Verified from the laptop: wrong token 401,
-initialize 200 with `Mcp-Session-Id`, `sys_info` host=rpi1 displays=1, Connect-shaped screenshot
+initialize 200 with `Mcp-Session-Id`, `sys_info` host=<node> displays=1, Connect-shaped screenshot
 call (`display 0, scale 1, quality 0.6, format jpeg`) → a 1920×1080 image (PNG at the time, 1.35 s; it is JPEG since #32 item 5, see above). Pi OS's labwc
 desktop keeps a 1920×1080 headless output alive with no monitor attached, so no sway needed.
 
@@ -137,12 +137,12 @@ re-serves its tools under its own `tools/list`, filtered by the connection's pro
   camera/mic/notification/geolocation prompts: YouTube triggered the xdg-desktop-portal
   "Allow app to use the Camera?" dialog, which nothing but `mouse` could dismiss.
 
-Verified on rpi1: owner `/mcp` → 37 tools (5 local + 32 browser); after a pw-mcp restart the
+Verified on a Raspberry Pi: owner `/mcp` → 37 tools (5 local + 32 browser); after a pw-mcp restart the
 next call re-initializes and still lists 37. Lent to `kiro-1040` session `mac` (then named `sandbox`, now `desktop`):
 22 tools = 5 local + 16 browser + `instance_status`; forced `browser_run_code_unsafe` →
 `-32601 unknown tool`; `browser_navigate` example.com 13 s (Pi 4 class, first page), then
 `browser_snapshot` → `heading "Example Domain"`, `link "Learn more"`. The Chromium window is
-on rpi1's desktop, so `screenshot` / Connect's Screens pane show what the agent is doing.
+on the Pi's desktop, so `screenshot` / Connect's Screens pane show what the agent is doing.
 
 ## Grant persistence (#12)
 

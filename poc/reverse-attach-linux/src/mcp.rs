@@ -442,7 +442,7 @@ pub(crate) fn answer_request(
         },
         "resources/list" | "resources/templates/list" => Ok(json!({ "resources": [] })),
         "prompts/list" => Ok(json!({ "prompts": [] })),
-        other => Err((METHOD_NOT_FOUND, format!("method not found: {other}"))),
+        other => Err((METHOD_NOT_FOUND, format!("Method not found: {other}"))),
     };
 
     Some(match result {
@@ -633,17 +633,22 @@ pub(crate) fn handle_tool_call(
     profile: &str,
     cancel: Option<&AtomicBool>,
 ) -> Result<Value, (i64, String)> {
-    let name = params
-        .get("name")
-        .and_then(|n| n.as_str())
-        .ok_or_else(|| (INVALID_PARAMS, "missing tool name".to_string()))?;
+    let name = params.get("name").and_then(|n| n.as_str()).ok_or_else(|| {
+        (
+            INVALID_PARAMS,
+            "Invalid params: missing tool name".to_string(),
+        )
+    })?;
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     // A tool hidden from this profile's list is unknown here too, indistinguishable
     // from one that never existed (same rule as the Swift `scoped(to:)`). Unknown
     // is invalid params, as in Swift: the method exists, the name does not.
     if LOCAL_TOOL_NAMES.contains(&name) && !local_tool_allowed(name, profile) {
-        return Err((INVALID_PARAMS, format!("unknown tool: {name}")));
+        return Err((
+            INVALID_PARAMS,
+            format!("Invalid params: unknown tool: {name}"),
+        ));
     }
     match name {
         "sys_info" => Ok(tool_result(tool_sys_info())),
@@ -660,7 +665,10 @@ pub(crate) fn handle_tool_call(
                     Some(json!({"name": other, "arguments": arguments})),
                 )
                 .map_err(|e| (-32000, e)),
-            None => Err((INVALID_PARAMS, format!("unknown tool: {other}"))),
+            None => Err((
+                INVALID_PARAMS,
+                format!("Invalid params: unknown tool: {other}"),
+            )),
         },
     }
 }
