@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::http::{http_post, parse_mcp_body, HttpReply};
+use crate::jobs::tools::JOB_TOOL_NAMES;
 use crate::tools::sysinfo::AGENT_VERSION;
 use crate::tools::{tool_bash, tool_key, tool_mouse, tool_result, tool_screenshot, tool_sys_info};
 
@@ -210,7 +211,15 @@ pub(crate) const LOCAL_TOOL_CLASS: &[(&str, ToolClass)] = &[
     ("bash", ToolClass::Shell),
     ("mouse", ToolClass::Shell), // can open a terminal
     ("key", ToolClass::Shell),   // can type into one
+    ("exec_start", ToolClass::Shell),
+    ("exec_poll", ToolClass::Shell), // reads what a shell job printed
+    ("exec_list", ToolClass::Shell), // lists shell command lines
+    ("exec_cancel", ToolClass::Shell),
 ];
+
+/// Shell tools only `owner` gets, like the Swift `exec*` (#32 item 4). `desktop`
+/// keeps `bash` (see `tool_list`), so this narrows the list, not the privilege.
+pub(crate) const OWNER_ONLY_TOOLS: &[&str] = JOB_TOOL_NAMES;
 
 pub(crate) fn local_tool_class(name: &str) -> Option<ToolClass> {
     LOCAL_TOOL_CLASS
@@ -228,7 +237,8 @@ pub(crate) fn profile_is_shell_equivalent(profile: &str) -> bool {
 /// Whether a local tool is visible/callable under `profile`.
 pub(crate) fn local_tool_allowed(name: &str, profile: &str) -> bool {
     match normalize_profile(profile) {
-        Some("owner") | Some("desktop") => true,
+        Some("owner") => true,
+        Some("desktop") => !OWNER_ONLY_TOOLS.contains(&name),
         // Both: on the allowlist *and* classified as observation. A tool added to the
         // allowlist by mistake is still refused unless it was also classified as
         // changing nothing.
@@ -331,7 +341,7 @@ fn answer_with(text: &str, profile: &str, cancel: Option<&AtomicBool>) -> Option
             "instructions": instructions(profile)
         })),
         "tools/list" => Ok(json!({ "tools": tool_list(profile) })),
-        "tools/call" => match cancel.and_then(|_| refuse_long_bash(&params)) {
+        "tools/call" => match cancel.and_then(|_| refuse_long_bash(&params, profile)) {
             Some(refusal) => Ok(refusal),
             None => handle_tool_call(&params, profile, cancel),
         },
@@ -355,7 +365,12 @@ fn answer_with(text: &str, profile: &str, cancel: Option<&AtomicBool>) -> Option
 const LONG_CALL_NOTICE: &str = "Keep each tool call on this node under about 60 seconds: a \
     longer call can time out or disconnect you.";
 
-/// For profiles with `bash`: how to do long work without one long call.
+/// For profiles with the job tools: how to do long work without one long call.
+const LONG_WORK_JOBS_NOTICE: &str = "For long work use `exec_start`, then check it with \
+    `exec_poll` (pass the returned offsets to get only new output); a job keeps running if this \
+    attach drops. Never `sleep` inside `bash`.";
+
+/// For profiles with `bash` but no job tools (`desktop`).
 const LONG_WORK_NOTICE: &str = "For long work, start it in the background with `bash` (for \
     example `nohup cmd > /tmp/job.log 2>&1 &`) and check on it with short `bash` calls; never \
     `sleep` inside `bash`.";
@@ -366,7 +381,9 @@ const UI_ORDER_NOTICE: &str = "Tool calls run concurrently: issue `mouse` and `k
     a time and wait for each result before sending the next.";
 
 pub(crate) fn instructions(profile: &str) -> String {
-    if local_tool_allowed("bash", profile) {
+    if local_tool_allowed("exec_start", profile) {
+        format!("{UI_ORDER_NOTICE}\n\n{LONG_CALL_NOTICE} {LONG_WORK_JOBS_NOTICE}")
+    } else if local_tool_allowed("bash", profile) {
         format!("{UI_ORDER_NOTICE}\n\n{LONG_CALL_NOTICE} {LONG_WORK_NOTICE}")
     } else {
         LONG_CALL_NOTICE.to_string()
@@ -376,7 +393,7 @@ pub(crate) fn instructions(profile: &str) -> String {
 /// A `bash` call over `MAX_ATTACHED_BASH_TIMEOUT_SECS` on an attach, refused as
 /// a tool error the model sees rather than clamped, so a long command is not
 /// killed early by surprise.
-fn refuse_long_bash(params: &Value) -> Option<Value> {
+fn refuse_long_bash(params: &Value, profile: &str) -> Option<Value> {
     if params.get("name").and_then(|n| n.as_str()) != Some("bash") {
         return None;
     }
@@ -387,11 +404,16 @@ fn refuse_long_bash(params: &Value) -> Option<Value> {
     if asked <= MAX_ATTACHED_BASH_TIMEOUT_SECS as f64 {
         return None;
     }
+    let how = if local_tool_allowed("exec_start", profile) {
+        "For long work start it in the background with exec_start, then check it with exec_poll; \
+         never sleep inside bash."
+    } else {
+        "For long work start the command in the background (nohup cmd > /tmp/job.log 2>&1 &) and \
+         check on it with short bash calls; never sleep inside bash."
+    };
     let message = format!(
         "bash timeout_secs {asked} is over this attach's limit of {MAX_ATTACHED_BASH_TIMEOUT_SECS} s: \
-         the runtime fails any call still running after 120 s. For long work start the command in \
-         the background (nohup cmd > /tmp/job.log 2>&1 &) and check on it with short bash calls; \
-         never sleep inside bash."
+         the runtime fails any call still running after 120 s. {how}"
     );
     Some(json!({
         "content": [ { "type": "text", "text": message } ],
@@ -399,7 +421,17 @@ fn refuse_long_bash(params: &Value) -> Option<Value> {
     }))
 }
 
-pub(crate) const LOCAL_TOOL_NAMES: &[&str] = &["sys_info", "screenshot", "bash", "mouse", "key"];
+pub(crate) const LOCAL_TOOL_NAMES: &[&str] = &[
+    "sys_info",
+    "screenshot",
+    "bash",
+    "mouse",
+    "key",
+    "exec_start",
+    "exec_poll",
+    "exec_list",
+    "exec_cancel",
+];
 
 pub(crate) fn tool_list(profile: &str) -> Value {
     let sys_info = json!({
@@ -489,12 +521,14 @@ pub(crate) fn tool_list(profile: &str) -> Value {
         }
     });
 
-    // owner and desktop get every local tool, `bash` included: `desktop` is not a boundary
-    // on any platform (instance-mcp#45) — mouse and keyboard reach a terminal, so hiding
-    // `bash` would remove a convenience, not a privilege. `observe` is the real boundary:
-    // sys_info + screenshot only.
+    // owner and desktop get every local tool but the job tools, `bash` included: `desktop`
+    // is not a boundary on any platform (instance-mcp#45) — mouse and keyboard reach a
+    // terminal, so hiding `bash` would remove a convenience, not a privilege. The job tools
+    // are owner-only like the Swift `exec*` (`OWNER_ONLY_TOOLS`). `observe` is the real
+    // boundary: sys_info + screenshot only.
     let mut tools: Vec<Value> = vec![sys_info, screenshot, bash, mouse, key]
         .into_iter()
+        .chain(crate::jobs::tools::tool_specs())
         .filter(|t| local_tool_allowed(t["name"].as_str().unwrap_or_default(), profile))
         .collect();
     for (_, t) in upstream_tools_for(profile, LOCAL_TOOL_NAMES) {
@@ -525,6 +559,8 @@ pub(crate) fn handle_tool_call(
         "bash" => tool_bash(&arguments, cancel),
         "mouse" => tool_mouse(&arguments),
         "key" => tool_key(&arguments),
+        // Not tied to `cancel`: a job outlives the attach that started it.
+        n if JOB_TOOL_NAMES.contains(&n) => crate::jobs::tools::call(n, &arguments),
         other => match upstream_owning(other, profile) {
             Some(up) => up
                 .rpc(
@@ -637,7 +673,16 @@ mod profile_tests {
         for tool in ["sys_info", "screenshot"] {
             assert!(local_tool_allowed(tool, "observe"), "{tool}");
         }
-        for tool in ["bash", "mouse", "key", "something_new"] {
+        for tool in [
+            "bash",
+            "mouse",
+            "key",
+            "exec_start",
+            "exec_poll",
+            "exec_list",
+            "exec_cancel",
+            "something_new",
+        ] {
             assert!(!local_tool_allowed(tool, "observe"), "{tool}");
         }
         for tool in [
@@ -652,5 +697,53 @@ mod profile_tests {
             !local_tool_allowed("bash", "nonsense"),
             "unknown profiles get nothing"
         );
+    }
+
+    /// The job tools are shell-class and owner-only (#32 item 4): listed and
+    /// callable under `owner`, absent and unknown under every other profile.
+    #[test]
+    fn job_tools_are_shell_class_and_owner_only() {
+        for tool in JOB_TOOL_NAMES {
+            assert_eq!(local_tool_class(tool), Some(ToolClass::Shell), "{tool}");
+            assert!(local_tool_allowed(tool, "owner"), "{tool}");
+            for profile in ["desktop", "observe", "sandbox", "nonsense"] {
+                assert!(!local_tool_allowed(tool, profile), "{tool} under {profile}");
+                assert!(
+                    !served(profile).iter().any(|n| n == *tool),
+                    "{tool} listed under {profile}"
+                );
+                let call =
+                    json!({"name": tool, "arguments": {"job_id": "job-x", "command": "true"}});
+                assert_eq!(
+                    handle_tool_call(&call, profile, None).unwrap_err().0,
+                    -32601,
+                    "{tool} callable under {profile}"
+                );
+            }
+            assert!(!DESKTOP_BROWSER_TOOLS.contains(tool));
+            assert!(!OBSERVE_TOOLS.contains(tool));
+        }
+        assert!(served("owner").iter().any(|n| n == "exec_start"));
+    }
+
+    /// With the job tools, a refused long `bash` and `initialize` point at
+    /// `exec_start` + `exec_poll`; `desktop` (bash, no jobs) keeps the `nohup` advice.
+    #[test]
+    fn long_work_advice_follows_the_job_tools() {
+        let call = json!({"name": "bash", "arguments": {"command": "true", "timeout_secs": 101}});
+        let text = |profile: &str| {
+            refuse_long_bash(&call, profile).unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(text("owner").contains("exec_start") && text("owner").contains("exec_poll"));
+        assert!(!text("owner").contains("nohup"));
+        assert!(text("desktop").contains("nohup") && !text("desktop").contains("exec_start"));
+        assert!(instructions("owner").contains("exec_start"));
+        assert!(instructions("owner").contains("exec_poll"));
+        assert!(!instructions("desktop").contains("exec_start"));
+        assert!(instructions("desktop").contains("nohup"));
+        assert!(!instructions("observe").contains("exec_"));
     }
 }

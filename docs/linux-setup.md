@@ -12,7 +12,9 @@ Screens pane, browser tools):
 Read the trust warning at the top of the [README](../README.md) first. On Linux it is stricter,
 not looser: `bash` is offered in **both** the `owner` and `desktop` profiles, so anyone who can
 attach this node with either gets a shell as the user running the daemon. Only `observe` (the
-default for an attach that names no profile) leaves it out.
+default for an attach that names no profile) leaves it out. The background-job tools
+(`exec_start` and friends) are `owner` only, like `exec*` on macOS; see
+[Background jobs](#background-jobs).
 
 ## What you end up with
 
@@ -27,7 +29,7 @@ flowchart LR
     subgraph node["Linux hands node — one box"]
         ts["tailscale serve :8444<br/>TLS + injects Tailscale-User-Login"]
         subgraph seat["Desktop seat · systemd --user · WAYLAND_DISPLAY=wayland-0"]
-            mcp["<b>oab-instance-mcp.service</b><br/>reverse-attach binary · 127.0.0.1:8795<br/>auth = allow-login <b>AND</b> bearer<br/>/mcp · /attach · /healthz<br/>sys_info · screenshot · bash · mouse · key"]
+            mcp["<b>oab-instance-mcp.service</b><br/>reverse-attach binary · 127.0.0.1:8795<br/>auth = allow-login <b>AND</b> bearer<br/>/mcp · /attach · /healthz<br/>sys_info · screenshot · bash · mouse · key<br/>exec_start · exec_poll · exec_list · exec_cancel"]
             pw["<b>oab-pw-mcp.service</b><br/>@playwright/mcp · 127.0.0.1:8794<br/>headed distro Chromium, persistent profile"]
         end
         subgraph hands["What the tools touch"]
@@ -117,7 +119,7 @@ steps 3–5 describe what it did.
 git clone https://github.com/openabdev/instance-mcp ~/repo/instance-mcp
 cd ~/repo/instance-mcp/poc/reverse-attach-linux
 cargo build --release              # ~30 s cold on a Pi 4/5; 2.2 MB binary
-bash smoke.sh                      # 38 checks against the bundled mock runtime; all must pass
+bash smoke.sh                      # 55 checks against the bundled mock runtime; all must pass
 ```
 
 `smoke.sh` runs the binary with `MCP_INSECURE_LOCAL=1` against `mock_runtime.py` on loopback.
@@ -297,6 +299,42 @@ Grants survive a daemon restart (#12): live grants are kept in
 under its original id — `journalctl --user -u oab-instance-mcp` shows `grants: resuming <id>`. The
 file holds the attach secrets, at the same trust level as the bearer token file. A grant whose
 runtime has forgotten it (pod replaced) ends with `handshake_rejected_401`; lend again.
+
+### Background jobs
+
+Under `owner`, `exec_start` / `exec_poll` / `exec_list` / `exec_cancel` run long work without one
+long call: same arguments and `structuredContent` as on macOS (README Tools table), with
+`bash -c` instead of `zsh -f -c`. On a reverse attach `bash` refuses `timeout_secs` over 100 s
+(the runtime fails a call after 120 s), and both that refusal and the `initialize` instructions
+point the agent here. `desktop` keeps `bash` but not the job tools, as on macOS, and is told to use
+`nohup … &` instead.
+
+- **Logs**: `$XDG_STATE_HOME/oab-instance-mcp/jobs/<job_id>.out` / `.err` (default
+  `~/.local/state/…`; directory mode 700, files 600). The job writes to them directly, so they
+  are never truncated and can be followed with `tail -f`. `exec_poll` reads them by byte offset
+  (`stdout_since` / `stderr_since` → `stdout_next` / `stderr_next`), at most 1 MiB per stream per
+  call.
+- **States**: `running` while the shell or anything it left in the job's process group runs
+  (`server &`), then `exited` (the shell ended on its own, `exit_code` = its status) or `killed`
+  (cancelled, timed out or ended by a signal, `exit_code` = 128 + signal). `timeout_secs` 0, the default, means
+  none.
+- **Cancel**: `exec_cancel` sends `KILL` (default) or `TERM` to the job's process group (each job
+  runs in its own session), children the shell left behind included. The shell is reaped only
+  once the group is empty, and the group is signalled only before that, so a recycled pid is never
+  hit (#72). Only a process that leaves the group (`setsid` or `setpgid`, as daemonizing code
+  usually does) escapes the job and its cancel; a plain double fork stays in the group.
+- **Lifetime**: jobs belong to the daemon, not to a connection. When a reverse-attach socket drops,
+  its in-flight calls are cancelled, but a job it started keeps running and the next attach can
+  poll it. A daemon restart forgets the jobs: their processes keep running (the unit uses
+  `KillMode=process`) and their logs stay on disk. Running jobs plus the 10 most recently finished
+  are listed; older finished jobs are forgotten. Seven days after a job finishes, its logs are
+  deleted and the job is forgotten even if it is among those 10; a running job's logs are kept
+  whatever their age. GC runs at start-up and on each `exec_start`.
+
+```sh
+ls -lt ~/.local/state/oab-instance-mcp/jobs/            # <job_id>.out / .err
+tail -f ~/.local/state/oab-instance-mcp/jobs/<job_id>.out
+```
 
 ## Headless server notes (Ubuntu 24.04 on `black`)
 

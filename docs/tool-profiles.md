@@ -32,7 +32,7 @@ a profile is a managed policy, a grant attaches it to a principal (the session),
 
 | Profile | Shell-equivalent? | Tools on macOS | Tools on Linux | Purpose |
 |---|---|---|---|---|
-| `owner` | yes (directly) | 42 | 37 | The owner's own CLI: every tool |
+| `owner` | yes (directly) | 42 | 41 | The owner's own CLI: every tool |
 | `desktop` | **yes** (through the GUI) | 20 | 20 | Let an agent drive the desktop: look, click, type, AppleScript, browser interaction |
 | `observe` | **no** | 2 | 2 | Look, never act: system info and screenshots |
 
@@ -42,7 +42,7 @@ dropped when it is loaded.
 
 The counts include the browser tools (`browser_*`), which exist only when the computer is
 configured with the Playwright upstream (`--upstream browser=…`; macmini, rpi1 and black are).
-Without it, `owner` has 10 tools on macOS and 5 on Linux, `desktop` has 5 on both, and `observe`
+Without it, `owner` has 10 tools on macOS and 9 on Linux, `desktop` has 5 on both, and `observe`
 is unchanged.
 
 Lists taken on 2026-09-30 from the live `tools/list` of macmini (instance-mcp, macOS) and black
@@ -61,16 +61,17 @@ Lists taken on 2026-09-30 from the live `tools/list` of macmini (instance-mcp, m
 | Screen / input | `screenshot`, `mouse`, `key`, `osascript` |
 | Browser (32) | `browser_navigate`, `browser_navigate_back`, `browser_snapshot`, `browser_find`, `browser_click`, `browser_type`, `browser_fill_form`, `browser_press_key`, `browser_hover`, `browser_select_option`, `browser_wait_for`, `browser_tabs`, `browser_take_screenshot`, `browser_console_messages`, `browser_resize`, `browser_evaluate`, `browser_run_code_unsafe`, `browser_file_upload`, `browser_drop`, `browser_pdf_save`, `browser_network_requests`, `browser_network_request`, `browser_handle_dialog`, `browser_emulate_media`, `browser_close`, `browser_drag`, `browser_mouse_move_xy`, `browser_mouse_click_xy`, `browser_mouse_drag_xy`, `browser_mouse_down`, `browser_mouse_up`, `browser_mouse_wheel` |
 
-#### Linux — 37 tools
+#### Linux — 41 tools
 
 | Category | Tools |
 |---|---|
 | System | `sys_info` |
-| Shell | `bash` |
+| Shell | `bash`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` |
 | Screen / input | `screenshot`, `mouse`, `key` |
 | Browser (32) | the same 32 as on macOS |
 
-Linux has no `osascript`. `bash` is the counterpart of macOS `exec*`.
+Linux has no `osascript`. `bash` is the counterpart of macOS `exec`; the four job tools have
+the same names and contract on both (#32 item 4).
 
 ### `desktop`
 
@@ -123,14 +124,15 @@ allowlist (model API, git remotes, package registries).
 
 | | macOS | Linux |
 |---|---|---|
-| Local tools removed | `exec`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` (5) | none (`bash` stays; see below) |
+| Local tools removed | `exec`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` (5) | `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` (4; `bash` stays, see below) |
 | Browser tools removed (17) | `browser_evaluate`, `browser_run_code_unsafe` (arbitrary JavaScript); `browser_file_upload`, `browser_drop`, `browser_pdf_save` (filesystem); `browser_network_requests`, `browser_network_request` (network inspection); `browser_handle_dialog`, `browser_emulate_media`, `browser_close`; `browser_drag`, `browser_mouse_move_xy`, `browser_mouse_click_xy`, `browser_mouse_drag_xy`, `browser_mouse_down`, `browser_mouse_up`, `browser_mouse_wheel` (raw coordinate mouse) | the same 17 |
-| Total | 42 → 20 | 37 → 20 |
+| Total | 42 → 20 | 41 → 20 |
 | **Less privilege?** | **No**: `osascript`, `key` and `mouse` still reach the desktop user's shell | **No**: `bash` is a shell |
 
 Linux `desktop` keeps `bash` because `mouse` and `key` can open a terminal anyway. Hiding it would
 only inconvenience the agent without removing any privilege, and the profile does not pretend
-otherwise.
+otherwise. The job tools are `shell`-class and `owner`-only, as on macOS (`OWNER_ONLY_TOOLS` in
+`mcp.rs`); under `desktop` the agent runs long work with `bash` and `nohup … &`.
 
 ### `desktop` → `observe`
 

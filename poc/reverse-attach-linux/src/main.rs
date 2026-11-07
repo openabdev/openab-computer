@@ -10,6 +10,7 @@
 mod attach;
 mod auth;
 mod http;
+mod jobs;
 mod mcp;
 mod platform;
 mod tools;
