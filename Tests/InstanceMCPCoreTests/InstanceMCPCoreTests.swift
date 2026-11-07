@@ -144,6 +144,16 @@ final class HTTPParserTests: XCTestCase {
         XCTAssertEqual(r.headers["tailscale-user-login"], "A@B.com")
     }
 
+    func testHeaderValueWhitespaceStripped() {
+        // RFC 9110 §5.5: OWS around a field value is not part of it. AuthPolicy's
+        // byte-exact compare (conformance/auth_vectors.json) runs on this value.
+        let d = Data("GET / HTTP/1.1\r\nAuthorization:  Bearer s3cret \t\r\n\r\n".utf8)
+        guard case .request(let r, _) = HTTPParser.parse(d) else { return XCTFail() }
+        XCTAssertEqual(r.headers["authorization"], "Bearer s3cret")
+        XCTAssertEqual(AuthPolicy(bearerToken: "s3cret").decide(headers: r.headers, remoteIsLoopback: true),
+                       .allow(principal: "token"))
+    }
+
     func testChunkedRejected() {
         let d = Data("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n".utf8)
         guard case .invalid = HTTPParser.parse(d) else { return XCTFail() }

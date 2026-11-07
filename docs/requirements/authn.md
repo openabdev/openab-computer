@@ -105,3 +105,19 @@ profile.
   - a request with correct login header but **no** `Authorization` → `401`;
   - the same request **with** `Authorization: Bearer <token>` → `200`;
   - Connect can watch the screen only after its profile's token is set.
+
+## Matching rules (as implemented)
+
+Pinned by `conformance/auth_vectors.json`; both backends pass it (Refs #79).
+
+- The login compare is case-insensitive: the allowlist and the `Tailscale-User-Login` header are
+  both lowercased (`AuthPolicy.swift:18-20,46`; `auth.rs:33,52,104`). The allowed principal is
+  the lowercased login.
+- The `Bearer` scheme is case-insensitive. The token after the scheme and its space is compared byte for byte, in
+  constant time, so a case change is a bad token.
+- The HTTP parser strips whitespace around every header value before the policy runs (RFC 9110
+  §5.5; `HTTP.swift`, `http.rs`), so a trailing space on the wire is accepted. `decide()` itself
+  does not trim: a value that still carries a trailing space, or an extra space after `Bearer`,
+  is a bad token. The vectors are `decide()`-level, so their header strings are post-parse values.
+- Deny reasons are logged, never sent: the caller gets `401` and nothing that says why. The
+  reason strings are listed in `docs/parity-checklist.md` §4.
