@@ -6,7 +6,7 @@ while the Swift daemon (macOS) and the Rust port (`poc/reverse-attach-linux`, Li
 
 | File | Covers | Swift test | Rust test |
 |---|---|---|---|
-| `auth_vectors.json` | `AuthPolicy`: validate + allow/deny decision and exact reason strings | `ConformanceVectorTests.testAuthPolicyVectors` | `auth::conformance` |
+| `auth_vectors.json` | `AuthPolicy`: validate + allow/deny decision and exact reason strings (reason strings: see parity checklist §4) | `ConformanceVectorTests.testAuthPolicyVectors` | `auth::conformance` |
 | `reverse_attach_vectors.json` | §9.2 close-code / handshake-status disposition, `attachURL` | `ConformanceVectorTests.testReverseAttachVectors` | `attach::conformance` |
 | `mcp_wire_vectors.json` | JSON-RPC layer: `initialize`, `ping`, `tools/list`, `tools/call` errors, notifications, parse and envelope errors. Rust drift is pinned in `known_drift` | `WireConformanceTests.testEveryWireCaseMatchesTheSwiftOracle` | `wire_conformance::wire_fixtures_match_the_swift_oracle_and_pin_known_drift` |
 

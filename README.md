@@ -138,10 +138,13 @@ Planned: a streaming capture sink for OpenAB Connect (see requirement doc).
 Evaluated per request in `AuthPolicy`; the server refuses to start with nothing configured.
 Configured checks are **AND**-combined: a request must pass every check that is set.
 
-- `--allow-login <email>` — matches `Tailscale-User-Login`, which `tailscale serve` **injects and
+- `--allow-login <email>` — matches `Tailscale-User-Login` case-insensitively (both sides are
+  lowercased; the principal logged is the lowercased login), which `tailscale serve` **injects and
   overwrites** (verified: a client-supplied header is replaced). This is the primary control.
 - `--token <s>` / `--token-file <p>` — additionally require `Authorization: Bearer`, constant-time
-  compared. **`deploy.sh` now generates one at `~/.config/oab-instance-mcp/token` (mode 600) and passes
+  compared. The token after the `Bearer` scheme (case-insensitive) must match byte for byte;
+  whitespace around the whole header value is stripped by the HTTP parser, nothing inside it is.
+  **`deploy.sh` now generates one at `~/.config/oab-instance-mcp/token` (mode 600) and passes
   `--token-file`**, so the deployed agent requires *both* an allow-listed Tailscale login *and* the
   bearer token. This is defence-in-depth: a leaked tailnet auth key that enrols a node as
   your Tailscale login passes the login check but still gets `401` without the token (verified
@@ -171,9 +174,9 @@ An agent in an `openab-pty` session cannot reach this Mac — the pod has no tai
 # "lend my Mac to session laptop for an hour, desktop profile"; the Mac mints the attach
 # secret at the runtime with its admin credential (used once, not stored) and dials in.
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"runtime":"ws://100.111.174.31:8090","session":"laptop","profile":"desktop",
+  -d '{"runtime":"ws://<pod>.<tailnet>.ts.net:8090","session":"laptop","profile":"desktop",
        "ttl_secs":3600,"admin_credential":"<openab-pty admin credential>"}' \
-  https://macmini.<tailnet>.ts.net:8444/attach
+  https://<host>.<tailnet>.ts.net:8444/attach
 # → 202 {"id":"…","state":"idle"|"attached",…}      GET /attach lists · DELETE /attach/{id} revokes
 ```
 
@@ -183,7 +186,9 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
   except `exec*`; `observe` = `sys_info` + `screenshot` only. Any other value is a 400, including
   the removed name `sandbox`. Hidden tools are absent from `tools/list`, and a forced
   `tools/call` is an *unknown tool* error. Widening is a new grant. Full per-profile tool lists
-  and diffs: [`docs/tool-profiles.md`](docs/tool-profiles.md).
+  and diffs: [`docs/tool-profiles.md`](docs/tool-profiles.md). Always send `profile`: a request
+  without it gets `desktop` on macOS and `observe` on a Linux node (the macOS default moves to
+  `observe` under [#59](https://github.com/openabdev/openab-computer/issues/59)).
 - ⚠️ **Neither profile is a security boundary** ([#45](https://github.com/openabdev/openab-computer/issues/45)).
   GUI control is a shell: `osascript` runs `do shell script`, `key` types into a terminal, `mouse`
   opens one. Removing `exec*` removes a convenient entry point, **not a privilege** — lending a
@@ -200,9 +205,12 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
   old one; that is renewal. `ttl_secs` is forwarded all the way to the runtime (not just held by
   the Mac): Connect/Remote offer exactly 1/2/4/12/24 hours; OpenAB Computer accepts up to 24h, and a
   runtime with a lower operator ceiling rejects the request rather than silently shortening it.
-- **Redial policy** (openab-pty §9.2): stop on `4001` expired · `4002` replaced · `4004` session
-  ended · `4010` revoked · handshake `401`; redial with backoff (1 s → 30 s) on `1000` / `4006` /
-  `4011` (liveness) / errors until the grant deadline. A connection that stayed up for 60 s resets
+- **Redial policy** (openab-pty CLIENT-CONTRACT §9.2): stop on `4001` expired · `4002` replaced ·
+  `4004` session ended · `4010` revoked, and on any handshake status other than
+  `101`/`2xx`/`429`/`5xx` (`401` refused; `400`/`403`/`404` mean a malformed upgrade, a wrong path
+  or a proxy refusing it); redial with backoff (1 s → 30 s) on every other close code (`1000` /
+  `1006` / `4006` / `4011` liveness, and unlisted codes such as `4003`, which is `/pty`'s renew
+  code), on handshake `101`/`2xx`/`429`/`5xx`, and on errors, until the grant deadline. A connection that stayed up for 60 s resets
   the backoff. The Mac keeps a receive outstanding during tool calls, so it answers the runtime's
   pings, and pings the runtime itself every 15 s. On these attaches `exec` refuses a
   `timeout_secs` over 100 s, because the runtime fails any call still running after 120 s; use

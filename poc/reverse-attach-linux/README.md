@@ -10,7 +10,8 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
 - `POST /attach` `{runtime, session, profile, ttl_secs, secret | admin_credential}` → HTTP 202
   with the same grant shape Connect decodes: `{id, runtime, session, profile, principal, state,
   expires_in_secs}`. Exactly one credential; the admin path mints at the runtime with
-  `{"ttl_secs": N}` (ws:// only in this PoC) and forwards TTL end to end.
+  `{"ttl_secs": N}` (ws:// only in this PoC) and forwards TTL end to end. Without `profile` the
+  grant gets `observe` (until 0.8.2 it got `owner`, #59).
 - `GET /attach` → `{grants:[…]}`; `GET /attach/{id}` → one grant; `DELETE /attach/{id}` →
   204 and promptly cancels the dial/socket. New grant for the same `(runtime, session)` replaces
   the old one. States match Swift: `idle / dialing / attached / redialing / ended` plus optional
@@ -139,7 +140,9 @@ revoked grant not resumed.
 - `mouse` maps onto the layout the virtual pointer read at connect, so after an output hotplug
   it lags until the pointer reconnects. `screenshot` reads the outputs itself (no input device)
   unless a pointer is live, in which case it reports that pointer's layout so the two agree.
-- `wss://` runtimes: dial works (rustls), mint over https does not.
-- Real-runtime test against the p1 openab-pty pod is pending: rpi1 is **not on the tailnet**
-  (no `tailscale` binary; `100.111.174.31:8090` times out) and the pod's `PTY_ADMIN_HASH` is a
-  hash, so the admin credential must come from the operator.
+- `wss://` runtimes: the dial uses rustls with the ring provider (#66). Tests cover only the failure
+  side (a TLS failure redials and ends at the deadline, never falls back to plaintext); a successful
+  TLS handshake and certificate verification are not tested yet. Mint over https does not work.
+- Real-runtime test against a live openab-pty pod is pending: the test host was not on the
+  tailnet, and the pod's `PTY_ADMIN_HASH` is a hash, so the admin credential must come from the
+  operator.
