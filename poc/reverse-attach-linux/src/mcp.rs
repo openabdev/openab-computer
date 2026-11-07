@@ -410,14 +410,28 @@ pub(crate) fn tool_list(profile: &str) -> Value {
     let screenshot = json!({
         "name": "screenshot",
         "description": "Capture the node's Wayland display (via grim) and return it as an image. \
-                        Default PNG at scale 0.5 (960x540 for a 1080p output). jpeg only if the \
-                        node's grim was built with JPEG support (Debian's is not).",
+                        `scale` (default 0.5 = 960x540 for a 1080p output, max 2.0) is output pixels \
+                        per display pixel. `region` {x,y,width,height} in display pixels crops before \
+                        scaling; use it to zoom into a dialog cheaply. `format` jpeg (default, \
+                        `quality` 0-1, default 0.7; above 1 up to 100 is a percentage) or png. Coordinates are the \
+                        space `mouse` uses; a crop's pixel (px,py) maps to (region.x + px/scale, \
+                        region.y + py/scale).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "scale":   { "type": "number", "description": "output scale factor, default 0.5" },
-                "format":  { "type": "string", "enum": ["jpeg", "png"], "description": "default png" },
-                "quality": { "type": "integer", "description": "jpeg quality 1-100, default 80" }
+                "display": { "type": "integer", "description": "Display index; only 0 (the whole layout).", "default": 0 },
+                "scale":   { "type": "number", "description": "Output pixels per display pixel. Default 0.5.", "minimum": 0.05, "maximum": 2.0 },
+                "region":  {
+                    "type": "object",
+                    "description": "Crop rectangle in display pixels.",
+                    "properties": {
+                        "x": { "type": "number" }, "y": { "type": "number" },
+                        "width": { "type": "number" }, "height": { "type": "number" }
+                    },
+                    "required": ["x", "y", "width", "height"]
+                },
+                "format":  { "type": "string", "enum": ["jpeg", "png"], "default": "jpeg" },
+                "quality": { "type": "number", "description": "JPEG quality 0-1, floored at 0.1 (1 = 100%); values above 1 up to 100 are a percentage. Default 0.7.", "minimum": 0, "maximum": 100 }
             },
             "additionalProperties": false
         }
