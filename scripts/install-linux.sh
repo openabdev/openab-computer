@@ -70,6 +70,7 @@ fi
 # Which Wayland socket is the seat on? A desktop gives wayland-0; headless sway picks the first
 # free name, usually wayland-1.
 RT="/run/user/$(id -u)"
+# shellcheck disable=SC2010  # the names matched are wayland-N; scripts/test-install-linux.sh stubs this ls
 WL="$(ls "$RT" 2>/dev/null | grep -E '^wayland-[0-9]+$' | sort -V | tail -1)"
 [ -n "$WL" ] || { echo "no Wayland socket in $RT: start a wlroots desktop or pass --headless-seat" >&2; exit 78; }
 echo "seat: $WL"
@@ -154,6 +155,8 @@ else
   echo "browser tools skipped (--no-browser, or node/npm missing)"
 fi
 
+# Unquoted heredoc so $VARS expand: escape any literal backtick or $ in it (#90).
+# scripts/test-install-linux.sh diffs the written units against their expected text.
 cat >"$UNITS/oab-instance-mcp.service" <<UNIT
 [Unit]
 Description=oab-instance-mcp (Linux hands node: /mcp + /attach)
@@ -169,7 +172,7 @@ Environment=WAYLAND_DISPLAY=$WL
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Restart=always
 RestartSec=2
-# Apps opened via `bash` belong to the desktop, not to this daemon: a restart must not kill them.
+# Apps opened via \`bash\` belong to the desktop, not to this daemon: a restart must not kill them.
 KillMode=process
 
 [Install]
