@@ -68,7 +68,7 @@ The same binary now also serves MCP Streamable-HTTP (JSON mode) on `POST /mcp`, 
 constant-time) AND `MCP_ALLOW_LOGIN` (matched against the `Tailscale-User-Login` header that
 `tailscale serve` injects); `MCP_INSECURE_LOCAL=1` for loopback debugging; refuses to start with
 nothing set. `/healthz` is open. `screenshot` returns MCP `image` content with the Swift tool's arguments: `format` jpeg
-(default) or png, `quality` 0–1 (default 0.7; 1–100 also accepted), `scale` (default 0.5, max 2),
+(default) or png, `quality` 0–1 (default 0.7, floored at 0.1; 10–100 also accepted), `scale` (default 0.5, max 2),
 `region` {x,y,width,height} in display pixels (clipped to the output layout) and `display` 0.
 Debian's grim has no libjpeg, so for JPEG the daemon asks grim for raw PPM and encodes it
 in-process (`jpeg-encoder`, pure Rust); grim still does the crop (`-g`) and the scaling (`-s`).
@@ -136,8 +136,9 @@ revoked grant not resumed.
 ## Not yet (vs the Swift implementation)
 
 - `/mcp` has no real session table (an `Mcp-Session-Id` is issued but not checked) and no SSE stream.
-- `screenshot` `points` and the `region` clip come from the layout the virtual pointer read at
-  connect, so after an output hotplug they (like `mouse`) lag until the pointer reconnects.
+- `mouse` maps onto the layout the virtual pointer read at connect, so after an output hotplug
+  it lags until the pointer reconnects. `screenshot` reads the outputs itself (no input device)
+  unless a pointer is live, in which case it reports that pointer's layout so the two agree.
 - `wss://` runtimes: dial works (rustls), mint over https does not.
 - Real-runtime test against the p1 openab-pty pod is pending: rpi1 is **not on the tailnet**
   (no `tailscale` binary; `100.111.174.31:8090` times out) and the pod's `PTY_ADMIN_HASH` is a

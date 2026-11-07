@@ -323,9 +323,9 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
 - **Raspberry Pi OS's stock desktop is already a headless seat.** With no monitor plugged in,
   labwc keeps a 1920×1080 output alive (`wlr-randr`: `NOOP-1 "Headless output 2"`), the panel and
   file manager run on it, and `grim` captures it. Nothing from the "sway headless" spike (#23)
-  is needed. Plug a monitor in and the geometry changes; `sys_info` and the captured frame follow, while
-  `mouse` and `screenshot`'s `points`/`region` clip keep the old layout until the virtual pointer
-  reconnects.
+  is needed. Plug a monitor in and the geometry changes; `sys_info` and the captured frame follow.
+  `mouse` keeps the old layout until the virtual pointer reconnects, and while that pointer is live
+  `screenshot` reports the same layout for `points` and the `region` clip, so the two agree.
 - labwc also runs an Xwayland on `:0`, which is why the browser unit sets `DISPLAY=:0`
   alongside `WAYLAND_DISPLAY`.
 - The Debian Chromium is arm64-native and fast enough for `browser_snapshot`-style work; a first

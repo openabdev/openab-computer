@@ -210,10 +210,111 @@ pub(crate) fn absolute(x: f64, y: f64, layout: (i32, i32, u32, u32)) -> (u32, u3
     (cx, cy, w, h)
 }
 
+/// Fold one wl_output event (geometry, mode, scale) into `o`.
+fn apply_output_event(o: &mut OutputInfo, opcode: u16, body: &[u8]) {
+    let mut a = Args::new(body);
+    match opcode {
+        0 => {
+            // geometry: x, y, physical w, physical h, subpixel, make, model, transform
+            if let (Some(x), Some(y)) = (a.i32(), a.i32()) {
+                o.x = x;
+                o.y = y;
+            }
+        }
+        1 => {
+            // mode: flags, width, height, refresh — keep the current one (flag 1)
+            if let (Some(flags), Some(w), Some(h)) = (a.u32(), a.i32(), a.i32()) {
+                if flags & 1 != 0 {
+                    o.width = w;
+                    o.height = h;
+                }
+            }
+        }
+        3 => {
+            if let Some(s) = a.i32() {
+                o.scale = s.max(1);
+            }
+        }
+        _ => {}
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 
 const DISPLAY: u32 = 1;
 const REGISTRY: u32 = 2;
+
+/// The output layout from a short-lived Wayland connection that only binds `wl_output`:
+/// no input device is created, so a look-only caller leaves the seat unchanged.
+fn query_layout() -> Result<(i32, i32, u32, u32), DesktopError> {
+    let path = wayland_socket();
+    let mut sock =
+        UnixStream::connect(&path).map_err(|e| format!("wayland {}: {e}", path.display()))?;
+    sock.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    let mut send = |bytes: Vec<u8>| {
+        sock.write_all(&bytes)
+            .map_err(|e| format!("wayland write: {e}"))
+    };
+    // New ids must be handed out in order: sync1 = 3, then the outputs, then sync2.
+    let sync1 = 3u32;
+    send(Msg::new().u32(REGISTRY).encode(DISPLAY, 1))?;
+    send(Msg::new().u32(sync1).encode(DISPLAY, 0))?;
+    let mut names: Vec<(u32, u32)> = Vec::new();
+    loop {
+        let ev = read_event(&mut sock).map_err(|e| format!("wayland read: {e}"))?;
+        match (ev.object, ev.opcode) {
+            (DISPLAY, 0) => return Err(display_error(&ev.body)),
+            (REGISTRY, 0) => {
+                let mut a = Args::new(&ev.body);
+                if let (Some(name), Some(iface), Some(ver)) = (a.u32(), a.str(), a.u32()) {
+                    if iface == "wl_output" {
+                        names.push((name, ver));
+                    }
+                }
+            }
+            (id, 0) if id == sync1 => break,
+            _ => {}
+        }
+    }
+    let mut outputs: Vec<(u32, OutputInfo)> = Vec::new();
+    let mut msgs = Vec::new();
+    for (i, (name, ver)) in names.iter().enumerate() {
+        let id = 4 + i as u32;
+        msgs.extend(
+            Msg::new()
+                .u32(*name)
+                .str("wl_output")
+                .u32((*ver).min(2))
+                .u32(id)
+                .encode(REGISTRY, 0),
+        );
+        outputs.push((
+            id,
+            OutputInfo {
+                scale: 1,
+                ..Default::default()
+            },
+        ));
+    }
+    let sync2 = 4 + names.len() as u32;
+    msgs.extend(Msg::new().u32(sync2).encode(DISPLAY, 0));
+    sock.write_all(&msgs)
+        .map_err(|e| format!("wayland write: {e}"))?;
+    loop {
+        let ev = read_event(&mut sock).map_err(|e| format!("wayland read: {e}"))?;
+        if ev.object == DISPLAY && ev.opcode == 0 {
+            return Err(display_error(&ev.body));
+        }
+        if ev.object == sync2 && ev.opcode == 0 {
+            break;
+        }
+        if let Some((_, o)) = outputs.iter_mut().find(|(oid, _)| *oid == ev.object) {
+            apply_output_event(o, ev.opcode, &ev.body);
+        }
+    }
+    let infos: Vec<OutputInfo> = outputs.iter().map(|(_, o)| *o).collect();
+    layout_box(&infos).ok_or_else(|| "compositor reports no outputs".to_string())
+}
 
 struct Pointer {
     sock: UnixStream,
@@ -314,31 +415,7 @@ impl Pointer {
                 break;
             }
             if let Some((_, o)) = outputs.iter_mut().find(|(oid, _)| *oid == ev.object) {
-                let mut a = Args::new(&ev.body);
-                match ev.opcode {
-                    0 => {
-                        // geometry: x, y, physical w, physical h, subpixel, make, model, transform
-                        if let (Some(x), Some(y)) = (a.i32(), a.i32()) {
-                            o.x = x;
-                            o.y = y;
-                        }
-                    }
-                    1 => {
-                        // mode: flags, width, height, refresh — keep the current one (flag 1)
-                        if let (Some(flags), Some(w), Some(h)) = (a.u32(), a.i32(), a.i32()) {
-                            if flags & 1 != 0 {
-                                o.width = w;
-                                o.height = h;
-                            }
-                        }
-                    }
-                    3 => {
-                        if let Some(s) = a.i32() {
-                            o.scale = s.max(1);
-                        }
-                    }
-                    _ => {}
-                }
+                apply_output_event(o, ev.opcode, &ev.body);
             }
         }
         let infos: Vec<OutputInfo> = outputs.iter().map(|(_, o)| *o).collect();
@@ -428,17 +505,17 @@ fn with_pointer(f: impl Fn(&mut Pointer) -> Result<(), DesktopError>) -> Result<
     unreachable!()
 }
 
-/// The layout the virtual pointer maps onto, (origin x, origin y, width, height). `screenshot`
-/// reports it as `points` and clips `region` to it, so both tools share one coordinate space.
-/// Read when the pointer connects; like the pointer mapping, it does not follow hotplug.
+/// The output layout, (origin x, origin y, width, height). `screenshot` reports it as `points`
+/// and clips `region` to it. While a virtual pointer is live (and not busy) this is the layout
+/// it maps onto, so both tools share one coordinate space; otherwise the outputs are queried
+/// directly, so a screenshot never creates an input device.
 pub fn layout() -> Result<(i32, i32, u32, u32), DesktopError> {
-    let got = std::cell::Cell::new(None);
-    with_pointer(|p| {
-        got.set(Some(p.layout));
-        Ok(())
-    })?;
-    got.get()
-        .ok_or_else(|| "virtual pointer has no layout".to_string())
+    if let Ok(slot) = pointer_slot().try_lock() {
+        if let Some(p) = slot.as_ref().filter(|p| !p.dead.load(Ordering::SeqCst)) {
+            return Ok(p.layout);
+        }
+    }
+    query_layout()
 }
 
 fn button_code(b: Button) -> u32 {
@@ -639,6 +716,13 @@ mod tests {
     fn fixed_point_is_24_8() {
         assert_eq!(fixed(1.0), 256);
         assert_eq!(fixed(-2.5) as i32, -640);
+    }
+
+    #[test]
+    #[ignore = "needs a live Wayland seat"]
+    fn query_layout_reads_a_live_seat() {
+        let (_, _, w, h) = query_layout().unwrap();
+        assert!(w > 0 && h > 0);
     }
 
     #[test]
