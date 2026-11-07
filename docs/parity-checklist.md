@@ -71,6 +71,7 @@ real socket so the Rust header parsing is covered too.
 | non-JSON or missing Content-Type on POST | 415 | 415 | pass |
 | Content-Type match | prefix `application/json`, case-insensitive | same | pass |
 | malformed JSON body on POST | 400 with JSON-RPC -32700 | same | pass |
+| body bytes that are not valid UTF-8 | 400 with JSON-RPC -32700 (`JSONDecoder` gets raw `Data`) | same, parsed from bytes (Rust socket test) | pass |
 | batch body, or jsonrpc other than "2.0" | 400 with JSON-RPC -32600 | same | pass |
 | JSON-RPC error on a valid envelope | HTTP 200 | HTTP 200 | pass |
 | `GET /mcp` | 405 | 405 | pass |

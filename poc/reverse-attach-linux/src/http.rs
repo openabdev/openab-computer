@@ -16,7 +16,7 @@ use crate::attach::{
     grant_json, new_grant_id, now_epoch_secs, valid_session, GrantInfo, Registry, GRANT_COUNTER,
 };
 use crate::auth::AuthPolicy;
-use crate::mcp::{answer_request, error_response, parse_request, Upstream, UPSTREAMS};
+use crate::mcp::{answer_request, error_response, parse_request_bytes, Upstream, UPSTREAMS};
 
 // Tiny blocking HTTP/1.1 client for http:// only (used for the upstream MCP)
 // ---------------------------------------------------------------------------
@@ -198,7 +198,10 @@ pub fn serve() {
 pub(crate) struct HttpRequest {
     pub(crate) method: String,
     pub(crate) path: String,
+    /// Lossy text, for the routes that take a JSON control body (`/attach`).
     pub(crate) body: String,
+    /// The body as received; `/mcp` parses these bytes, as Swift does.
+    pub(crate) body_bytes: Vec<u8>,
     pub(crate) authorization: Option<String>,
     pub(crate) ts_login: Option<String>,
     /// Present when the request was relayed by `tailscale serve` (or any proxy);
@@ -300,6 +303,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         method,
         path,
         body,
+        body_bytes,
         authorization,
         ts_login,
         forwarded_for,
@@ -443,7 +447,7 @@ pub(crate) fn mcp_route(
     method: &str,
     content_type: Option<&str>,
     session_id: Option<&str>,
-    body: &str,
+    body: &[u8],
     sessions: &McpSessions,
 ) -> McpReply {
     match method {
@@ -463,7 +467,7 @@ pub(crate) fn mcp_route(
     if !json_body {
         return McpReply::text(415, "Content-Type must be application/json\n");
     }
-    let req = match parse_request(body) {
+    let req = match parse_request_bytes(body) {
         Ok(req) => req,
         Err((code, message)) => {
             return McpReply {
@@ -501,7 +505,7 @@ fn handle_mcp(stream: &mut TcpStream, req: &HttpRequest, sessions: &McpSessions)
         &req.method,
         req.content_type.as_deref(),
         req.mcp_session_id.as_deref(),
-        &req.body,
+        &req.body_bytes,
         sessions,
     );
     let reason = match reply.status {
@@ -887,12 +891,22 @@ mod mcp_socket_tests {
     use super::*;
 
     fn exchange(addr: std::net::SocketAddr, head: &str, body: &str) -> (u16, String, String) {
+        exchange_bytes(addr, head, body.as_bytes())
+    }
+
+    fn exchange_bytes(
+        addr: std::net::SocketAddr,
+        head: &str,
+        body: &[u8],
+    ) -> (u16, String, String) {
         let mut s = TcpStream::connect(addr).unwrap();
-        let req = format!(
-            "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        let mut req = format!(
+            "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
-        );
-        s.write_all(req.as_bytes()).unwrap();
+        )
+        .into_bytes();
+        req.extend_from_slice(body);
+        s.write_all(&req).unwrap();
         let mut raw = String::new();
         s.read_to_string(&mut raw).unwrap();
         let (h, b) = raw.split_once("\r\n\r\n").unwrap();
@@ -950,6 +964,18 @@ mod mcp_socket_tests {
 
         let (status, _, body) = exchange(addr, post, "{nope");
         assert_eq!(status, 400);
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["code"], -32700, "{v}");
+        assert_eq!(v["id"], Value::Null, "{v}");
+
+        // An invalid UTF-8 byte inside a JSON string is malformed JSON (Swift's
+        // JSONDecoder rejects it); a lossy decode would turn it into U+FFFD
+        // and serve the request.
+        let mut bad = br#"{"jsonrpc":"2.0","id":3,"method":"ping","params":{"x":""#.to_vec();
+        bad.push(0xff);
+        bad.extend_from_slice(br#""}}"#);
+        let (status, _, body) = exchange_bytes(addr, &with_sid, &bad);
+        assert_eq!(status, 400, "{body}");
         let v: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["error"]["code"], -32700, "{v}");
         assert_eq!(v["id"], Value::Null, "{v}");

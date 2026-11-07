@@ -350,8 +350,14 @@ pub(crate) struct Request {
 ///   (Swift's decoder fails before its version check);
 /// - `jsonrpc` other than `"2.0"` → -32600.
 pub(crate) fn parse_request(text: &str) -> Result<Request, (i64, String)> {
+    parse_request_bytes(text.as_bytes())
+}
+
+/// `parse_request` over raw bytes, as Swift hands `JSONDecoder` the HTTP body
+/// `Data`: a body that is not valid UTF-8 is a -32700, never decoded lossily.
+pub(crate) fn parse_request_bytes(bytes: &[u8]) -> Result<Request, (i64, String)> {
     let v: Value =
-        serde_json::from_str(text).map_err(|e| (PARSE_ERROR, format!("Parse error: {e}")))?;
+        serde_json::from_slice(bytes).map_err(|e| (PARSE_ERROR, format!("Parse error: {e}")))?;
     if let Value::Array(items) = &v {
         return Err(if items.is_empty() {
             (PARSE_ERROR, "Parse error: empty array".to_string())

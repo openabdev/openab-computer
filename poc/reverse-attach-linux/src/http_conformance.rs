@@ -54,7 +54,7 @@ fn http_fixtures_match_the_swift_oracle() {
                 step["method"].as_str().unwrap(),
                 step["content_type"].as_str(),
                 session.as_deref(),
-                step["body"].as_str().unwrap_or(""),
+                step["body"].as_str().unwrap_or("").as_bytes(),
                 &sessions,
             );
             if reply.session_id.is_some() {

@@ -71,7 +71,7 @@ bash smoke.sh                  # RESULT: 55 passed, 0 failed
 | mint path | `ttl_secs=60` seen by the runtime's mint endpoint; `expires_in_secs=60` in the grant |
 | control contract | `POST /attach` 202 with every Connect-required grant field; `GET /attach` wrapper; `GET /attach/{id}`; `DELETE` 204 + removal; principal and dynamic expiry |
 | redial / stop | close `1000` → redialed after 1 s; close `4010` → `state=ended, ended=revoked`; wrong secret → `ended=handshake_rejected_401` with exactly one attempt; unreachable runtime → `ended=deadline` |
-| MCP | `serverInfo.name=instance-mcp-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=rpi1`; `exec` ran on the node; unknown tool / method → `-32601`; notification silent; ping → pong |
+| MCP | `serverInfo.name=instance-mcp-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=rpi1`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
 | desktop | list = `sys_info,screenshot`; forced `exec` → error, not executed (2026-09-28 run, before `bash` joined both profiles) |
 | close handshake | client echoes the Close frame (was a bare EOF before the `socket.flush()` fix in `dial_loop`) |
 
@@ -83,7 +83,7 @@ constant-time) AND `MCP_ALLOW_LOGIN` (matched against the `Tailscale-User-Login`
 `tailscale serve` injects); `MCP_INSECURE_LOCAL=1` for loopback debugging; refuses to start with
 nothing set. `/healthz` is open. HTTP behaviour after auth matches Swift `MCPHTTPEndpoint`
 (`conformance/mcp_http_vectors.json`, #78): `Content-Type` must be `application/json` (else 415), a
-body that fails the JSON-RPC envelope is 400 with the JSON-RPC error, `initialize` issues an
+body that fails the JSON-RPC envelope (including one that is not valid UTF-8) is 400 with the JSON-RPC error, `initialize` issues an
 `Mcp-Session-Id` (random UUID v4, in memory, the oldest dropped past 1024), an id we did not issue
 or that `DELETE /mcp` closed is 404 so the client re-initializes, a request without the header is
 served, `GET /mcp` and other methods are 405. `screenshot` returns MCP `image` content with the Swift tool's arguments: `format` jpeg
@@ -99,7 +99,7 @@ fields the Screens pane reads.
 
 On rpi1: systemd user unit `oab-instance-mcp.service` (BIND 127.0.0.1:8795, seat env
 `WAYLAND_DISPLAY=wayland-0`, linger on) + `tailscale serve --bg --https=8444 http://127.0.0.1:8795`
-→ `https://rpi1.tailb836bb.ts.net:8444/mcp`. Verified from the laptop: wrong token 401,
+→ `https://<node>.<tailnet>.ts.net:8444/mcp`. Verified from the laptop: wrong token 401,
 initialize 200 with `Mcp-Session-Id`, `sys_info` host=rpi1 displays=1, Connect-shaped screenshot
 call (`display 0, scale 1, quality 0.6, format jpeg`) → a 1920×1080 image (PNG at the time, 1.35 s; it is JPEG since #32 item 5, see above). Pi OS's labwc
 desktop keeps a 1920×1080 headless output alive with no monitor attached, so no sway needed.
