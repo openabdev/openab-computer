@@ -1,6 +1,6 @@
 //! `Desktop` for wlroots compositors (labwc, sway, wayfire): `grim` (wlr-screencopy) for
-//! frames, a persistent virtual pointer (`seat.rs`, wlr virtual-pointer) for the mouse, and
-//! `wtype` (virtual-keyboard) behind a persistent keyboard anchor for keys. Transient
+//! frames (JPEG encoded in-process, `frame.rs`), a persistent virtual pointer (`seat.rs`,
+//! wlr virtual-pointer) for the mouse, and `wtype` (virtual-keyboard) behind a persistent keyboard anchor for keys. Transient
 //! `wlrctl`/`wtype` devices alone are dropped on a seat with no physical input — see seat.rs.
 //!
 //! Every helper is run with `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR` defaulted to the seat's
@@ -8,8 +8,8 @@
 
 use std::process::Command;
 
-use super::seat;
-use crate::platform::desktop::{Button, Capture, Combo, Desktop, DesktopError};
+use super::{frame, seat};
+use crate::platform::desktop::{Button, Capture, Combo, Desktop, DesktopError, Format, Rect};
 
 pub struct Wlroots;
 
@@ -53,50 +53,78 @@ fn sv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
-fn grim_command(scale: f64, format: &str, quality: i64) -> Command {
+fn grim_command(scale: f64, region: Option<Rect>, filetype: &str) -> Command {
     let mut cmd = seat_command("grim");
-    cmd.arg("-s").arg(format!("{scale}")).arg("-t").arg(format);
-    if format == "jpeg" {
-        cmd.arg("-q").arg(quality.to_string());
+    cmd.arg("-s").arg(format!("{scale}"));
+    if let Some(r) = region {
+        cmd.arg("-g").arg(grim_geometry(r));
     }
+    cmd.arg("-t").arg(filetype);
     cmd.arg("-"); // stdout
     cmd
 }
 
+/// grim's `-g` syntax: `x,y wxh` in layout coordinates.
+fn grim_geometry(r: Rect) -> String {
+    format!("{},{} {}x{}", r.x, r.y, r.width, r.height)
+}
+
 impl Desktop for Wlroots {
     fn display_ok(&self) -> bool {
-        grim_command(0.05, "png", 80)
+        grim_command(0.05, None, "png")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
     }
 
-    fn capture(&self, scale: f64, format: &str, quality: i64) -> Result<Capture, DesktopError> {
-        let mut out = grim_command(scale, format, quality)
+    fn layout(&self) -> Result<Rect, DesktopError> {
+        let (x, y, width, height) = seat::layout()?;
+        Ok(Rect {
+            x,
+            y,
+            width,
+            height,
+        })
+    }
+
+    fn capture(
+        &self,
+        region: Option<Rect>,
+        scale: f64,
+        format: Format,
+    ) -> Result<Capture, DesktopError> {
+        // JPEG: grim writes raw PPM and we encode it, because Debian's grim has no libjpeg.
+        let filetype = match format {
+            Format::Png => "png",
+            Format::Jpeg { .. } => "ppm",
+        };
+        let out = grim_command(scale, region, filetype)
             .output()
             .map_err(|e| format!("grim: {e}"))?;
-        let mut produced: &'static str = if format == "jpeg" { "jpeg" } else { "png" };
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if format == "jpeg" && err.contains("jpeg support disabled") {
-                // Debian's grim is built without libjpeg; callers (Connect asks for
-                // jpeg) decode by content, so hand back PNG instead of failing.
-                produced = "png";
-                out = grim_command(scale, "png", quality)
-                    .output()
-                    .map_err(|e| format!("grim: {e}"))?;
-                if !out.status.success() {
-                    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                    return Err(format!("grim failed ({}): {err}", out.status));
-                }
-            } else {
-                return Err(format!("grim failed ({}): {err}", out.status));
+            return Err(format!("grim failed ({}): {err}", out.status));
+        }
+        match format {
+            Format::Png => {
+                let (width, height) = frame::png_dimensions(&out.stdout)?;
+                Ok(Capture {
+                    bytes: out.stdout,
+                    format: "png",
+                    width,
+                    height,
+                })
+            }
+            Format::Jpeg { quality } => {
+                let img = frame::parse_ppm(&out.stdout)?;
+                Ok(Capture {
+                    bytes: frame::encode_jpeg(&img, quality)?,
+                    format: "jpeg",
+                    width: img.width,
+                    height: img.height,
+                })
             }
         }
-        Ok(Capture {
-            bytes: out.stdout,
-            format: produced,
-        })
     }
 
     /// Absolute motion over the whole output layout (screenshot pixels at scale 1).
@@ -150,5 +178,26 @@ impl Desktop for Wlroots {
         }
         seat::ensure_keyboard(seat_command)?;
         run_seat("wtype", &args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grim_gets_scale_region_and_filetype() {
+        let r = Rect {
+            x: -10,
+            y: 20,
+            width: 300,
+            height: 40,
+        };
+        let cmd = grim_command(0.5, Some(r), "ppm");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args, ["-s", "0.5", "-g", "-10,20 300x40", "-t", "ppm", "-"]);
+        let cmd = grim_command(1.0, None, "png");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(args, ["-s", "1", "-t", "png", "-"]);
     }
 }

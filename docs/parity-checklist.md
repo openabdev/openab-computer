@@ -81,7 +81,7 @@ not filled here.
 | Tool | Swift present | Rust present | Classification | Conformance test |
 |------|---------------|--------------|----------------|------------------|
 | `sys_info` | `SysInfoTool` | yes (`tools/sysinfo.rs`) | see #59 | none beyond tools/list shape |
-| `screenshot` | `ScreenshotTool` | yes (`tools/screen.rs`) | see #59 | none beyond tools/list shape |
+| `screenshot` | `ScreenshotTool` | yes (`tools/screen.rs`; same `format`/`quality`/`scale`/`region`/`display` arguments and defaults for format and quality, JPEG encoded in-process, #32 item 5) | see #59 | Rust unit tests only (argument parsing, region clip, PPM→JPEG); no shared vectors. Linux default `scale` is 0.5 (Swift 1.0) |
 | shell (`exec` in Swift, `bash` in Rust) | `ExecTool` | yes (`tools/bash.rs`) | see #59 | none. Name differs between backends |
 | `mouse` | `MouseTool` | yes (`tools/input.rs`) | see #59 | none |
 | `key` | `KeyTool` | yes (`tools/input.rs`) | see #59 | none |

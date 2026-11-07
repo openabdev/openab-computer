@@ -6,12 +6,33 @@
 
 pub type DesktopError = String;
 
+/// A rectangle in layout coordinates (display pixels at scale 1, the space `mouse` uses).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The encoding a capture is returned in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Format {
+    Png,
+    /// JPEG at `quality` 1–100.
+    Jpeg {
+        quality: u8,
+    },
+}
+
 /// A captured frame, already encoded.
 pub struct Capture {
     pub bytes: Vec<u8>,
-    /// `png` or `jpeg` — the format actually produced, which may differ from the one
-    /// requested when the backend cannot encode it.
+    /// `png` or `jpeg`.
     pub format: &'static str,
+    /// Encoded image size in pixels.
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,9 +54,17 @@ pub trait Desktop: Send + Sync {
     /// `sys_info.displays` / `permissions.screen_recording`.
     fn display_ok(&self) -> bool;
 
-    /// Capture the whole display at `scale` (output px per display px) in `format`
-    /// (`png` | `jpeg`) at JPEG `quality` 1–100.
-    fn capture(&self, scale: f64, format: &str, quality: i64) -> Result<Capture, DesktopError>;
+    /// The whole output layout, in the coordinates `pointer_goto` takes.
+    fn layout(&self) -> Result<Rect, DesktopError>;
+
+    /// Capture `region` (default: the whole layout) at `scale` (output px per display px)
+    /// in `format`.
+    fn capture(
+        &self,
+        region: Option<Rect>,
+        scale: f64,
+        format: Format,
+    ) -> Result<Capture, DesktopError>;
 
     /// Absolute pointer move.
     fn pointer_goto(&self, x: f64, y: f64) -> Result<(), DesktopError>;

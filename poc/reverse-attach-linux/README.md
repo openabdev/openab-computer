@@ -67,8 +67,14 @@ The same binary now also serves MCP Streamable-HTTP (JSON mode) on `POST /mcp`, 
 `AuthPolicy` with the Swift daemon's semantics — `MCP_TOKEN` / `MCP_TOKEN_FILE` (bearer,
 constant-time) AND `MCP_ALLOW_LOGIN` (matched against the `Tailscale-User-Login` header that
 `tailscale serve` injects); `MCP_INSECURE_LOCAL=1` for loopback debugging; refuses to start with
-nothing set. `/healthz` is open. `screenshot` returns MCP `image` content (grim → PNG; a `jpeg`
-request falls back to PNG because Debian's grim lacks libjpeg — Connect decodes by content).
+nothing set. `/healthz` is open. `screenshot` returns MCP `image` content with the Swift tool's arguments: `format` jpeg
+(default) or png, `quality` 0–1 (default 0.7; 1–100 also accepted), `scale` (default 0.5, max 2),
+`region` {x,y,width,height} in display pixels (clipped to the output layout) and `display` 0.
+Debian's grim has no libjpeg, so for JPEG the daemon asks grim for raw PPM and encodes it
+in-process (`jpeg-encoder`, pure Rust); grim still does the crop (`-g`) and the scaling (`-s`).
+`structuredContent` carries `points` (layout size), `region`, `image` {width,height,bytes} and
+`scale`, as on macOS. On rpi2's labwc seat (#32 item 5): 1920×1080 at scale 1, q0.6 → 49 KiB
+JPEG in 0.07 s vs a 2.0 MB PNG in 1.0 s.
 `sys_info` carries the `host` / `displays` / `permissions.screen_recording` / `agent.version`
 fields the Screens pane reads.
 
@@ -130,8 +136,8 @@ revoked grant not resumed.
 ## Not yet (vs the Swift implementation)
 
 - `/mcp` has no real session table (an `Mcp-Session-Id` is issued but not checked) and no SSE stream.
-- Screenshot is PNG only (≈2 MB per 1080p frame); Connect polls at ≤2 FPS, so expect ~4 MB/s. A
-  JPEG encoder in-process (or a grim with libjpeg) is the fix.
+- `screenshot` `points` and the `region` clip come from the layout the virtual pointer read at
+  connect, so after an output hotplug they (like `mouse`) lag until the pointer reconnects.
 - `wss://` runtimes: dial works (rustls), mint over https does not.
 - Real-runtime test against the p1 openab-pty pod is pending: rpi1 is **not on the tailnet**
   (no `tailscale` binary; `100.111.174.31:8090` times out) and the pod's `PTY_ADMIN_HASH` is a

@@ -428,6 +428,19 @@ fn with_pointer(f: impl Fn(&mut Pointer) -> Result<(), DesktopError>) -> Result<
     unreachable!()
 }
 
+/// The layout the virtual pointer maps onto, (origin x, origin y, width, height). `screenshot`
+/// reports it as `points` and clips `region` to it, so both tools share one coordinate space.
+/// Read when the pointer connects; like the pointer mapping, it does not follow hotplug.
+pub fn layout() -> Result<(i32, i32, u32, u32), DesktopError> {
+    let got = std::cell::Cell::new(None);
+    with_pointer(|p| {
+        got.set(Some(p.layout));
+        Ok(())
+    })?;
+    got.get()
+        .ok_or_else(|| "virtual pointer has no layout".to_string())
+}
+
 fn button_code(b: Button) -> u32 {
     match b {
         Button::Left => BTN_LEFT,
