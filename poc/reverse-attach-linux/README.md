@@ -36,8 +36,16 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
   as the daemon user with `cwd` (`~` expands), `timeout_secs` (default 60, max 600; the whole
   process group is killed → exit 137, `timed_out=true`), `max_output_bytes` per stream (≤1 MiB).
   On a reverse attach `bash` refuses `timeout_secs` over 100 s, because the runtime fails any
-  call still running after 120 s; run long work in the background (`nohup cmd > log 2>&1 &`)
-  and poll it with short calls.
+  call still running after 120 s; the refusal and `initialize` point `owner` at
+  `exec_start` + `exec_poll` (`desktop`, which has no job tools, at `nohup cmd > log 2>&1 &`).
+- Background jobs (`src/jobs/`, #32 item 4, `owner` only): `exec_start` / `exec_poll` /
+  `exec_list` / `exec_cancel`, same arguments and `structuredContent` as the Swift tools, with
+  `bash -c` in a new session. stdout/stderr go to `$XDG_STATE_HOME/oab-instance-mcp/jobs/<id>.out`
+  / `.err` (dir 700, files 600, never truncated); `exec_poll` reads by byte offset, at most
+  1 MiB per stream per poll. Cancel and timeout signal the process group only while the job's
+  shell is unreaped (#72's rule). Jobs belong to the daemon, so they **survive a reverse-attach
+  socket drop** (in-flight calls do not); a daemon restart forgets them. Running jobs plus the
+  10 most recently finished are kept; logs older than 7 days are deleted.
 
 Deps: `serde_json` + `tungstenite` (rustls). Sync std threads, no tokio. ~28 KB.
 
@@ -45,7 +53,7 @@ Deps: `serde_json` + `tungstenite` (rustls). Sync std threads, no tokio. ~28 KB.
 
 ```sh
 cargo build --release          # 31 s cold, 2.2 MB binary
-bash smoke.sh                  # RESULT: 36 passed, 0 failed
+bash smoke.sh                  # RESULT: 36 passed, 0 failed (55 since the job checks, #32)
 ```
 
 `smoke.sh` runs the binary against `mock_runtime.py` (stdlib-only mock openab-pty: mint endpoint

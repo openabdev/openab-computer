@@ -21,7 +21,8 @@ export MCP_GRANTS_FILE="$GRANTS_DIR/grants.json"
 PORT=18090 ADMIN=admin-secret CLOSES=1000,4010 SECRETS=pre=preminted-xyz LOG=$LOG \
   python3 mock_runtime.py > /tmp/mock-runtime.out 2>&1 &
 MOCK=$!
-BIND=127.0.0.1:8790 MCP_INSECURE_LOCAL=1 MCP_UPSTREAM=browser=http://127.0.0.1:1/mcp $BIN > "$RA_LOG" 2>&1 &
+# Job logs go under XDG_STATE_HOME: keep them in the scratch dir too.
+XDG_STATE_HOME=$GRANTS_DIR BIND=127.0.0.1:8790 MCP_INSECURE_LOCAL=1 MCP_UPSTREAM=browser=http://127.0.0.1:1/mcp $BIN > "$RA_LOG" 2>&1 &
 RA=$!
 sleep 0.5
 trap 'kill $MOCK $RA 2>/dev/null; rm -rf "$GRANTS_DIR"' EXIT
@@ -64,7 +65,7 @@ check "expires_in_secs=60 forwarded" "[[ '$r' == *'\"expires_in_secs\":60'* ]]"
 check "mint saw ttl_secs=60" "grep -q '\"ev\": \"mint\", \"session\": \"laptop\", \"status\": 200, \"ttl_secs\": 60' $LOG"
 
 # wait: attach#1 → MCP script → close 1000 → redial after 1s → attach#2 → close 4010 → stop
-for i in $(seq 1 20); do grep -q '"code": 4010, "nth": 2' $LOG 2>/dev/null && break; sleep 0.5; done
+for i in $(seq 1 30); do grep -q '"code": 4010, "nth": 2' $LOG 2>/dev/null && break; sleep 0.5; done
 st=$($C 127.0.0.1:8790/attach)
 echo "$st"
 check "GET /attach wraps grants" "echo '$st' | python3 -c 'import sys,json; assert isinstance(json.load(sys.stdin)[\"grants\"], list)'"
@@ -98,10 +99,18 @@ if q=="timeout":
 if q=="unk":    print(byid(5)["error"]["code"], byid(5)["error"]["message"])
 if q=="bogus":  print(find("bogus/method")["error"]["code"])
 if q=="pong":   print([e for e in log if e["ev"]=="pong"][0]["ok"])
+if q=="job":    print(byid(8)["result"]["structuredContent"]["job_id"])
+if q=="poll2":
+    a=byid(9)["result"]["structuredContent"]; b=byid(10)["result"]["structuredContent"]
+    print("tick 1\n" in a["stdout"] and "tick 1\n" not in b["stdout"] and "tick" in b["stdout"]
+          and b["stdout_next"] > a["stdout_next"] and b["state"]=="running")
+if q=="survived": print(byid(11)["result"]["structuredContent"]["state"])
+if q=="killed":
+    sc=byid(13)["result"]["structuredContent"]; print(f'{sc["state"]},{sc.get("exit_code")}')
 EOF
 }
 check "initialize → serverInfo instance-mcp-rpi" "[[ \$(py init) == instance-mcp-rpi ]]"
-check "owner tools/list = sys_info,screenshot,bash" "[[ \$(py tools) == sys_info,screenshot,bash,mouse,key ]]"
+check "owner tools/list = sys_info,screenshot,bash,mouse,key,exec_*" "[[ \$(py tools) == sys_info,screenshot,bash,mouse,key,exec_start,exec_poll,exec_list,exec_cancel ]]"
 check "sys_info hostname = $(hostname)" "[[ \$(py sys) == $(hostname) ]]"
 # Release builds set OAB_RELEASE_VERSION at compile time and EXPECT_AGENT_VERSION here (#74);
 # a plain build must say "-dev", never pass for a release.
@@ -116,6 +125,12 @@ check "bash timeout → 137 + group killed" "[[ \$(py timeout) == 137,True ]]"
 check "unknown tool → -32601" "[[ \$(py unk) == -32601* ]]"
 check "unknown method → -32601" "[[ \$(py bogus) == -32601 ]]"
 check "ping → pong" "[[ \$(py pong) == True ]]"
+JOB=$(py job)
+check "exec_start → job_id" "[[ '$JOB' == job-* ]]"
+check "exec_poll by offset returns only new output" "[[ \$(py poll2) == True ]]"
+check "job log tee'd under XDG_STATE_HOME" "[[ -s '$GRANTS_DIR/oab-instance-mcp/jobs/$JOB.out' ]]"
+check "job survived the attach drop (polled on attach 2)" "[[ \$(py survived) == running ]]"
+check "exec_cancel → killed with exit code" "[[ \$(py killed) == killed,137 ]]"
 
 echo "== pre-minted secret path + desktop profile (session pre) =="
 : > $LOG

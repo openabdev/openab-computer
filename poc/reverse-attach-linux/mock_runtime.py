@@ -149,9 +149,37 @@ def drive_mcp(conn, session, nth):
     rpc(conn, 7, "tools/call", {"name": "bash", "arguments": {"command": "sleep 30 & sleep 30", "timeout_secs": 1}})
     rpc(conn, 5, "tools/call", {"name": "nope", "arguments": {}})
     rpc(conn, 6, "bogus/method")
+    drive_job(conn, nth)
     ws_send(conn, 0x9, b"ping")
     op, data = ws_recv(conn)
     log({"ev": "pong", "ok": op == 0xA and data == b"ping"})
+
+
+job_id = None
+
+
+def drive_job(conn, nth):
+    """Background job across two attaches: started and polled twice by offset on
+    attach 1, then (after that socket closed) polled, cancelled and polled once
+    more on attach 2."""
+    global job_id
+    if nth == 1:
+        r = rpc(conn, 8, "tools/call", {"name": "exec_start", "arguments": {
+            "command": "for i in $(seq 1 30); do echo tick $i; sleep 1; done", "timeout_secs": 0}})
+        job_id = r.get("result", {}).get("structuredContent", {}).get("job_id")
+        if not job_id:
+            return
+        time.sleep(1.2)
+        r = rpc(conn, 9, "tools/call", {"name": "exec_poll", "arguments": {"job_id": job_id}})
+        nxt = r["result"]["structuredContent"]["stdout_next"]
+        time.sleep(1.1)
+        rpc(conn, 10, "tools/call", {"name": "exec_poll", "arguments": {
+            "job_id": job_id, "stdout_since": nxt}})
+    elif nth == 2 and job_id:
+        rpc(conn, 11, "tools/call", {"name": "exec_poll", "arguments": {"job_id": job_id}})
+        rpc(conn, 12, "tools/call", {"name": "exec_cancel", "arguments": {"job_id": job_id}})
+        time.sleep(0.5)
+        rpc(conn, 13, "tools/call", {"name": "exec_poll", "arguments": {"job_id": job_id}})
 
 
 def handle(conn, addr):

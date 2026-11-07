@@ -103,14 +103,18 @@ The URL is `https://<host>.<tailnet>.ts.net:8444/mcp` and the bearer token is in
 |---|---|---|
 | Implementation | Swift (Network.framework + ScreenCaptureKit) | Rust (`poc/reverse-attach-linux/`) |
 | Screen / input | ScreenCaptureKit · CGEvent, gated by TCC | grim · wlroots virtual pointer · wtype on a wlroots seat (labwc, sway) |
-| Shell | `exec` / `exec_start*` (`zsh -f`) | `bash` |
+| Shell | `exec` / `exec_start*` (`zsh -f`) | `bash` / `exec_start*` (`bash -c`) |
 | Apps | `osascript` / JXA | — (use `bash`: `gdbus`, `xdg-open`) |
 | Reverse attach · browser upstream | ✅ | ✅ |
 | Install | signed/notarized `.pkg` | `-linux-{arm64,amd64}.tar.gz` + `install-linux.sh` |
 | Guide | this README | [`docs/linux-setup.md`](docs/linux-setup.md) |
 
 The rest of this README is the macOS reference; the two platforms share the wire contract, auth
-and reverse-attach shape, so callers configure them identically.
+and reverse-attach shape, so callers configure them identically. On Linux the job tools
+(`exec_start`, `exec_poll`, `exec_list`, `exec_cancel`) take the same arguments and return the
+same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-instance-mcp/jobs/`
+(default `~/.local/state/…`), and they are `owner`-only there too
+([`docs/linux-setup.md`](docs/linux-setup.md#background-jobs)).
 
 ## Tools
 
