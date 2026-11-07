@@ -37,18 +37,18 @@ fn arg<'a>(arguments: &'a Value, key: &str) -> Option<&'a Value> {
     arguments.get(key).filter(|v| !v.is_null())
 }
 
-/// JPEG quality as 10–100. Values 0–1 are a fraction (the Swift contract, and what Connect
-/// sends), floored at 0.1 like Swift; 10–100 is already a percentage. Values between 1 and 10
-/// are ambiguous (a fraction slightly over 1, or a tiny percentage) and rejected.
+/// JPEG quality as 1–100. Values 0–1 are a fraction (the Swift contract, and what Connect
+/// sends), floored at 0.1 like Swift, so `1` means 100%. Values above 1 through 100 are a
+/// percentage, rounded (at least 1).
 fn quality_percent(q: f64) -> Option<u8> {
     let pct = if (0.0..=1.0).contains(&q) {
         q.max(0.1) * 100.0
-    } else if (10.0..=100.0).contains(&q) {
+    } else if q > 1.0 && q <= 100.0 {
         q
     } else {
         return None;
     };
-    Some(pct.round() as u8)
+    Some(pct.round().max(1.0) as u8)
 }
 
 fn parse(arguments: &Value) -> Result<Request, (i64, String)> {
@@ -83,10 +83,9 @@ fn parse(arguments: &Value) -> Result<Request, (i64, String)> {
     };
     let quality = match arg(arguments, "quality") {
         None => DEFAULT_QUALITY,
-        Some(v) => v
-            .as_f64()
-            .and_then(quality_percent)
-            .ok_or_else(|| invalid("quality must be 0-1 (fraction) or 10-100 (percent)"))?,
+        Some(v) => v.as_f64().and_then(quality_percent).ok_or_else(|| {
+            invalid("quality must be 0-1 (fraction) or above 1 up to 100 (percent)")
+        })?,
     };
     let region = match arg(arguments, "region") {
         None => None,
@@ -252,13 +251,17 @@ mod tests {
             (0.0, 10),
             (0.004, 10),
             (0.1, 10),
+            (1.0001, 1),
+            (1.5, 2),
+            (5.0, 5),
+            (9.99, 10),
             (10.0, 10),
             (60.0, 60),
             (100.0, 100),
         ] {
             assert_eq!(quality_percent(q), Some(want), "{q}");
         }
-        for q in [-0.1, 1.0001, 1.5, 5.0, 9.99, 100.5, f64::NAN, f64::INFINITY] {
+        for q in [-0.1, -5.0, 100.5, f64::NAN, f64::INFINITY] {
             assert_eq!(quality_percent(q), None, "{q}");
         }
         assert_eq!(
@@ -276,7 +279,6 @@ mod tests {
             json!({"format": "gif"}),
             json!({"format": 1}),
             json!({"quality": 101}),
-            json!({"quality": 1.5}),
             json!({"quality": -1}),
             json!({"quality": "high"}),
             json!({"display": -1}),

@@ -413,7 +413,7 @@ pub(crate) fn tool_list(profile: &str) -> Value {
                         `scale` (default 0.5 = 960x540 for a 1080p output, max 2.0) is output pixels \
                         per display pixel. `region` {x,y,width,height} in display pixels crops before \
                         scaling; use it to zoom into a dialog cheaply. `format` jpeg (default, \
-                        `quality` 0-1, default 0.7; 10-100 also accepted) or png. Coordinates are the \
+                        `quality` 0-1, default 0.7; above 1 up to 100 is a percentage) or png. Coordinates are the \
                         space `mouse` uses; a crop's pixel (px,py) maps to (region.x + px/scale, \
                         region.y + py/scale).",
         "inputSchema": {
@@ -431,7 +431,7 @@ pub(crate) fn tool_list(profile: &str) -> Value {
                     "required": ["x", "y", "width", "height"]
                 },
                 "format":  { "type": "string", "enum": ["jpeg", "png"], "default": "jpeg" },
-                "quality": { "type": "number", "description": "JPEG quality 0-1, floored at 0.1 (10-100 is read as a percentage; 1-10 is rejected). Default 0.7.", "minimum": 0, "maximum": 100 }
+                "quality": { "type": "number", "description": "JPEG quality 0-1, floored at 0.1 (1 = 100%); values above 1 up to 100 are a percentage. Default 0.7.", "minimum": 0, "maximum": 100 }
             },
             "additionalProperties": false
         }
