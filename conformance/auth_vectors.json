@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Conformance vectors for AuthPolicy.decide(). Oracle: Swift AuthPolicy.swift. Any impl must match.",
+  "description": "Conformance vectors for AuthPolicy.decide(). Oracle: Swift AuthPolicy.swift. Any impl must match. Header values are field values after HTTP parsing: both parsers strip surrounding whitespace first (RFC 9110 §5.5), so these strings are what decide() receives. Deny reasons are compared exactly; they are log text, not wire output (docs/parity-checklist.md §4).",
   "cases": [
     {"name": "no-auth-configured validate() must fail", "config": {"allowedLogins": [], "bearerToken": null, "allowLocalUnauthenticated": false}, "validate": "error"},
     {"name": "token ok -> allow token", "config": {"bearerToken": "s3cret"}, "headers": {"authorization": "Bearer s3cret"}, "remoteIsLoopback": true, "expect": {"allow": "token"}},
@@ -20,6 +20,6 @@
     {"name": "insecure-local only but not loopback -> deny", "config": {"allowLocalUnauthenticated": true}, "headers": {}, "remoteIsLoopback": false, "expect": {"deny": "unauthenticated"}},
     {"name": "token same length, one byte differs -> deny bad token", "config": {"bearerToken": "s3cret"}, "headers": {"authorization": "Bearer s3crXt"}, "remoteIsLoopback": true, "expect": {"deny": "bad token"}},
     {"name": "token case changed -> deny bad token (byte compare, not case-folded)", "config": {"bearerToken": "s3cret"}, "headers": {"authorization": "Bearer S3CRET"}, "remoteIsLoopback": true, "expect": {"deny": "bad token"}},
-    {"name": "token with trailing space -> deny bad token (no trimming)", "config": {"bearerToken": "s3cret"}, "headers": {"authorization": "Bearer s3cret "}, "remoteIsLoopback": true, "expect": {"deny": "bad token"}}
+    {"name": "token with trailing space after parsing -> deny bad token (decide() does not trim)", "config": {"bearerToken": "s3cret"}, "headers": {"authorization": "Bearer s3cret "}, "remoteIsLoopback": true, "expect": {"deny": "bad token"}}
   ]
 }
