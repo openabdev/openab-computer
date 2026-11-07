@@ -171,9 +171,9 @@ An agent in an `openab-pty` session cannot reach this Mac — the pod has no tai
 # "lend my Mac to session laptop for an hour, desktop profile"; the Mac mints the attach
 # secret at the runtime with its admin credential (used once, not stored) and dials in.
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"runtime":"ws://100.111.174.31:8090","session":"laptop","profile":"desktop",
+  -d '{"runtime":"ws://<pod>.<tailnet>.ts.net:8090","session":"laptop","profile":"desktop",
        "ttl_secs":3600,"admin_credential":"<openab-pty admin credential>"}' \
-  https://macmini.<tailnet>.ts.net:8444/attach
+  https://<host>.<tailnet>.ts.net:8444/attach
 # → 202 {"id":"…","state":"idle"|"attached",…}      GET /attach lists · DELETE /attach/{id} revokes
 ```
 
@@ -183,7 +183,9 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
   except `exec*`; `observe` = `sys_info` + `screenshot` only. Any other value is a 400, including
   the removed name `sandbox`. Hidden tools are absent from `tools/list`, and a forced
   `tools/call` is an *unknown tool* error. Widening is a new grant. Full per-profile tool lists
-  and diffs: [`docs/tool-profiles.md`](docs/tool-profiles.md).
+  and diffs: [`docs/tool-profiles.md`](docs/tool-profiles.md). Always send `profile`: a request
+  without it gets `desktop` on macOS and `observe` on a Linux node (the macOS default moves to
+  `observe` under [#59](https://github.com/openabdev/openab-computer/issues/59)).
 - ⚠️ **Neither profile is a security boundary** ([#45](https://github.com/openabdev/openab-computer/issues/45)).
   GUI control is a shell: `osascript` runs `do shell script`, `key` types into a terminal, `mouse`
   opens one. Removing `exec*` removes a convenient entry point, **not a privilege** — lending a
