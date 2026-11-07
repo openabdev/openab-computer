@@ -10,8 +10,9 @@ Screens pane, browser tools):
   by the installer (`--headless-seat`).
 
 Read the trust warning at the top of the [README](../README.md) first. On Linux it is stricter,
-not looser: `bash` is offered in **both** profiles, so anyone who can attach this node gets a
-shell as the user running the daemon.
+not looser: `bash` is offered in **both** the `owner` and `desktop` profiles, so anyone who can
+attach this node with either gets a shell as the user running the daemon. Only `observe` (the
+default for an attach that names no profile) leaves it out.
 
 ## What you end up with
 
