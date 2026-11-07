@@ -183,7 +183,9 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
   except `exec*`; `observe` = `sys_info` + `screenshot` only. Any other value is a 400, including
   the removed name `sandbox`. Hidden tools are absent from `tools/list`, and a forced
   `tools/call` is an *unknown tool* error. Widening is a new grant. Full per-profile tool lists
-  and diffs: [`docs/tool-profiles.md`](docs/tool-profiles.md).
+  and diffs: [`docs/tool-profiles.md`](docs/tool-profiles.md). Always send `profile`: a request
+  without it gets `desktop` on macOS and `observe` on a Linux node (the macOS default moves to
+  `observe` under [#59](https://github.com/openabdev/openab-computer/issues/59)).
 - ⚠️ **Neither profile is a security boundary** ([#45](https://github.com/openabdev/openab-computer/issues/45)).
   GUI control is a shell: `osascript` runs `do shell script`, `key` types into a terminal, `mouse`
   opens one. Removing `exec*` removes a convenient entry point, **not a privilege** — lending a

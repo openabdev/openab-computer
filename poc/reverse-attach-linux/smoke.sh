@@ -134,6 +134,7 @@ check "desktop grant ended/revoked (CLOSES tail=4010)" "[[ \$(echo '$st' | state
 echo "== wrong secret → handshake 401 → stop =="
 : > $LOG
 r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"pre","ttl_secs":30,"secret":"WRONG"}')
+check "bare attach (no profile) → grant profile observe (#59)" "[[ '$r' == *'\"profile\":\"observe\"'* ]]"
 sleep 1.5
 st=$($C 127.0.0.1:8790/attach)
 check "401 handshake → ended/handshake_rejected_401" "[[ \$(echo '$st' | state_of pre) == ended && \$(echo '$st' | ended_of pre) == handshake_rejected_401 ]]"

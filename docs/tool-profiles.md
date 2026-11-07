@@ -11,6 +11,10 @@ a profile is a managed policy, a grant attaches it to a principal (the session),
   tool*, the same answer as for a tool that does not exist.
 - Unknown profile names are refused: HTTP 400 on `POST /attach`, and a stored grant with an
   unknown profile is dropped when it is loaded. They are never widened to `owner`.
+- A `POST /attach` **without** `profile` gets the default profile. On Linux the default is
+  `observe`. On macOS it is still `desktop`, which is shell-equivalent; moving it to `observe` is
+  tracked in [#59](https://github.com/openabdev/openab-computer/issues/59). Clients should always
+  send `profile`; OpenAB Connect and OpenAB Remote do.
 
 > ⚠️ **Only `observe` is a security boundary.** GUI control is a shell: `osascript` runs
 > `do shell script`, `key` can type into a terminal, and `mouse` can open one. `desktop` removes
@@ -147,6 +151,11 @@ otherwise.
   also makes `observe` the default choice.
 - **Existing grants:** a grant stored as `sandbox` by an older build is dropped when the updated
   daemon loads it, so the grant ends and must be made again.
+- **Linux default profile (behaviour change):** up to 0.8.2 the Linux daemon gave a bare
+  `POST /attach` (no `profile`) the `owner` profile. It now gives `observe`. A caller that relied
+  on the implicit `owner` gets a grant with only `sys_info` and `screenshot`, and must send
+  `"profile":"owner"` (or `desktop`) explicitly. Grants already stored keep the profile they were
+  made with.
 - **Downgrade:** grants stored by this build carry `desktop` or `observe`. An older daemon does
   not recognize them and drops them, so the grant ends instead of widening.
 

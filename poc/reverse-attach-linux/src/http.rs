@@ -539,6 +539,20 @@ fn bad_request(stream: &mut TcpStream, message: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Profile of a bare `POST /attach` (no `profile` field): the narrowest one,
+/// so a caller that forgets the field never lends a shell (#59). Wider
+/// profiles must be asked for by name.
+const DEFAULT_ATTACH_PROFILE: &str = "observe";
+
+/// The `profile` a `POST /attach` body asks for, before validation. A missing
+/// or non-string field falls back to [`DEFAULT_ATTACH_PROFILE`].
+fn requested_profile(parsed: &Value) -> &str {
+    parsed
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or(DEFAULT_ATTACH_PROFILE)
+}
+
 fn handle_attach(
     stream: &mut TcpStream,
     body: &str,
@@ -552,11 +566,7 @@ fn handle_attach(
 
     let runtime = parsed.get("runtime").and_then(|v| v.as_str()).unwrap_or("");
     let session = parsed.get("session").and_then(|v| v.as_str()).unwrap_or("");
-    let profile = parsed
-        .get("profile")
-        .and_then(|v| v.as_str())
-        .unwrap_or("owner")
-        .to_string();
+    let profile = requested_profile(&parsed).to_string();
     let ttl_secs = parsed
         .get("ttl_secs")
         .and_then(|v| v.as_u64())
@@ -712,4 +722,41 @@ fn handle_delete_attachment(
         None => write_response(stream, 404, "Not Found", "{\"error\":\"no such grant\"}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod attach_profile_tests {
+    use super::*;
+    use crate::mcp::{local_tool_allowed, normalize_profile, upstream_tool_allowed};
+
+    #[test]
+    fn bare_attach_defaults_to_observe() {
+        let bare = json!({"runtime": "ws://x:1", "session": "s", "secret": "k"});
+        assert_eq!(requested_profile(&bare), "observe");
+        // A null or non-string field is "not given", never a wider profile.
+        for v in [Value::Null, json!(1), json!(true), json!(["owner"])] {
+            let body = json!({"runtime": "ws://x:1", "session": "s", "profile": v});
+            assert_eq!(requested_profile(&body), "observe", "{v}");
+        }
+    }
+
+    #[test]
+    fn the_default_is_a_known_profile_that_lends_no_shell() {
+        assert_eq!(normalize_profile(DEFAULT_ATTACH_PROFILE), Some("observe"));
+        for tool in ["bash", "mouse", "key"] {
+            assert!(!local_tool_allowed(tool, DEFAULT_ATTACH_PROFILE), "{tool}");
+        }
+        assert!(!upstream_tool_allowed(
+            "browser_navigate",
+            DEFAULT_ATTACH_PROFILE
+        ));
+    }
+
+    #[test]
+    fn an_explicit_profile_is_passed_through_unchanged() {
+        for p in ["owner", "desktop", "observe", "sandbox", ""] {
+            let body = json!({"profile": p});
+            assert_eq!(requested_profile(&body), p);
+        }
+    }
 }

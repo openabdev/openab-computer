@@ -273,6 +273,9 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 # → 202 {"id":"grant-…","state":"idle",…}; GET $U/attach lists, DELETE $U/attach/<id> revokes
 ```
 
+Always send `profile`. A request without it gets `observe` (`sys_info` and `screenshot` only);
+up to 0.8.2 it got `owner`. See [`tool-profiles.md`](tool-profiles.md).
+
 OpenAB Connect stores the runtime's admin credential in the macOS Keychain (service
 `dev.openab.connect`, account = pod name). Inside the session, `$OPENAB_TOOLS_MCP_URL` then
 lists `sys_info screenshot bash mouse key` + 16 `browser_*` + the runtime's `instance_status`.

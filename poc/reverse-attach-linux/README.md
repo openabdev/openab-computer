@@ -10,7 +10,8 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
 - `POST /attach` `{runtime, session, profile, ttl_secs, secret | admin_credential}` → HTTP 202
   with the same grant shape Connect decodes: `{id, runtime, session, profile, principal, state,
   expires_in_secs}`. Exactly one credential; the admin path mints at the runtime with
-  `{"ttl_secs": N}` (ws:// only in this PoC) and forwards TTL end to end.
+  `{"ttl_secs": N}` (ws:// only in this PoC) and forwards TTL end to end. Without `profile` the
+  grant gets `observe` (until 0.8.2 it got `owner`, #59).
 - `GET /attach` → `{grants:[…]}`; `GET /attach/{id}` → one grant; `DELETE /attach/{id}` →
   204 and promptly cancels the dial/socket. New grant for the same `(runtime, session)` replaces
   the old one. States match Swift: `idle / dialing / attached / redialing / ended` plus optional
