@@ -243,6 +243,7 @@ name = "reverse-attach"
 version = "0.4.0"
 dependencies = [
  "base64",
+ "rustls",
  "serde_json",
  "tungstenite",
 ]
@@ -268,6 +269,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",

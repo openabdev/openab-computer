@@ -3,13 +3,13 @@
 //! upgrade and how it reacts to a refused upgrade (the Swift oracle is
 //! `ReverseAttachNegativeTests`).
 //!
-//! The refused-upgrade cases run the production `dial_loop`, so a regression that
-//! redials after a 401 fails here. The wss case and the missing-header case call
-//! `tungstenite::connect` directly and do not exercise `dial_loop`.
+//! The refused-upgrade cases and the wss TLS-failure case run the production
+//! `dial_loop`, so a regression that redials after a 401, or that panics or sticks
+//! at `dialing` on a TLS failure, fails here. The direct wss case and the
+//! missing-header case call `tungstenite::connect` and do not exercise `dial_loop`.
 
 use std::collections::HashMap;
 use std::net::TcpListener;
-use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -294,20 +294,21 @@ fn upgrade_without_authorization_is_refused_with_one_connection() {
     assert_eq!(server.join().unwrap(), vec![None]);
 }
 
-/// Calls `tungstenite::connect` directly, not `dial_loop`.
+/// Calls `tungstenite::connect` directly, not `dial_loop`. With the ring provider
+/// installed (#66) the dial must return a TLS or I/O error: a panic fails the test.
 #[test]
 fn wss_to_a_plaintext_listener_fails_without_falling_back() {
+    crate::install_crypto_provider();
     let (port, server) = plaintext_listener();
     let url = format!("wss://127.0.0.1:{port}/tools/attach/s1");
     let req = build_ws_request(&url, "s3cret").unwrap();
-    // The Linux build has no process-level rustls CryptoProvider, so tungstenite can
-    // panic while it sets up TLS. That is a separate, pre-existing gap (a wss:// runtime
-    // would panic the dial thread), reported rather than fixed here. For this test both
-    // a TLS error and that panic mean the dial did not succeed.
-    let dialed = std::panic::catch_unwind(AssertUnwindSafe(|| tungstenite::connect(req).is_ok()));
+    let err = match tungstenite::connect(req) {
+        Ok(_) => panic!("wss to a plaintext listener upgraded"),
+        Err(e) => e,
+    };
     assert!(
-        !matches!(dialed, Ok(true)),
-        "wss to a plaintext listener upgraded"
+        matches!(err, tungstenite::Error::Tls(_) | tungstenite::Error::Io(_)),
+        "expected a TLS or I/O error, got {err:?}"
     );
     let bytes = server.join().unwrap();
     assert!(
@@ -318,4 +319,112 @@ fn wss_to_a_plaintext_listener_fails_without_falling_back() {
         !bytes.windows(4).any(|w| w == b"HTTP"),
         "dialer sent an HTTP request"
     );
+}
+
+/// Accept TCP connections for `linger`, read what arrives first on each and close
+/// it. Returns those first bytes per connection, so a redial is a second entry.
+fn plaintext_runtime(linger: Duration) -> (u16, thread::JoinHandle<Vec<Vec<u8>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let handle = thread::spawn(move || {
+        let mut seen = Vec::new();
+        let until = Instant::now() + linger;
+        while Instant::now() < until {
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut buf = vec![0u8; 512];
+            let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+            buf.truncate(n);
+            seen.push(buf);
+        }
+        seen
+    });
+    (port, handle)
+}
+
+/// The production `dial_loop` against a `wss://` runtime that speaks plaintext.
+/// Each TLS failure must lead to `redialing` and a backoff redial, the dial thread
+/// must not panic, and the grant must end at its deadline instead of staying at
+/// `dialing` (#66).
+///
+/// The runtime lingers 2.5 s and the deadline is 3 whole seconds away, so the
+/// redial after the 1 s first backoff lands inside the linger window.
+#[test]
+fn wss_tls_failure_in_dial_loop_redials_and_ends_at_deadline() {
+    crate::install_crypto_provider();
+    let (port, server) = plaintext_runtime(Duration::from_millis(2500));
+    let runtime = format!("wss://127.0.0.1:{port}");
+    let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
+    let grant_id = "grant-wss-test".to_string();
+    registry.lock().unwrap().insert(
+        grant_id.clone(),
+        GrantInfo {
+            id: grant_id.clone(),
+            runtime: runtime.clone(),
+            session: "s1".to_string(),
+            profile: "owner".to_string(),
+            principal: "a@b".to_string(),
+            state: "dialing".to_string(),
+            ended: None,
+            expires_at_epoch_secs: now_epoch_secs() + 600,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            secret: "s3cret".to_string(),
+        },
+    );
+    let grant = DialGrant {
+        runtime,
+        session: "s1".to_string(),
+        secret: "s3cret".to_string(),
+        profile: "owner".to_string(),
+        deadline_epoch_secs: now_epoch_secs() + 3,
+        registry: registry.clone(),
+        grant_id: grant_id.clone(),
+        cancelled: Arc::new(AtomicBool::new(false)),
+        tuning: DialTuning::default(),
+    };
+    let dialer = thread::spawn(move || dial_loop(grant));
+    let mut states = Vec::new();
+    while !dialer.is_finished() {
+        let state = registry
+            .lock()
+            .unwrap()
+            .get(&grant_id)
+            .unwrap()
+            .state
+            .clone();
+        if states.last() != Some(&state) {
+            states.push(state);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(dialer.join().is_ok(), "the dial thread panicked");
+    let (state, ended) = {
+        let map = registry.lock().unwrap();
+        let g = map.get(&grant_id).unwrap();
+        (g.state.clone(), g.ended.clone())
+    };
+    assert_eq!(state, "ended", "states seen: {states:?}");
+    assert_eq!(ended.as_deref(), Some("deadline"));
+    assert!(
+        states.iter().any(|s| s == "redialing"),
+        "never reached redialing: {states:?}"
+    );
+    let seen = server.join().unwrap();
+    assert!(seen.len() >= 2, "no redial after the TLS failure: {seen:?}");
+    for bytes in &seen {
+        assert!(
+            !bytes.starts_with(b"GET ") && !bytes.windows(4).any(|w| w == b"HTTP"),
+            "dialer sent plaintext HTTP"
+        );
+    }
 }
