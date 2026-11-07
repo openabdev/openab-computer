@@ -12,6 +12,11 @@
 //! running and can be polled from the next attach. A daemon restart forgets the
 //! jobs (their processes and log files are left alone).
 //!
+//! A job stays `running` until its shell has exited *and* nothing it started is
+//! left in its process group, so `exec_cancel` and `timeout_secs` still reach a
+//! `server &` the shell left behind. Only a process that leaves the group
+//! (`setsid`, a daemonizing double fork) escapes the job.
+//!
 //! Lifetime: every running job, plus the `KEEP_FINISHED` most recently finished
 //! ones, stay in the registry. Log files older than `LOG_MAX_AGE` are deleted when
 //! the registry opens and on each `exec_start`.
@@ -41,14 +46,19 @@ pub(crate) const LOG_MAX_AGE: Duration = Duration::from_secs(7 * 86_400);
 /// `stdout_next` / `stderr_next`.
 pub(crate) const MAX_POLL_BYTES: usize = 1_048_576;
 const SUPERVISE_EVERY: Duration = Duration::from_millis(50);
+/// How often a job whose shell has exited is checked for processes left in its
+/// group (each check scans `/proc`).
+const DRAIN_EVERY: Duration = Duration::from_millis(500);
 
 pub(crate) const SIGKILL: i32 = 9;
 pub(crate) const SIGTERM: i32 = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum JobState {
+    /// The shell, or something it left in the job's process group, is running.
     Running,
-    /// The job's shell exited on its own.
+    /// The job's shell exited on its own and nothing it started is left in its
+    /// process group.
     Exited,
     /// Cancelled, timed out, or ended by a signal.
     Killed,
@@ -69,11 +79,36 @@ struct Inner {
     /// while this is `Some` and under this lock, and reaping happens only under
     /// it too: until then the leader's pid (= its process group id, `setsid`)
     /// cannot belong to anyone else (same rule as `bash`, #72).
+    ///
+    /// The leader is not reaped when its shell exits but when its process group
+    /// is empty: in between it stays a zombie, which keeps the group id reserved,
+    /// so whatever the shell left running (`server &`) can still be cancelled and
+    /// timed out, and the job stays `running` (Swift waits for its output pipes
+    /// to close, to the same effect).
     child: Option<Child>,
     timed_out: bool,
+    /// Signal sent to the group after the shell had exited (cancel or timeout of
+    /// what it left behind): the job then ends `killed` with 128 + this.
+    late_signal: Option<i32>,
     state: JobState,
     exit_code: Option<i32>,
     finished_at: Option<SystemTime>,
+}
+
+/// One consistent view of a job, taken under one lock.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Status {
+    pub(crate) state: JobState,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) finished_at: Option<SystemTime>,
+}
+
+enum Step {
+    Terminal,
+    /// The shell is running.
+    Running,
+    /// The shell has exited; processes it started are left in the group.
+    Draining,
 }
 
 pub(crate) struct Job {
@@ -93,12 +128,17 @@ impl Job {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    pub(crate) fn state(&self) -> JobState {
-        self.lock().state
+    pub(crate) fn status(&self) -> Status {
+        let g = self.lock();
+        Status {
+            state: g.state,
+            exit_code: g.exit_code,
+            finished_at: g.finished_at,
+        }
     }
 
-    pub(crate) fn exit_code(&self) -> Option<i32> {
-        self.lock().exit_code
+    pub(crate) fn state(&self) -> JobState {
+        self.lock().state
     }
 
     pub(crate) fn finished_at(&self) -> Option<SystemTime> {
@@ -108,47 +148,52 @@ impl Job {
     /// Signal the whole process group. False once the leader has been reaped:
     /// its pid may then be recycled, so nothing is sent.
     pub(crate) fn signal(&self, sig: i32) -> bool {
-        let g = self.lock();
+        let mut g = self.lock();
         if g.child.is_none() {
             return false;
+        }
+        if shell_exited(self.pid) {
+            g.late_signal = Some(sig);
         }
         unsafe { kill(-(self.pid as i32), sig) };
         true
     }
 
-    /// One supervision step: reap the leader if it exited, kill the group at the
-    /// deadline. Returns true once the job is terminal.
-    fn supervise_once(&self) -> bool {
+    /// One supervision step: kill the group at the deadline; once the shell has
+    /// exited and its process group is empty, reap it and end the job.
+    fn supervise_once(&self) -> Step {
         let mut g = self.lock();
-        let Some(child) = g.child.as_mut() else {
-            return true;
-        };
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let timed_out = g.timed_out;
-                finish(&mut g, Some(status), timed_out);
-                true
-            }
-            Ok(None) => {
-                if !g.timed_out && self.deadline.is_some_and(|d| Instant::now() >= d) {
-                    unsafe { kill(-(self.pid as i32), SIGKILL) };
-                    g.timed_out = true;
-                }
-                false
-            }
-            // Only we reap this child, so this should not happen; end the job
-            // rather than signal a pid we can no longer vouch for.
-            Err(_) => {
-                finish(&mut g, None, false);
-                true
-            }
+        if g.child.is_none() {
+            return Step::Terminal;
         }
+        let exited = shell_exited(self.pid);
+        if !g.timed_out && self.deadline.is_some_and(|d| Instant::now() >= d) {
+            if exited {
+                g.late_signal = Some(SIGKILL);
+            }
+            unsafe { kill(-(self.pid as i32), SIGKILL) };
+            g.timed_out = true;
+        }
+        if !exited {
+            return Step::Running;
+        }
+        // The zombie leader holds the group id, so nothing outside the job can
+        // join the group: once it is empty it stays empty.
+        if group_has_others(self.pid) {
+            return Step::Draining;
+        }
+        let status = g.child.as_mut().and_then(|c| c.try_wait().ok().flatten());
+        let (timed_out, late) = (g.timed_out, g.late_signal);
+        // `None` (should not happen: only we reap this child) still ends the job
+        // rather than signal a pid we can no longer vouch for.
+        finish(&mut g, status, timed_out, late);
+        Step::Terminal
     }
 }
 
-fn finish(g: &mut Inner, status: Option<ExitStatus>, timed_out: bool) {
+fn finish(g: &mut Inner, status: Option<ExitStatus>, timed_out: bool, late: Option<i32>) {
     g.child = None;
-    let signal = status.and_then(|s| s.signal());
+    let signal = status.and_then(|s| s.signal()).or(late);
     g.exit_code = Some(match (status, signal) {
         (_, Some(sig)) => 128 + sig,
         (Some(s), None) => s.code().unwrap_or(-1),
@@ -160,6 +205,56 @@ fn finish(g: &mut Inner, status: Option<ExitStatus>, timed_out: bool) {
         JobState::Exited
     };
     g.finished_at = Some(SystemTime::now());
+}
+
+/// The job's shell (our child `pid`) has exited. It is not reaped (`WNOWAIT`),
+/// so its pid stays reserved.
+fn shell_exited(pid: u32) -> bool {
+    // siginfo_t is 128 bytes on Linux; `si_signo` (first int) is set only when
+    // a child was found, so a zeroed buffer distinguishes WNOHANG's "not yet".
+    let mut info = [0i32; 32];
+    let r = unsafe {
+        waitid(
+            P_PID,
+            pid,
+            info.as_mut_ptr().cast(),
+            WEXITED | WNOHANG | WNOWAIT,
+        )
+    };
+    if r != 0 {
+        // ECHILD: already reaped, so it has certainly exited.
+        return true;
+    }
+    info[0] != 0
+}
+
+/// Some process other than the leader is in process group `pgid`.
+fn group_has_others(pgid: u32) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        // Cannot tell; keep the job running rather than end it early.
+        return true;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        if pid == pgid {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue; // gone meanwhile
+        };
+        // After "(comm) ": state ppid pgrp ...
+        let pgrp = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(2))
+            .and_then(|f| f.parse::<u32>().ok());
+        if pgrp == Some(pgid) {
+            return true;
+        }
+    }
+    false
 }
 
 /// What `exec_start` asks for. `cwd` is already resolved and checked.
@@ -176,17 +271,19 @@ pub(crate) struct Registry {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
 }
 
-static REGISTRY: OnceLock<Result<Registry, String>> = OnceLock::new();
+static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
-/// The daemon's registry, opened on first use.
+/// The daemon's registry, opened on first use. A failure to open it is not
+/// remembered: the next call tries again.
 pub(crate) fn registry() -> Result<&'static Registry, String> {
-    REGISTRY
-        .get_or_init(|| {
-            let dir = default_dir().ok_or("no XDG_STATE_HOME or HOME for the job log directory")?;
-            Registry::open(dir)
-        })
-        .as_ref()
-        .map_err(|e| e.clone())
+    if let Some(reg) = REGISTRY.get() {
+        return Ok(reg);
+    }
+    let dir = default_dir().ok_or("no XDG_STATE_HOME or HOME for the job log directory")?;
+    let reg = Registry::open(dir)?;
+    // A concurrent first call may have won; its registry (still empty) is kept.
+    let _ = REGISTRY.set(reg);
+    Ok(REGISTRY.get().expect("set above"))
 }
 
 #[cfg(not(test))]
@@ -311,6 +408,7 @@ impl Registry {
             inner: Mutex::new(Inner {
                 child: Some(child),
                 timed_out: false,
+                late_signal: None,
                 state: JobState::Running,
                 exit_code: None,
                 finished_at: None,
@@ -322,9 +420,11 @@ impl Registry {
         let supervised = job.clone();
         thread::Builder::new()
             .name(format!("job-{}", job.pid))
-            .spawn(move || {
-                while !supervised.supervise_once() {
-                    thread::sleep(SUPERVISE_EVERY);
+            .spawn(move || loop {
+                match supervised.supervise_once() {
+                    Step::Terminal => break,
+                    Step::Running => thread::sleep(SUPERVISE_EVERY),
+                    Step::Draining => thread::sleep(DRAIN_EVERY),
                 }
             })
             .map_err(|e| {
@@ -530,7 +630,13 @@ pub(crate) fn iso8601(t: SystemTime) -> String {
     )
 }
 
+const P_PID: i32 = 1;
+const WNOHANG: i32 = 1;
+const WEXITED: i32 = 4;
+const WNOWAIT: i32 = 0x0100_0000;
+
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
     fn setsid() -> i32;
+    fn waitid(idtype: i32, id: u32, infop: *mut u8, options: i32) -> i32;
 }

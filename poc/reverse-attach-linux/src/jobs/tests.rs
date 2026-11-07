@@ -161,6 +161,59 @@ fn cancel_kills_the_whole_process_group() {
     assert!(reg.dir().join(format!("{id}.out")).exists());
 }
 
+/// The shell exits at once but leaves `sleep 30` in the job's process group:
+/// the job stays `running` (Swift waits for its pipes to close), and cancel
+/// still reaches the leftover child.
+#[test]
+fn a_child_left_behind_by_the_shell_keeps_the_job_running() {
+    let reg = reg("leftover");
+    let id = start(&reg, json!({"command": "sleep 30 & echo $!"}));
+    let p = poll_until(&reg, &id, |s| s["stdout"].as_str().unwrap().ends_with('\n'));
+    let child: u32 = sc(&p)["stdout"].as_str().unwrap().trim().parse().unwrap();
+    std::thread::sleep(Duration::from_millis(1200)); // the shell is long gone
+    let p = poll(&reg, &id, 0, 0);
+    assert_eq!(sc(&p)["state"], "running", "{p}");
+    assert!(sc(&p).get("exit_code").is_none(), "{p}");
+    let l = call(&reg, "exec_list", json!({}));
+    assert_eq!(sc(&l)["jobs"][0]["state"], "running", "{l}");
+    assert!(alive(child));
+
+    let c = call(&reg, "exec_cancel", json!({"job_id": id}));
+    assert_eq!(sc(&c)["signalled"], true, "{c}");
+    let done = terminal(&reg, &id);
+    assert_eq!(sc(&done)["state"], "killed", "{done}");
+    assert_eq!(sc(&done)["exit_code"], 137);
+    assert!(!alive(child), "the leftover child was not killed");
+}
+
+/// Output written by a leftover child is part of the job, and the job ends
+/// `exited` with the shell's code once that child is done.
+#[test]
+fn a_job_ends_when_its_last_leftover_child_does() {
+    let reg = reg("drain");
+    let id = start(
+        &reg,
+        json!({"command": "(sleep 0.8; echo late; echo err >&2) & echo early; exit 4"}),
+    );
+    let p = poll_until(&reg, &id, |s| s["stdout"] == "early\n");
+    assert_eq!(sc(&p)["state"], "running", "{p}");
+    let done = terminal(&reg, &id);
+    let s = sc(&done);
+    assert_eq!(s["stdout"], "early\nlate\n", "{done}");
+    assert_eq!(s["stderr"], "err\n");
+    assert_eq!(s["state"], "exited");
+    assert_eq!(s["exit_code"], 4);
+}
+
+#[test]
+fn timeout_reaches_a_child_the_shell_left_behind() {
+    let reg = reg("leftover-timeout");
+    let id = start(&reg, json!({"command": "sleep 30 &", "timeout_secs": 0.5}));
+    let done = terminal(&reg, &id);
+    assert_eq!(sc(&done)["state"], "killed", "{done}");
+    assert_eq!(sc(&done)["exit_code"], 137);
+}
+
 #[test]
 fn term_lets_the_job_clean_up() {
     let reg = reg("term");
@@ -311,6 +364,17 @@ fn bad_arguments_are_reported() {
         json!({"command": "true", "cwd": "/nonexistent/dir"}),
     );
     assert_eq!(bad_cwd["isError"], true, "{bad_cwd}");
+    // `~user` is not expanded (only `~` and `~/…`), and the error says so plainly.
+    let tilde_user = call(
+        &reg,
+        "exec_start",
+        json!({"command": "true", "cwd": "~nosuchuser/x"}),
+    );
+    assert_eq!(tilde_user["isError"], true, "{tilde_user}");
+    assert!(tilde_user["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .ends_with(": ~nosuchuser/x"));
     let unknown = call(&reg, "exec_poll", json!({"job_id": "job-nope"}));
     assert_eq!(unknown["isError"], true);
     assert!(unknown["content"][0]["text"]

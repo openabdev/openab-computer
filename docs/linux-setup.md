@@ -309,13 +309,15 @@ point the agent here. `desktop` keeps `bash` but not the job tools, as on macOS,
   are never truncated and can be followed with `tail -f`. `exec_poll` reads them by byte offset
   (`stdout_since` / `stderr_since` → `stdout_next` / `stderr_next`), at most 1 MiB per stream per
   call.
-- **States**: `running`, then `exited` (the shell ended on its own) or `killed` (cancelled, timed
-  out or ended by a signal, `exit_code` = 128 + signal). `timeout_secs` 0, the default, means
+- **States**: `running` while the shell or anything it left in the job's process group runs
+  (`server &`), then `exited` (the shell ended on its own, `exit_code` = its status) or `killed`
+  (cancelled, timed out or ended by a signal, `exit_code` = 128 + signal). `timeout_secs` 0, the default, means
   none.
 - **Cancel**: `exec_cancel` sends `KILL` (default) or `TERM` to the job's process group (each job
-  runs in its own session). As with `bash` (#72), the group is signalled only while the job's
-  shell has not been reaped, so a recycled pid is never hit; anything the job started that is
-  still running after its shell exits is not reached.
+  runs in its own session), children the shell left behind included. The shell is reaped only
+  once the group is empty, and the group is signalled only before that, so a recycled pid is never
+  hit (#72). Only a process that leaves the group (`setsid`, a daemonizing double fork) escapes the
+  job and its cancel.
 - **Lifetime**: jobs belong to the daemon, not to a connection. When a reverse-attach socket drops,
   its in-flight calls are cancelled, but a job it started keeps running and the next attach can
   poll it. A daemon restart forgets the jobs: their processes keep running (the unit uses

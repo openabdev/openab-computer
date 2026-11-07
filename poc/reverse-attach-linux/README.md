@@ -42,8 +42,9 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
   `exec_list` / `exec_cancel`, same arguments and `structuredContent` as the Swift tools, with
   `bash -c` in a new session. stdout/stderr go to `$XDG_STATE_HOME/oab-instance-mcp/jobs/<id>.out`
   / `.err` (dir 700, files 600, never truncated); `exec_poll` reads by byte offset, at most
-  1 MiB per stream per poll. Cancel and timeout signal the process group only while the job's
-  shell is unreaped (#72's rule). Jobs belong to the daemon, so they **survive a reverse-attach
+  1 MiB per stream per poll. A job stays `running` until its shell has exited and its process
+  group is empty; the shell is reaped only then, so cancel and timeout can signal the group
+  (children the shell left behind included) without ever hitting a recycled pid (#72's rule). Jobs belong to the daemon, so they **survive a reverse-attach
   socket drop** (in-flight calls do not); a daemon restart forgets them. Running jobs plus the
   10 most recently finished are kept; logs older than 7 days are deleted.
 
@@ -53,7 +54,7 @@ Deps: `serde_json` + `tungstenite` (rustls). Sync std threads, no tokio. ~28 KB.
 
 ```sh
 cargo build --release          # 31 s cold, 2.2 MB binary
-bash smoke.sh                  # RESULT: 36 passed, 0 failed (55 since the job checks, #32)
+bash smoke.sh                  # RESULT: 55 passed, 0 failed
 ```
 
 `smoke.sh` runs the binary against `mock_runtime.py` (stdlib-only mock openab-pty: mint endpoint

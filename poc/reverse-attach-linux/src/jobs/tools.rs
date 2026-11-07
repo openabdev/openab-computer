@@ -30,7 +30,7 @@ pub(crate) fn tool_specs() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "command":      { "type": "string", "description": "Shell command line, run via `bash -c`." },
-                    "cwd":          { "type": "string", "description": "Working directory (a leading ~ is expanded). Default: the daemon user's home." },
+                    "cwd":          { "type": "string", "description": "Working directory (`~` and `~/…` are expanded). Default: the daemon user's home." },
                     "timeout_secs": { "type": "number", "description": "Kill the job after this many seconds. 0 = no timeout (stop it with exec_cancel). Default 0." },
                     "env":          { "type": "object", "additionalProperties": { "type": "string" }, "description": "Extra environment variables." }
                 },
@@ -42,8 +42,10 @@ pub(crate) fn tool_specs() -> Vec<Value> {
             "description": "Fetch a background job's state and any output produced since your last poll. \
                             Pass the `job_id` from exec_start and, to get only new output, the \
                             `stdout_next`/`stderr_next` offsets of the previous poll as \
-                            `stdout_since`/`stderr_since`. When `state` is `exited` or `killed`, \
-                            `exit_code` is set and no more output will appear. Output is read from the \
+                            `stdout_since`/`stderr_since`. A job is `running` while its shell or \
+                            anything it left in its process group runs; when `state` is `exited` or \
+                            `killed`, `exit_code` is set and no more output will appear (except from \
+                            a process that left the group, e.g. with setsid). Output is read from the \
                             job's log files (never truncated; at most 1 MiB per stream per poll, poll \
                             again from the returned offsets for the rest). The files are \
                             $XDG_STATE_HOME/oab-instance-mcp/jobs/<job_id>.out/.err (default \
@@ -122,8 +124,10 @@ fn resolve_cwd(arguments: &Value) -> Result<String, String> {
     let home = std::env::var("HOME").unwrap_or_default();
     let cwd = match arguments.get("cwd").and_then(|v| v.as_str()) {
         None => home,
-        Some(c) => match c.strip_prefix('~') {
-            Some(rest) => format!("{home}{rest}"),
+        // Only `~` and `~/…`; `~user` is not expanded.
+        Some("~") => home,
+        Some(c) => match c.strip_prefix("~/") {
+            Some(rest) => format!("{home}/{rest}"),
             None => c.to_string(),
         },
     };
@@ -188,10 +192,10 @@ fn exec_poll(reg: &Registry, arguments: &Value) -> ToolReturn {
         )));
     };
     let since = |k: &str| arguments.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
-    // State first: once it is terminal the shell has exited, so the read below
-    // sees all of its output.
-    let state = job.state();
-    let exit_code = job.exit_code();
+    // Status first: once it is terminal nothing is left in the job's process
+    // group, so the read below sees all of its output.
+    let status = job.status();
+    let (state, exit_code) = (status.state, status.exit_code);
     let running = state == JobState::Running;
     let (out, out_next) = read_log(&job.out_path, since("stdout_since"), running);
     let (err, err_next) = read_log(&job.err_path, since("stderr_since"), running);
@@ -240,42 +244,44 @@ fn exec_list(reg: &Registry) -> Value {
     let entries: Vec<Value> = jobs
         .iter()
         .map(|j| {
+            let st = j.status();
             let mut o = Map::new();
             o.insert("job_id".into(), json!(j.id));
-            o.insert("state".into(), json!(j.state().as_str()));
+            o.insert("state".into(), json!(st.state.as_str()));
             o.insert("pid".into(), json!(j.pid));
             o.insert("command".into(), json!(j.command));
             o.insert("cwd".into(), json!(j.cwd));
             o.insert("started_at".into(), json!(iso8601(j.started_at)));
             o.insert("stdout_bytes".into(), json!(file_size(&j.out_path)));
             o.insert("stderr_bytes".into(), json!(file_size(&j.err_path)));
-            if let Some(code) = j.exit_code() {
+            if let Some(code) = st.exit_code {
                 o.insert("exit_code".into(), json!(code));
             }
-            if let Some(fin) = j.finished_at() {
+            if let Some(fin) = st.finished_at {
                 o.insert("finished_at".into(), json!(iso8601(fin)));
             }
             Value::Object(o)
         })
         .collect();
-    let running = jobs
+    let running = entries
         .iter()
-        .filter(|j| j.state() == JobState::Running)
+        .filter(|e| e["state"] == JobState::Running.as_str())
         .count();
     let text = if jobs.is_empty() {
         "no jobs".to_string()
     } else {
         let lines: Vec<String> = jobs
             .iter()
-            .map(|j| {
-                let ex = j
-                    .exit_code()
+            .zip(&entries)
+            .map(|(j, e)| {
+                let ex = e
+                    .get("exit_code")
                     .map(|c| format!(" exit {c}"))
                     .unwrap_or_default();
                 format!(
                     "{}  {}{ex}  pid {}  {}",
                     j.id,
-                    j.state().as_str(),
+                    e["state"].as_str().unwrap_or_default(),
                     j.pid,
                     j.command
                 )
@@ -305,10 +311,11 @@ fn exec_cancel(reg: &Registry, arguments: &Value) -> ToolReturn {
     let Some(job) = reg.get(id) else {
         return Ok(tool_error(format!("unknown job_id: {id}")));
     };
-    let state = job.state();
+    let status = job.status();
+    let state = status.state;
     if state != JobState::Running {
         reg.drop_finished(id);
-        let code = job.exit_code().unwrap_or(-1);
+        let code = status.exit_code.unwrap_or(-1);
         return Ok(with_text(
             format!("job {id} already {} (exit {code}); dropped", state.as_str()),
             json!({ "job_id": id, "state": state.as_str(), "dropped": true }),
