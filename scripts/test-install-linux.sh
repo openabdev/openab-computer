@@ -145,13 +145,13 @@ expect nobrowser oab-instance-mcp.service ci-other 9000
 for u in oab-pw-mcp.service oab-seat.service; do
   [ ! -e "$T/nobrowser/home/.config/systemd/user/$u" ] || fail "nobrowser: $u written"
 done
-grep -qF "oab-pw-mcp" "$T/nobrowser/calls" && fail "nobrowser: oab-pw-mcp.service enabled"
+if grep -qF "oab-pw-mcp" "$T/nobrowser/calls"; then fail "nobrowser: oab-pw-mcp.service enabled"; fi
 
 for name in browser nobrowser; do
   unit="$T/$name/home/.config/systemd/user/oab-instance-mcp.service"
   grep -qF '# Apps opened via `bash` belong to the desktop' "$unit" || fail "$name: KillMode comment mangled"
   tok="$T/$name/home/.config/oab-instance-mcp/token"
-  [ -s "$tok" ] && [ "$(stat -c %a "$tok")" = 600 ] || fail "$name: token missing or not mode 600"
+  if [ ! -s "$tok" ] || [ "$(stat -c %a "$tok")" != 600 ]; then fail "$name: token missing or not mode 600"; fi
 done
 
 # 3. systemd's own parser. The seat unit is skipped: its ExecStart (/usr/bin/sway) is not
