@@ -64,8 +64,8 @@ The fixtures stop at the JSON-RPC layer. These HTTP behaviours are open.
 | sha256 verifier (runtime stores the hash only) | not in this repo | not in this repo | open (runtime side, openab-pty) |
 | credential never in shell output (grant body) | `AttachCredentialSecrecyTests` | `attach::grant_secrecy_tests` | pass (GET bodies, POST response) |
 | pod stores only the verifier | not in this repo | not in this repo | open (runtime side) |
-| successful wss:// handshake | not tested | not tested | open (needs a TLS fixture) |
-| wss:// never falls back to plaintext | not tested (`SwitchboardTests` checks URL validation only) | `attach::client::tests` (tungstenite connect, not `dial_loop`) | pass (Rust), with a caveat: on Linux the dial panics (no process-level rustls CryptoProvider) and the test accepts the panic, so it shows only that no plaintext HTTP is sent. Follow-up #66 |
+| successful wss:// handshake | not tested | not tested (ring provider installed since #66) | open (needs a TLS fixture) |
+| wss:// never falls back to plaintext | not tested (`SwitchboardTests` checks URL validation only) | `attach::client::tests`: `tungstenite::connect` must return a TLS or I/O error, and `dial_loop` against a plaintext listener redials with backoff and ends at the deadline | pass (Rust); Swift open |
 | TLS certificate verification | not tested | not tested | open (needs a cert fixture) |
 | origin policy on the upgrade | undefined | undefined | open (decision needed) |
 
