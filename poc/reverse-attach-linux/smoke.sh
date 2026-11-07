@@ -18,7 +18,7 @@ GRANTS_DIR=$(mktemp -d)
 export MCP_GRANTS_FILE="$GRANTS_DIR/grants.json"
 
 # 1000 → redial, then 4010 → stop(revoked). Third attach (if any) would be 4010 again.
-PORT=18090 ADMIN=admin-secret CLOSES=1000,4010 SECRETS=pre=preminted-xyz LOG=$LOG \
+PORT=18090 ADMIN=admin-secret CLOSES=1000,4010 SECRETS=pre=preminted-xyz,bare=bare-xyz LOG=$LOG \
   python3 mock_runtime.py > /tmp/mock-runtime.out 2>&1 &
 MOCK=$!
 # Job logs go under XDG_STATE_HOME: keep them in the scratch dir too.
@@ -145,6 +145,14 @@ check "no sleep leaked after timeout" "! pgrep -f 'sleep 30' >/dev/null"
 check "close frame echoed (desktop attach)" "grep -q '\"ev\": \"close_echo\"' $LOG"
 st=$($C 127.0.0.1:8790/attach); echo "$st"
 check "desktop grant ended/revoked (CLOSES tail=4010)" "[[ \$(echo '$st' | state_of pre) == ended && \$(echo '$st' | ended_of pre) == revoked ]]"
+
+echo "== bare attach (no profile) → observe surface (#59) =="
+: > $LOG
+r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"bare","ttl_secs":30,"secret":"bare-xyz"}')
+echo "$r"
+check "bare grant reports profile observe" "[[ '$r' == *'\"profile\":\"observe\"'* ]]"
+for i in $(seq 1 20); do grep -q '"ev": "closed"' $LOG 2>/dev/null && break; sleep 0.5; done
+check "bare tools/list = sys_info,screenshot" "[[ \$(py tools) == sys_info,screenshot ]]"
 
 echo "== wrong secret → handshake 401 → stop =="
 : > $LOG

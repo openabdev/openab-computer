@@ -10,9 +10,11 @@ Screens pane, browser tools):
   by the installer (`--headless-seat`).
 
 Read the trust warning at the top of the [README](../README.md) first. On Linux it is stricter,
-not looser: `bash` is offered in **both** profiles, so anyone who can attach this node gets a
-shell as the user running the daemon. The background-job tools (`exec_start` and friends) are
-`owner` only, like `exec*` on macOS; see [Background jobs](#background-jobs).
+not looser: `bash` is offered in **both** the `owner` and `desktop` profiles, so anyone who can
+attach this node with either gets a shell as the user running the daemon. Only `observe` (the
+default for an attach that names no profile) leaves it out. The background-job tools
+(`exec_start` and friends) are `owner` only, like `exec*` on macOS; see
+[Background jobs](#background-jobs).
 
 ## What you end up with
 
@@ -240,9 +242,9 @@ curl -s -X POST $U/mcp -H "Authorization: Bearer $TOKEN" -H 'Content-Type: appli
 Expect the five local tools plus 32 `browser_*` (owner surface; direct `/mcp` is always owner).
 
 **OpenAB Connect Screens pane:** Add a Mac screen with Name `<host>`, URL
-`https://<host>.<tailnet>.ts.net:8444/mcp`, Display `0`, the token above, Max FPS `1`. The
-Debian `grim` has no libjpeg, so frames are PNG (~2 MB per 1080p frame); at 2 FPS that is
-4 MB/s on the tailnet.
+`https://<host>.<tailnet>.ts.net:8444/mcp`, Display `0`, the token above, Max FPS `1`. Frames are
+JPEG, encoded in the daemon because Debian's `grim` has no libjpeg: about 50 KB for a 1080p
+desktop at Connect's quality 0.6, against about 2 MB as PNG.
 
 **Lend to an openab-pty session:**
 
@@ -263,7 +265,7 @@ sequenceDiagram
     N-->>R: sys_info screenshot bash mouse key + 16 browser_*
     A->>R: tools/call screenshot
     R->>N: tools/call screenshot
-    N-->>R: image/png
+    N-->>R: image/jpeg
     Note over N,R: close 4010 / DELETE /attach/{id} → stop · 1000 → redial with backoff
 ```
 
@@ -273,6 +275,9 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
        "ttl_secs":3600,"admin_credential":"<openab-pty admin credential>"}'
 # → 202 {"id":"grant-…","state":"idle",…}; GET $U/attach lists, DELETE $U/attach/<id> revokes
 ```
+
+Always send `profile`. A request without it gets `observe` (`sys_info` and `screenshot` only);
+up to 0.8.2 it got `owner`. See [`tool-profiles.md`](tool-profiles.md).
 
 OpenAB Connect stores the runtime's admin credential in the macOS Keychain (service
 `dev.openab.connect`, account = pod name). Inside the session, `$OPENAB_TOOLS_MCP_URL` then
@@ -360,7 +365,9 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
 - **Raspberry Pi OS's stock desktop is already a headless seat.** With no monitor plugged in,
   labwc keeps a 1920×1080 output alive (`wlr-randr`: `NOOP-1 "Headless output 2"`), the panel and
   file manager run on it, and `grim` captures it. Nothing from the "sway headless" spike (#23)
-  is needed. Plug a monitor in and the geometry changes; `sys_info` and `screenshot` follow.
+  is needed. Plug a monitor in and the geometry changes; `sys_info` and the captured frame follow.
+  `mouse` keeps the old layout until the virtual pointer reconnects, and while that pointer is live
+  `screenshot` reports the same layout for `points` and the `region` clip, so the two agree.
 - labwc also runs an Xwayland on `:0`, which is why the browser unit sets `DISPLAY=:0`
   alongside `WAYLAND_DISPLAY`.
 - The Debian Chromium is arm64-native and fast enough for `browser_snapshot`-style work; a first
@@ -379,8 +386,8 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
 - **Anything that talks to the seat needs `WAYLAND_DISPLAY` + `XDG_RUNTIME_DIR`.** An
   ssh-started or systemd-started process has neither; the daemon defaults them to `wayland-0` /
   `/run/user/<uid>` when unset, the units set them explicitly, and `pw-mcp.sh` adds `DISPLAY`.
-- **`grim -t jpeg` → "jpeg support disabled"** on Debian's build. The daemon falls back to PNG
-  for `jpeg` requests; Connect decodes by content and does not care.
+- **`grim -t jpeg` → "jpeg support disabled"** on Debian's build. The daemon never asks grim
+  for JPEG: it takes raw PPM from grim and encodes the JPEG itself.
 - **A seat with no physical input silently drops transient virtual devices.** Headless sway (black)
   and a Pi with no mouse advertise no pointer/keyboard capability, so a `wlrctl`/`wtype` call that
   creates a device, sends and exits within milliseconds is lost: Chromium never binds

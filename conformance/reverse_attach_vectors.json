@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Conformance vectors for ReverseAttachClient.disposition() + attachURL. Oracle: Swift ReverseAttachClient.swift §9.2.",
+  "description": "Conformance vectors for ReverseAttachClient.disposition() + attachURL. Oracle: Swift ReverseAttachClient.swift. openab-pty CLIENT-CONTRACT §9.2: stop on 4001/4002/4004/4010; redial on any other close code, including unlisted ones (4003 is a /pty code, §5; 4999 is unassigned). Handshake: redial on 101/2xx/429/5xx, stop on anything else.",
   "close_code": [
     {"code": 4001, "expect": {"stop": "grantExpired"}},
     {"code": 4002, "expect": {"stop": "replaced"}},

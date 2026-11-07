@@ -8,7 +8,7 @@ not cover yet, and the status of each row. Status values: **pass** (both
 backends agree and a test pins it), **drift** (the backends differ, pinned in
 `known_drift`), **open** (not yet tested).
 
-Refs #24.
+Refs #24, #79.
 
 ## 1. Gate conditions
 
@@ -51,6 +51,7 @@ The fixtures stop at the JSON-RPC layer. These HTTP behaviours are open.
 | non-JSON Content-Type on POST | 415 | no check | open |
 | malformed JSON body on POST | 400 with JSON-RPC error -32700 | 202, no body | open (follows from the wire drift above) |
 | `GET /mcp` | 405 | 405 | open (not tested) |
+| `401` body on an auth deny | `text/plain` `unauthorized\n` | `{"error":"unauthorized"}` | open |
 
 ## 4. Reverse attach
 
@@ -60,12 +61,14 @@ The fixtures stop at the JSON-RPC layer. These HTTP behaviours are open.
 | attach URL | vectors | vectors | pass |
 | dial with bearer, expected upgrade headers | not asserted (FakeRuntime accepts any bearer); bearer seen only on the 401 path, see `ReverseAttachRefusedUpgradeTests` | `attach::client::tests` | pass (Rust); Swift open |
 | refused upgrade (401) stops after one dial | `ReverseAttachRefusedUpgradeTests` | `attach::client::tests`, `dial_loop` runs against the refusing runtime | pass |
-| bearer compare is byte-exact (same length, case, trailing space); vectors check outcomes, not timing | `auth_vectors.json` | `auth::conformance` | pass |
+| bearer compare is byte-exact on the parsed value (same length, case, trailing space left in the value); the parser strips whitespace around the header value first; vectors check outcomes, not timing | `auth_vectors.json`; `HTTPParserTests.testHeaderValueWhitespaceStripped` | `auth::conformance`; parser stripping by reading (`http.rs` `value.trim()`), no test | pass |
+| login allowlist compare is case-insensitive; principal is the lowercased login | `auth_vectors.json` | `auth::conformance` | pass |
+| deny-reason strings are part of parity as operator log text (never on the wire): `missing Authorization header`, `Authorization must be Bearer`, `bad token`, `login <login> not allowed`, `no Tailscale identity on request`, `unauthenticated` | `auth_vectors.json` (exact) | `auth::conformance` (exact) | pass |
 | sha256 verifier (runtime stores the hash only) | not in this repo | not in this repo | open (runtime side, openab-pty) |
 | credential never in shell output (grant body) | `AttachCredentialSecrecyTests` | `attach::grant_secrecy_tests` | pass (GET bodies, POST response) |
 | pod stores only the verifier | not in this repo | not in this repo | open (runtime side) |
-| successful wss:// handshake | not tested | not tested | open (needs a TLS fixture) |
-| wss:// never falls back to plaintext | not tested (`SwitchboardTests` checks URL validation only) | `attach::client::tests` (tungstenite connect, not `dial_loop`) | pass (Rust), with a caveat: on Linux the dial panics (no process-level rustls CryptoProvider) and the test accepts the panic, so it shows only that no plaintext HTTP is sent. Follow-up #66 |
+| successful wss:// handshake | not tested | not tested (ring provider installed since #66) | open (needs a TLS fixture) |
+| wss:// never falls back to plaintext | not tested (`SwitchboardTests` checks URL validation only) | `attach::client::tests`: `tungstenite::connect` must return a TLS or I/O error, and `dial_loop` against a plaintext listener redials with backoff and ends at the deadline | pass (Rust); Swift open |
 | TLS certificate verification | not tested | not tested | open (needs a cert fixture) |
 | origin policy on the upgrade | undefined | undefined | open (decision needed) |
 
@@ -81,7 +84,7 @@ not filled here.
 | Tool | Swift present | Rust present | Classification | Conformance test |
 |------|---------------|--------------|----------------|------------------|
 | `sys_info` | `SysInfoTool` | yes (`tools/sysinfo.rs`) | see #59 | none beyond tools/list shape |
-| `screenshot` | `ScreenshotTool` | yes (`tools/screen.rs`) | see #59 | none beyond tools/list shape |
+| `screenshot` | `ScreenshotTool` | yes (`tools/screen.rs`; same `format`/`quality`/`scale`/`region`/`display` arguments and defaults for format and quality, JPEG encoded in-process, #32 item 5) | see #59 | Rust unit tests only (argument parsing, region clip, PPM→JPEG); no shared vectors. Linux default `scale` is 0.5 (Swift 1.0) |
 | shell (`exec` in Swift, `bash` in Rust) | `ExecTool` | yes (`tools/bash.rs`) | see #59 | none. Name differs between backends |
 | `mouse` | `MouseTool` | yes (`tools/input.rs`) | see #59 | none |
 | `key` | `KeyTool` | yes (`tools/input.rs`) | see #59 | none |
