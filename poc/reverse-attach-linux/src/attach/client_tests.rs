@@ -394,7 +394,14 @@ fn wss_tls_failure_in_dial_loop_redials_and_ends_at_deadline() {
     };
     let dialer = thread::spawn(move || dial_loop(grant));
     let mut states = Vec::new();
+    // The deadline is at most 3 s away; a dial_loop still running 10 s later is
+    // stuck, so fail instead of hanging the suite.
+    let give_up = Instant::now() + Duration::from_secs(10);
     while !dialer.is_finished() {
+        assert!(
+            Instant::now() < give_up,
+            "dial_loop did not end at its deadline; states seen: {states:?}"
+        );
         let state = registry
             .lock()
             .unwrap()

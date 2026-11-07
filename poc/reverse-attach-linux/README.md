@@ -135,6 +135,6 @@ revoked grant not resumed.
 - `wss://` runtimes: the dial uses rustls with the ring provider (#66). Tests cover only the failure
   side (a TLS failure redials and ends at the deadline, never falls back to plaintext); a successful
   TLS handshake and certificate verification are not tested yet. Mint over https does not work.
-- Real-runtime test against the p1 openab-pty pod is pending: rpi1 is **not on the tailnet**
-  (no `tailscale` binary; `100.111.174.31:8090` times out) and the pod's `PTY_ADMIN_HASH` is a
-  hash, so the admin credential must come from the operator.
+- Real-runtime test against a live openab-pty pod is pending: the test host was not on the
+  tailnet, and the pod's `PTY_ADMIN_HASH` is a hash, so the admin credential must come from the
+  operator.
