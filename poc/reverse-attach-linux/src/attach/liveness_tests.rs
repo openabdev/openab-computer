@@ -590,13 +590,24 @@ fn a_call_thread_that_cannot_start_is_answered_with_an_error() {
         );
     }
 
-    // A notification or a frame that is not JSON gets no reply, as from `answer`.
-    for frame in [
-        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string(),
-        "not json".to_string(),
-    ] {
-        spawn_call_on(frame.clone(), &calls, fail);
-        assert!(outbox.try_recv().is_err(), "{frame} was answered");
+    // A notification gets no reply, as from `answer`.
+    let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string();
+    spawn_call_on(note.clone(), &calls, fail);
+    assert!(outbox.try_recv().is_err(), "{note} was answered");
+    assert_eq!(
+        in_flight.load(Ordering::Acquire),
+        0,
+        "the busy count leaked"
+    );
+
+    // A frame that does not parse gets the envelope error `answer` gives it,
+    // with a null id (#78).
+    for (frame, code) in [("not json", -32700), (r#"[{"jsonrpc":"2.0"}]"#, -32600)] {
+        spawn_call_on(frame.to_string(), &calls, fail);
+        let reply: Value =
+            serde_json::from_str(&outbox.try_recv().expect("an error reply")).unwrap();
+        assert_eq!(reply["id"], Value::Null, "{reply}");
+        assert_eq!(reply["error"]["code"], code, "{reply}");
         assert_eq!(
             in_flight.load(Ordering::Acquire),
             0,

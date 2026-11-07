@@ -60,14 +60,28 @@ final class WireConformanceTests: XCTestCase {
     func testEveryWireCaseMatchesTheSwiftOracle() async throws {
         let doc = try load()
         let cases = try XCTUnwrap(doc["cases"]?.arrayValue)
-        XCTAssertGreaterThanOrEqual(cases.count, 12)
-        let server = MCPServer(name: "t", version: "0", tools: [EchoTool()])
+        XCTAssertGreaterThanOrEqual(cases.count, 20)
+        // A `bash` tool exists so a profile-hidden case is refused by `scoped(to:)`,
+        // not because the tool is absent: unscoped, the call would succeed.
+        let base = MCPServer(name: "t", version: "0", tools: [EchoTool(), ShellStub()])
         for c in cases {
             let name = c["name"]?.stringValue ?? "?"
             let request = try XCTUnwrap(c["request"]?.stringValue, name)
             let expect = try XCTUnwrap(c["expect"], name)
+            var server = base
+            if let p = c["profile"]?.stringValue {
+                server = base.scoped(to: try XCTUnwrap(ToolProfile(rawValue: p), "\(name): profile \(p)"))
+            }
             let got = await observe(server, request)
             XCTAssertTrue(Self.matches(got, expect), "\(name): got \(got), want \(expect)")
         }
     }
+}
+
+/// Stands in for a shell-capable tool, so the `observe` vector exercises `scoped(to:)`.
+private struct ShellStub: Tool {
+    let name = "bash"
+    let description = "stub"
+    let inputSchema: JSONValue = ["type": "object"]
+    func call(arguments: JSONValue) async throws -> ToolResult { .text("ran") }
 }

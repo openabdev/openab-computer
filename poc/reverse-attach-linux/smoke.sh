@@ -122,7 +122,7 @@ fi
 check "serverInfo.version = sys_info agent.version" "[[ \$(py srvver) == \$(py sysver) ]]"
 check "bash ran on node with cwd ~" "[[ \$(py exec) == \"hands-node-$(hostname) $HOME\" ]]"
 check "bash timeout → 137 + group killed" "[[ \$(py timeout) == 137,True ]]"
-check "unknown tool → -32601" "[[ \$(py unk) == -32601* ]]"
+check "unknown tool → -32602" "[[ \$(py unk) == -32602* ]]"
 check "unknown method → -32601" "[[ \$(py bogus) == -32601 ]]"
 check "ping → pong" "[[ \$(py pong) == True ]]"
 JOB=$(py job)

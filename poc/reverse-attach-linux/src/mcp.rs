@@ -301,6 +301,9 @@ pub(crate) fn upstream_owning(name: &str, profile: &str) -> Option<Arc<Upstream>
 // answer(): MCP JSON-RPC dispatch
 // ---------------------------------------------------------------------------
 
+/// One frame through the same parse and dispatch `POST /mcp` uses, without the
+/// HTTP layer (`http::mcp_route`). Tests only.
+#[cfg(test)]
 pub(crate) fn answer(text: &str, profile: &str) -> Option<String> {
     answer_with(text, profile, None)
 }
@@ -318,46 +321,134 @@ pub(crate) fn answer_attached(text: &str, profile: &str, cancel: &AtomicBool) ->
     answer_with(text, profile, Some(cancel))
 }
 
+/// The protocol version we prefer, and answer for a version we do not know
+/// (Swift `MCPServer.protocolVersion`).
+pub(crate) const PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// Versions a client may negotiate; we speak the same subset in each (Swift
+/// `MCPServer.supportedVersions`).
+pub(crate) const SUPPORTED_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+
+pub(crate) const PARSE_ERROR: i64 = -32700;
+pub(crate) const INVALID_REQUEST: i64 = -32600;
+pub(crate) const METHOD_NOT_FOUND: i64 = -32601;
+pub(crate) const INVALID_PARAMS: i64 = -32602;
+
+/// One JSON-RPC message that passed the envelope checks.
+pub(crate) struct Request {
+    /// `None` for a notification: no `id`, or `"id": null` (as Swift).
+    pub(crate) id: Option<Value>,
+    pub(crate) method: String,
+    pub(crate) params: Value,
+}
+
+/// Same rules as Swift `MCPServer.parse(Data)`, in the same order:
+/// - not JSON → -32700;
+/// - a non-empty array (a batch, removed in 2025-06-18) → -32600; an empty
+///   array → -32700;
+/// - anything else without a string `jsonrpc` and a string `method` → -32700
+///   (Swift's decoder fails before its version check);
+/// - `jsonrpc` other than `"2.0"` → -32600.
+pub(crate) fn parse_request(text: &str) -> Result<Request, (i64, String)> {
+    parse_request_bytes(text.as_bytes())
+}
+
+/// `parse_request` over raw bytes, as Swift hands `JSONDecoder` the HTTP body
+/// `Data`: a body that is not valid UTF-8 is a -32700, never decoded lossily.
+pub(crate) fn parse_request_bytes(bytes: &[u8]) -> Result<Request, (i64, String)> {
+    let v: Value =
+        serde_json::from_slice(bytes).map_err(|e| (PARSE_ERROR, format!("Parse error: {e}")))?;
+    if let Value::Array(items) = &v {
+        return Err(if items.is_empty() {
+            (PARSE_ERROR, "Parse error: empty array".to_string())
+        } else {
+            (
+                INVALID_REQUEST,
+                "batch requests are not supported".to_string(),
+            )
+        });
+    }
+    let (Some(jsonrpc), Some(method)) = (
+        v.get("jsonrpc").and_then(Value::as_str),
+        v.get("method").and_then(Value::as_str),
+    ) else {
+        return Err((
+            PARSE_ERROR,
+            "Parse error: a request needs a string jsonrpc and method".to_string(),
+        ));
+    };
+    if jsonrpc != "2.0" {
+        return Err((INVALID_REQUEST, "jsonrpc must be \"2.0\"".to_string()));
+    }
+    let id = match v.get("id") {
+        None | Some(Value::Null) => None,
+        Some(id) => Some(id.clone()),
+    };
+    Ok(Request {
+        id,
+        method: method.to_string(),
+        params: v.get("params").cloned().unwrap_or(Value::Null),
+    })
+}
+
+/// A JSON-RPC error response. Envelope errors carry `"id": null`, as in Swift.
+pub(crate) fn error_response(id: &Value, code: i64, message: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": code, "message": message }
+    })
+    .to_string()
+}
+
 fn answer_with(text: &str, profile: &str, cancel: Option<&AtomicBool>) -> Option<String> {
-    let req: Value = match serde_json::from_str(text) {
-        Ok(v) => v,
-        Err(_) => return None,
-    };
+    match parse_request(text) {
+        Ok(req) => answer_request(&req, profile, cancel),
+        Err((code, message)) => Some(error_response(&Value::Null, code, &message)),
+    }
+}
 
-    // Notifications have no id -> no response.
-    let id = req.get("id").cloned()?;
+/// Dispatch one parsed request (Swift `MCPServer.handle`). `None` for a
+/// notification.
+pub(crate) fn answer_request(
+    req: &Request,
+    profile: &str,
+    cancel: Option<&AtomicBool>,
+) -> Option<String> {
+    let id = req.id.as_ref()?;
+    let params = &req.params;
 
-    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
-    let params = req.get("params").cloned().unwrap_or(Value::Null);
-
-    let result: Result<Value, (i64, String)> = match method {
-        "initialize" => Ok(json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": { "tools": {} },
-            "serverInfo": {
-                "name": "instance-mcp-rpi",
-                "version": AGENT_VERSION
-            },
-            "instructions": instructions(profile)
-        })),
+    let result: Result<Value, (i64, String)> = match req.method.as_str() {
+        "initialize" => {
+            let requested = params.get("protocolVersion").and_then(Value::as_str);
+            let negotiated = requested
+                .filter(|v| SUPPORTED_VERSIONS.contains(v))
+                .unwrap_or(PROTOCOL_VERSION);
+            Ok(json!({
+                "protocolVersion": negotiated,
+                "capabilities": { "tools": { "listChanged": false } },
+                "serverInfo": {
+                    "name": "instance-mcp-rpi",
+                    "version": AGENT_VERSION
+                },
+                "instructions": instructions(profile)
+            }))
+        }
+        "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_list(profile) })),
-        "tools/call" => match cancel.and_then(|_| refuse_long_bash(&params, profile)) {
+        "tools/call" => match cancel.and_then(|_| refuse_long_bash(params, profile)) {
             Some(refusal) => Ok(refusal),
-            None => handle_tool_call(&params, profile, cancel),
+            None => handle_tool_call(params, profile, cancel),
         },
-        other => Err((-32601, format!("method not found: {other}"))),
+        "resources/list" | "resources/templates/list" => Ok(json!({ "resources": [] })),
+        "prompts/list" => Ok(json!({ "prompts": [] })),
+        other => Err((METHOD_NOT_FOUND, format!("Method not found: {other}"))),
     };
 
-    let response = match result {
-        Ok(res) => json!({ "jsonrpc": "2.0", "id": id, "result": res }),
-        Err((code, message)) => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": { "code": code, "message": message }
-        }),
-    };
-
-    Some(response.to_string())
+    Some(match result {
+        Ok(res) => json!({ "jsonrpc": "2.0", "id": id, "result": res }).to_string(),
+        Err((code, message)) => error_response(id, code, &message),
+    })
 }
 
 /// Every profile is told how long a call may run: the runtime fails a call with
@@ -542,16 +633,22 @@ pub(crate) fn handle_tool_call(
     profile: &str,
     cancel: Option<&AtomicBool>,
 ) -> Result<Value, (i64, String)> {
-    let name = params
-        .get("name")
-        .and_then(|n| n.as_str())
-        .ok_or_else(|| (-32602, "missing tool name".to_string()))?;
+    let name = params.get("name").and_then(|n| n.as_str()).ok_or_else(|| {
+        (
+            INVALID_PARAMS,
+            "Invalid params: missing tool name".to_string(),
+        )
+    })?;
     let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
 
     // A tool hidden from this profile's list is unknown here too, indistinguishable
-    // from one that never existed (same rule as the Swift `scoped(to:)`).
+    // from one that never existed (same rule as the Swift `scoped(to:)`). Unknown
+    // is invalid params, as in Swift: the method exists, the name does not.
     if LOCAL_TOOL_NAMES.contains(&name) && !local_tool_allowed(name, profile) {
-        return Err((-32601, format!("unknown tool: {name}")));
+        return Err((
+            INVALID_PARAMS,
+            format!("Invalid params: unknown tool: {name}"),
+        ));
     }
     match name {
         "sys_info" => Ok(tool_result(tool_sys_info())),
@@ -568,7 +665,10 @@ pub(crate) fn handle_tool_call(
                     Some(json!({"name": other, "arguments": arguments})),
                 )
                 .map_err(|e| (-32000, e)),
-            None => Err((-32601, format!("unknown tool: {other}"))),
+            None => Err((
+                INVALID_PARAMS,
+                format!("Invalid params: unknown tool: {other}"),
+            )),
         },
     }
 }
@@ -716,7 +816,7 @@ mod profile_tests {
                     json!({"name": tool, "arguments": {"job_id": "job-x", "command": "true"}});
                 assert_eq!(
                     handle_tool_call(&call, profile, None).unwrap_err().0,
-                    -32601,
+                    INVALID_PARAMS,
                     "{tool} callable under {profile}"
                 );
             }

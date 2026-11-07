@@ -29,8 +29,11 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
   We also ping the runtime every 15 s. When a socket ends (close, error, `DELETE`), its running
   calls are cancelled and `bash` kills its process group.
 - MCP over the socket: `initialize` (with instructions: keep calls under ~60 s, issue `mouse` /
-  `key` steps one at a time), `tools/list`, `tools/call`; notifications get no reply;
-  ping → pong. Tools: `sys_info`, `screenshot`, `bash`, `mouse`, `key` — in **both** profiles
+  `key` steps one at a time), `ping`, `tools/list`, `tools/call`; notifications get no reply; a
+  frame that does not parse gets the JSON-RPC envelope error with a null id, as from Swift
+  (`conformance/mcp_wire_vectors.json`, #78); WebSocket ping → pong. The socket is the session:
+  no `Mcp-Session-Id` on this path, as in Swift. Tools: `sys_info`, `screenshot`, `bash`, `mouse`,
+  `key` — in **both** profiles
   (decision 2026-09-28: a lent node is only useful if the agent can act on it, and the macOS
   `desktop` profile already hands out a shell through `osascript`'s `do shell script`). Neither
   profile is a security boundary on Linux either (#45): lend a dedicated node. `bash` = `bash -c`
@@ -52,7 +55,7 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
 
 Deps: `serde_json` + `tungstenite` (rustls). Sync std threads, no tokio. ~28 KB.
 
-## Verified on rpi1 (Debian 13, aarch64, Rust 1.98) — 2026-09-27
+## Verified on a Raspberry Pi (Debian 13, aarch64, Rust 1.98) — 2026-09-27
 
 ```sh
 cargo build --release          # 31 s cold, 2.2 MB binary
@@ -68,7 +71,7 @@ bash smoke.sh                  # RESULT: 55 passed, 0 failed
 | mint path | `ttl_secs=60` seen by the runtime's mint endpoint; `expires_in_secs=60` in the grant |
 | control contract | `POST /attach` 202 with every Connect-required grant field; `GET /attach` wrapper; `GET /attach/{id}`; `DELETE` 204 + removal; principal and dynamic expiry |
 | redial / stop | close `1000` → redialed after 1 s; close `4010` → `state=ended, ended=revoked`; wrong secret → `ended=handshake_rejected_401` with exactly one attempt; unreachable runtime → `ended=deadline` |
-| MCP | `serverInfo.name=instance-mcp-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=rpi1`; `exec` ran on the node; unknown tool / method → `-32601`; notification silent; ping → pong |
+| MCP | `serverInfo.name=instance-mcp-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=<node>`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
 | desktop | list = `sys_info,screenshot`; forced `exec` → error, not executed (2026-09-28 run, before `bash` joined both profiles) |
 | close handshake | client echoes the Close frame (was a bare EOF before the `socket.flush()` fix in `dial_loop`) |
 
@@ -78,21 +81,26 @@ The same binary now also serves MCP Streamable-HTTP (JSON mode) on `POST /mcp`, 
 `AuthPolicy` with the Swift daemon's semantics — `MCP_TOKEN` / `MCP_TOKEN_FILE` (bearer,
 constant-time) AND `MCP_ALLOW_LOGIN` (matched against the `Tailscale-User-Login` header that
 `tailscale serve` injects); `MCP_INSECURE_LOCAL=1` for loopback debugging; refuses to start with
-nothing set. `/healthz` is open. `screenshot` returns MCP `image` content with the Swift tool's arguments: `format` jpeg
+nothing set. `/healthz` is open. HTTP behaviour after auth matches Swift `MCPHTTPEndpoint`
+(`conformance/mcp_http_vectors.json`, #78): `Content-Type` must be `application/json` (else 415), a
+body that fails the JSON-RPC envelope (including one that is not valid UTF-8) is 400 with the JSON-RPC error, `initialize` issues an
+`Mcp-Session-Id` (random UUID v4, in memory, the oldest dropped past 1024), an id we did not issue
+or that `DELETE /mcp` closed is 404 so the client re-initializes, a request without the header is
+served, `GET /mcp` and other methods are 405. `screenshot` returns MCP `image` content with the Swift tool's arguments: `format` jpeg
 (default) or png, `quality` 0–1 (default 0.7, floored at 0.1, so 1 = 100%; above 1 up to 100 is a percentage), `scale` (default 0.5, max 2),
 `region` {x,y,width,height} in display pixels (clipped to the output layout) and `display` 0.
 Debian's grim has no libjpeg, so for JPEG the daemon asks grim for raw PPM and encodes it
 in-process (`jpeg-encoder`, pure Rust); grim still does the crop (`-g`) and the scaling (`-s`).
 `structuredContent` carries `points` (layout size), `region`, `image` {width,height,bytes} and
-`scale`, as on macOS. On rpi2's labwc seat (#32 item 5): 1920×1080 at scale 1, q0.6 → 49 KiB
+`scale`, as on macOS. On a Raspberry Pi's labwc seat (#32 item 5): 1920×1080 at scale 1, q0.6 → 49 KiB
 JPEG in 0.07 s vs a 2.0 MB PNG in 1.0 s.
 `sys_info` carries the `host` / `displays` / `permissions.screen_recording` / `agent.version`
 fields the Screens pane reads.
 
-On rpi1: systemd user unit `oab-instance-mcp.service` (BIND 127.0.0.1:8795, seat env
+On a Raspberry Pi: systemd user unit `oab-instance-mcp.service` (BIND 127.0.0.1:8795, seat env
 `WAYLAND_DISPLAY=wayland-0`, linger on) + `tailscale serve --bg --https=8444 http://127.0.0.1:8795`
-→ `https://rpi1.tailb836bb.ts.net:8444/mcp`. Verified from the laptop: wrong token 401,
-initialize 200 with `Mcp-Session-Id`, `sys_info` host=rpi1 displays=1, Connect-shaped screenshot
+→ `https://<node>.<tailnet>.ts.net:8444/mcp`. Verified from the laptop: wrong token 401,
+initialize 200 with `Mcp-Session-Id`, `sys_info` host=<node> displays=1, Connect-shaped screenshot
 call (`display 0, scale 1, quality 0.6, format jpeg`) → a 1920×1080 image (PNG at the time, 1.35 s; it is JPEG since #32 item 5, see above). Pi OS's labwc
 desktop keeps a 1920×1080 headless output alive with no monitor attached, so no sway needed.
 
@@ -129,12 +137,12 @@ re-serves its tools under its own `tools/list`, filtered by the connection's pro
   camera/mic/notification/geolocation prompts: YouTube triggered the xdg-desktop-portal
   "Allow app to use the Camera?" dialog, which nothing but `mouse` could dismiss.
 
-Verified on rpi1: owner `/mcp` → 37 tools (5 local + 32 browser); after a pw-mcp restart the
+Verified on a Raspberry Pi: owner `/mcp` → 37 tools (5 local + 32 browser); after a pw-mcp restart the
 next call re-initializes and still lists 37. Lent to `kiro-1040` session `mac` (then named `sandbox`, now `desktop`):
 22 tools = 5 local + 16 browser + `instance_status`; forced `browser_run_code_unsafe` →
 `-32601 unknown tool`; `browser_navigate` example.com 13 s (Pi 4 class, first page), then
 `browser_snapshot` → `heading "Example Domain"`, `link "Learn more"`. The Chromium window is
-on rpi1's desktop, so `screenshot` / Connect's Screens pane show what the agent is doing.
+on the Pi's desktop, so `screenshot` / Connect's Screens pane show what the agent is doing.
 
 ## Grant persistence (#12)
 
@@ -146,7 +154,7 @@ revoked grant not resumed.
 
 ## Not yet (vs the Swift implementation)
 
-- `/mcp` has no real session table (an `Mcp-Session-Id` is issued but not checked) and no SSE stream.
+- `/mcp` has no SSE stream (`GET /mcp` is 405, as in Swift).
 - `mouse` maps onto the layout the virtual pointer read at connect, so after an output hotplug
   it lags until the pointer reconnects. `screenshot` reads the outputs itself (no input device)
   unless a pointer is live, in which case it reports that pointer's layout so the two agree.

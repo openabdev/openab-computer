@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Wire-level JSON-RPC vectors for the MCP layer: initialize, ping, tools/list, tools/call error shapes, notifications, parse and envelope errors. Oracle: Swift MCPServer.swift (parse + handle). Every case's expect is the Swift result. The Rust port (poc/reverse-attach-linux, mcp::answer) runs the same cases. Each case it still gets wrong is listed in known_drift with the subset it returns today (rust_today), so a drift fix or a new drift fails the Rust test until this file changes in the same PR. request is raw JSON text so malformed and batch inputs can be expressed. expect keys: response (bool), error (JSON-RPC code), result_subset (keys that must match result), result_tools_shape (result.tools is a non-empty array of objects with name, description and inputSchema). Subset matching: unlisted keys are not checked.",
+  "description": "Wire-level JSON-RPC vectors for the MCP layer: initialize, ping, tools/list, tools/call error shapes, notifications, parse and envelope errors. Oracle: Swift MCPServer.swift (parse + handle). Every case's expect is the Swift result. The Rust port (poc/reverse-attach-linux) runs the same cases through mcp::answer (POST /mcp) and mcp::answer_attached (a reverse-attach socket). Each case it still gets wrong is listed in known_drift with the subset it returns today (rust_today), so a drift fix or a new drift fails the Rust test until this file changes in the same PR. request is raw JSON text so malformed and batch inputs can be expressed. expect keys: response (bool), error (JSON-RPC code), result_subset (keys that must match result), result_tools_shape (result.tools is a non-empty array of objects with name, description and inputSchema). Subset matching: unlisted keys are not checked.",
   "cases": [
     {
       "name": "initialize negotiates 2024-11-05",
@@ -65,36 +65,48 @@
       "name": "batch array is an invalid request (batches removed in 2025-06-18)",
       "request": "[{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/list\"}]",
       "expect": {"response": true, "error": -32600}
+    },
+    {
+      "name": "initialize negotiates 2025-03-26",
+      "request": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"0\"}}}",
+      "expect": {"response": true, "result_subset": {"protocolVersion": "2025-03-26"}}
+    },
+    {
+      "name": "initialize without a version gets 2025-06-18",
+      "request": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+      "expect": {"response": true, "result_subset": {"protocolVersion": "2025-06-18"}}
+    },
+    {
+      "name": "tools/call of a tool the profile hides is invalid params, like an unknown one",
+      "request": "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"bash\",\"arguments\":{\"command\":\"true\"}}}",
+      "profile": "observe",
+      "expect": {"response": true, "error": -32602}
+    },
+    {
+      "name": "resources/list returns an empty list",
+      "request": "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"resources/list\"}",
+      "expect": {"response": true, "result_subset": {"resources": []}}
+    },
+    {
+      "name": "prompts/list returns an empty list",
+      "request": "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"prompts/list\"}",
+      "expect": {"response": true, "result_subset": {"prompts": []}}
+    },
+    {
+      "name": "a request with a null id is a notification",
+      "request": "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"ping\"}",
+      "expect": {"response": false}
+    },
+    {
+      "name": "an empty array is a parse error",
+      "request": "[]",
+      "expect": {"response": true, "error": -32700}
+    },
+    {
+      "name": "an object without method is a parse error (the Swift decoder fails before the envelope check)",
+      "request": "{\"jsonrpc\":\"2.0\",\"id\":11}",
+      "expect": {"response": true, "error": -32700}
     }
   ],
-  "known_drift": [
-    {
-      "name": "initialize negotiates 2025-06-18",
-      "rust_today": {"response": true, "result_subset": {"protocolVersion": "2024-11-05"}}
-    },
-    {
-      "name": "initialize with unknown version falls back to 2025-06-18",
-      "rust_today": {"response": true, "result_subset": {"protocolVersion": "2024-11-05"}}
-    },
-    {
-      "name": "ping returns an empty result",
-      "rust_today": {"response": true, "error": -32601}
-    },
-    {
-      "name": "tools/call unknown tool is invalid params",
-      "rust_today": {"response": true, "error": -32601}
-    },
-    {
-      "name": "malformed JSON is a parse error",
-      "rust_today": {"response": false}
-    },
-    {
-      "name": "jsonrpc other than 2.0 is an invalid request",
-      "rust_today": {"response": true, "result_tools_shape": true}
-    },
-    {
-      "name": "batch array is an invalid request (batches removed in 2025-06-18)",
-      "rust_today": {"response": false}
-    }
-  ]
+  "known_drift": []
 }
