@@ -171,9 +171,9 @@ An agent in an `openab-pty` session cannot reach this Mac — the pod has no tai
 # "lend my Mac to session laptop for an hour, desktop profile"; the Mac mints the attach
 # secret at the runtime with its admin credential (used once, not stored) and dials in.
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"runtime":"ws://100.111.174.31:8090","session":"laptop","profile":"desktop",
+  -d '{"runtime":"ws://<pod>.<tailnet>.ts.net:8090","session":"laptop","profile":"desktop",
        "ttl_secs":3600,"admin_credential":"<openab-pty admin credential>"}' \
-  https://macmini.<tailnet>.ts.net:8444/attach
+  https://<host>.<tailnet>.ts.net:8444/attach
 # → 202 {"id":"…","state":"idle"|"attached",…}      GET /attach lists · DELETE /attach/{id} revokes
 ```
 
