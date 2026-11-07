@@ -60,7 +60,7 @@ final class WireConformanceTests: XCTestCase {
     func testEveryWireCaseMatchesTheSwiftOracle() async throws {
         let doc = try load()
         let cases = try XCTUnwrap(doc["cases"]?.arrayValue)
-        XCTAssertGreaterThanOrEqual(cases.count, 12)
+        XCTAssertGreaterThanOrEqual(cases.count, 20)
         let server = MCPServer(name: "t", version: "0", tools: [EchoTool()])
         for c in cases {
             let name = c["name"]?.stringValue ?? "?"

@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "description": "HTTP-layer vectors for /mcp (MCP Streamable HTTP, JSON response mode), after auth: Content-Type, JSON-RPC parse errors as HTTP 400, Mcp-Session-Id issue, check and close, notifications, methods other than POST. Oracle: Swift MCPHTTPEndpoint.swift. Every expect is the Swift result; the Rust port (poc/reverse-attach-linux, http::mcp_route) runs the same cases. Each case is a sequence of steps against one fresh endpoint, so session state carries from step to step inside a case and never between cases. Step keys: method (HTTP method), content_type (Content-Type header; absent means no header), session (Mcp-Session-Id header; absent means no header; the literal $issued means the id the last initialize in this case returned), body (raw request body; absent means empty). expect keys: status (HTTP status), session_header (bool: the response carries Mcp-Session-Id), error (JSON-RPC error code in a JSON body), result (bool: a JSON body with a result), body_empty (bool). Unlisted keys are not checked; an unknown key fails.",
+  "cases": [
+    {
+      "name": "initialize issues an Mcp-Session-Id",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"0\"}}}",
+         "expect": {"status": 200, "session_header": true, "result": true}}
+      ]
+    },
+    {
+      "name": "a request with the issued session id is served and gets no new id",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"0\"}}}",
+         "expect": {"status": 200, "session_header": true}},
+        {"method": "POST", "content_type": "application/json", "session": "$issued", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 200, "session_header": false, "result": true}}
+      ]
+    },
+    {
+      "name": "a notification with the issued session id is 202 with no body",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"0\"}}}",
+         "expect": {"status": 200, "session_header": true}},
+        {"method": "POST", "content_type": "application/json", "session": "$issued", "body": "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
+         "expect": {"status": 202, "body_empty": true}}
+      ]
+    },
+    {
+      "name": "an unknown session id on POST is 404",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "session": "no-such-session", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 404}}
+      ]
+    },
+    {
+      "name": "an unknown session id on a notification is 404",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "session": "no-such-session", "body": "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
+         "expect": {"status": 404}}
+      ]
+    },
+    {
+      "name": "a request with no session id is served (stateless clients)",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 200, "session_header": false, "result": true}}
+      ]
+    },
+    {
+      "name": "initialize with a stale session id opens a new session",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "session": "stale-session", "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"0\"}}}",
+         "expect": {"status": 200, "session_header": true}},
+        {"method": "POST", "content_type": "application/json", "session": "$issued", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 200, "result": true}}
+      ]
+    },
+    {
+      "name": "DELETE ends the session: 204, then the id is 404",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"t\",\"version\":\"0\"}}}",
+         "expect": {"status": 200, "session_header": true}},
+        {"method": "DELETE", "session": "$issued",
+         "expect": {"status": 204, "body_empty": true}},
+        {"method": "POST", "content_type": "application/json", "session": "$issued", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 404}}
+      ]
+    },
+    {
+      "name": "DELETE without a session id is 204",
+      "steps": [
+        {"method": "DELETE", "expect": {"status": 204, "body_empty": true}}
+      ]
+    },
+    {
+      "name": "a non-JSON Content-Type is 415",
+      "steps": [
+        {"method": "POST", "content_type": "text/plain", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 415}}
+      ]
+    },
+    {
+      "name": "a missing Content-Type is 415",
+      "steps": [
+        {"method": "POST", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 415}}
+      ]
+    },
+    {
+      "name": "Content-Type is matched by prefix, case-insensitively",
+      "steps": [
+        {"method": "POST", "content_type": "Application/JSON; charset=utf-8", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 200, "result": true}}
+      ]
+    },
+    {
+      "name": "a malformed JSON body is 400 with -32700",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "{nope",
+         "expect": {"status": 400, "error": -32700}}
+      ]
+    },
+    {
+      "name": "a batch body is 400 with -32600",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "[{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"ping\"}]",
+         "expect": {"status": 400, "error": -32600}}
+      ]
+    },
+    {
+      "name": "jsonrpc other than 2.0 is 400 with -32600",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "{\"jsonrpc\":\"1.0\",\"id\":7,\"method\":\"ping\"}",
+         "expect": {"status": 400, "error": -32600}}
+      ]
+    },
+    {
+      "name": "a JSON-RPC error on a valid envelope is HTTP 200",
+      "steps": [
+        {"method": "POST", "content_type": "application/json", "body": "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"no/such/method\"}",
+         "expect": {"status": 200, "error": -32601}}
+      ]
+    },
+    {
+      "name": "GET is 405 (no server-initiated stream)",
+      "steps": [
+        {"method": "GET", "expect": {"status": 405}}
+      ]
+    },
+    {
+      "name": "PUT is 405",
+      "steps": [
+        {"method": "PUT", "content_type": "application/json", "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}",
+         "expect": {"status": 405}}
+      ]
+    }
+  ]
+}

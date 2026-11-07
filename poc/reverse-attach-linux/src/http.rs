@@ -1,6 +1,6 @@
 //! HTTP/1.1, both directions, on std sockets: a tiny blocking client (upstream MCP, http:// only) and the loopback control server with its routes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +16,7 @@ use crate::attach::{
     grant_json, new_grant_id, now_epoch_secs, valid_session, GrantInfo, Registry, GRANT_COUNTER,
 };
 use crate::auth::AuthPolicy;
-use crate::mcp::{answer, Upstream, UPSTREAMS};
+use crate::mcp::{answer_request, error_response, parse_request, Upstream, UPSTREAMS};
 
 // Tiny blocking HTTP/1.1 client for http:// only (used for the upstream MCP)
 // ---------------------------------------------------------------------------
@@ -176,14 +176,16 @@ pub fn serve() {
     };
     eprintln!("reverse-attach control server listening on {bind}");
     resume_grants(&registry);
+    let sessions = Arc::new(McpSessions::default());
 
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
                 let reg = registry.clone();
                 let pol = policy.clone();
+                let ses = sessions.clone();
                 thread::spawn(move || {
-                    if let Err(e) = handle_conn(s, reg, pol) {
+                    if let Err(e) = handle_conn(s, reg, pol, &ses) {
                         eprintln!("connection error: {e}");
                     }
                 });
@@ -203,6 +205,8 @@ pub(crate) struct HttpRequest {
     /// such a request is never "local", whatever its TCP peer says.
     pub(crate) forwarded_for: Option<String>,
     pub(crate) peer_is_loopback: bool,
+    pub(crate) content_type: Option<String>,
+    pub(crate) mcp_session_id: Option<String>,
 }
 
 fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
@@ -241,6 +245,8 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let mut authorization = None;
     let mut ts_login = None;
     let mut forwarded_for = None;
+    let mut content_type = None;
+    let mut mcp_session_id = None;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             let name = name.trim();
@@ -253,6 +259,10 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
                 ts_login = Some(value.to_string());
             } else if name.eq_ignore_ascii_case("x-forwarded-for") {
                 forwarded_for = Some(value.to_string());
+            } else if name.eq_ignore_ascii_case("content-type") {
+                content_type = Some(value.to_string());
+            } else if name.eq_ignore_ascii_case("mcp-session-id") {
+                mcp_session_id = Some(value.to_string());
             }
         }
     }
@@ -294,6 +304,8 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
         ts_login,
         forwarded_for,
         peer_is_loopback,
+        content_type,
+        mcp_session_id,
     })
 }
 
@@ -325,42 +337,195 @@ fn write_raw(
     let _ = stream.flush();
 }
 
-/// MCP Streamable HTTP (JSON response mode). Direct callers — a CLI or the
-/// OpenAB Connect Screens pane — get the full `owner` tool surface; the
-/// sandbox narrowing only applies to reverse-attached sessions.
-fn handle_mcp(stream: &mut TcpStream, body: &str) -> Result<(), String> {
-    let is_initialize = serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|v| {
-            v.get("method")
-                .and_then(|m| m.as_str())
-                .map(|m| m == "initialize")
-        })
-        .unwrap_or(false);
-    match answer(body, "owner") {
-        Some(reply) => {
-            let sid = format!(
-                "s-{}-{}",
-                now_epoch_secs(),
-                GRANT_COUNTER.fetch_add(1, Ordering::SeqCst)
-            );
-            let extra: Vec<(&str, &str)> = if is_initialize {
-                vec![("Mcp-Session-Id", &sid)]
-            } else {
-                vec![]
-            };
-            write_raw(
-                stream,
-                200,
-                "OK",
-                "application/json",
-                reply.as_bytes(),
-                &extra,
-            );
+/// How many `/mcp` sessions are remembered. Swift keeps every one; we drop the
+/// oldest past this bound, so a client that initializes in a loop cannot grow
+/// memory without limit. A dropped session's next POST gets 404 and the client
+/// re-initializes, as after a restart.
+const MAX_MCP_SESSIONS: usize = 1024;
+
+/// `Mcp-Session-Id`s issued by `initialize` on `POST /mcp` (Swift
+/// `MCPHTTPEndpoint.sessions`). In memory: a restart forgets them, and clients
+/// re-initialize on the 404.
+#[derive(Default)]
+pub(crate) struct McpSessions {
+    inner: Mutex<(HashSet<String>, VecDeque<String>)>,
+}
+
+impl McpSessions {
+    fn open(&self) -> String {
+        let id = new_session_id();
+        if let Ok(mut g) = self.inner.lock() {
+            let (set, order) = &mut *g;
+            while order.len() >= MAX_MCP_SESSIONS {
+                if let Some(old) = order.pop_front() {
+                    set.remove(&old);
+                }
+            }
+            set.insert(id.clone());
+            order.push_back(id.clone());
         }
-        None => write_raw(stream, 202, "Accepted", "text/plain", b"", &[]),
+        id
     }
-    Ok(())
+
+    fn contains(&self, id: &str) -> bool {
+        self.inner.lock().map(|g| g.0.contains(id)).unwrap_or(false)
+    }
+
+    fn close(&self, id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            let (set, order) = &mut *g;
+            if set.remove(id) {
+                order.retain(|s| s != id);
+            }
+        }
+    }
+}
+
+/// A random lowercase UUID v4, the shape Swift issues (`UUID().uuidString.lowercased()`).
+/// The id is not a credential (every request is authenticated on its own), but
+/// it should not be guessable, so it comes from the kernel's CSPRNG.
+fn new_session_id() -> String {
+    let mut b = [0u8; 16];
+    let random = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b));
+    if random.is_err() {
+        // Unreachable on Linux; still unique within this process.
+        let n = GRANT_COUNTER.fetch_add(1, Ordering::SeqCst);
+        b[..8].copy_from_slice(&now_epoch_secs().to_be_bytes());
+        b[8..].copy_from_slice(&n.to_be_bytes());
+    }
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
+}
+
+/// One `/mcp` answer, before it is written to the socket.
+pub(crate) struct McpReply {
+    pub(crate) status: u16,
+    pub(crate) content_type: &'static str,
+    pub(crate) body: String,
+    /// `Mcp-Session-Id` to send, set only on `initialize`.
+    pub(crate) session_id: Option<String>,
+}
+
+impl McpReply {
+    fn text(status: u16, body: &str) -> McpReply {
+        McpReply {
+            status,
+            content_type: "text/plain",
+            body: body.to_string(),
+            session_id: None,
+        }
+    }
+}
+
+/// `/mcp` after auth: MCP Streamable HTTP in JSON response mode, the same
+/// checks in the same order as Swift `MCPHTTPEndpoint`:
+/// - `POST`: `Content-Type` must start with `application/json` (else 415); a
+///   body that fails the JSON-RPC envelope is 400 with the JSON-RPC error;
+///   `initialize` opens a session and returns its `Mcp-Session-Id`; any other
+///   request carrying an id we did not issue (or that was closed) is 404, so the
+///   client re-initializes; a request with no id is served (stateless clients
+///   such as curl probes); a notification is 202 with no body.
+/// - `DELETE`: closes the session named by `Mcp-Session-Id`, if any; 204.
+/// - `GET` and anything else: 405 (no server-initiated stream).
+///
+/// Direct callers, such as a CLI or the OpenAB Connect Screens pane, get the
+/// full `owner` tool surface; profiles apply to reverse-attached sessions.
+pub(crate) fn mcp_route(
+    method: &str,
+    content_type: Option<&str>,
+    session_id: Option<&str>,
+    body: &str,
+    sessions: &McpSessions,
+) -> McpReply {
+    match method {
+        "POST" => {}
+        "DELETE" => {
+            if let Some(sid) = session_id {
+                sessions.close(sid);
+            }
+            return McpReply::text(204, "");
+        }
+        "GET" => return McpReply::text(405, "server-initiated streams not supported\n"),
+        _ => return McpReply::text(405, "method not allowed\n"),
+    }
+    let json_body = content_type
+        .map(|c| c.to_ascii_lowercase().starts_with("application/json"))
+        .unwrap_or(false);
+    if !json_body {
+        return McpReply::text(415, "Content-Type must be application/json\n");
+    }
+    let req = match parse_request(body) {
+        Ok(req) => req,
+        Err((code, message)) => {
+            return McpReply {
+                status: 400,
+                content_type: "application/json",
+                body: error_response(&Value::Null, code, &message),
+                session_id: None,
+            }
+        }
+    };
+    let mut issued = None;
+    if req.method == "initialize" {
+        issued = Some(sessions.open());
+    } else if let Some(sid) = session_id {
+        if !sessions.contains(sid) {
+            return McpReply::text(404, "unknown session\n");
+        }
+    }
+    match answer_request(&req, "owner", None) {
+        Some(reply) => McpReply {
+            status: 200,
+            content_type: "application/json",
+            body: reply,
+            session_id: issued,
+        },
+        None => McpReply {
+            session_id: issued,
+            ..McpReply::text(202, "")
+        },
+    }
+}
+
+fn handle_mcp(stream: &mut TcpStream, req: &HttpRequest, sessions: &McpSessions) {
+    let reply = mcp_route(
+        &req.method,
+        req.content_type.as_deref(),
+        req.mcp_session_id.as_deref(),
+        &req.body,
+        sessions,
+    );
+    let reason = match reply.status {
+        200 => "OK",
+        202 => "Accepted",
+        204 => "No Content",
+        400 => "Bad Request",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        415 => "Unsupported Media Type",
+        _ => "",
+    };
+    let extra: Vec<(&str, &str)> = match reply.session_id.as_deref() {
+        Some(sid) => vec![("Mcp-Session-Id", sid)],
+        None => vec![],
+    };
+    write_raw(
+        stream,
+        reply.status,
+        reason,
+        reply.content_type,
+        reply.body.as_bytes(),
+        &extra,
+    );
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, reason: &str, body: &str) {
@@ -466,6 +631,7 @@ fn handle_conn(
     mut stream: TcpStream,
     registry: Registry,
     policy: Arc<AuthPolicy>,
+    sessions: &McpSessions,
 ) -> Result<(), String> {
     let req = read_http_request(&mut stream)?;
 
@@ -492,19 +658,8 @@ fn handle_conn(
     };
 
     match (req.method.as_str(), route.as_str()) {
-        ("POST", "/mcp") => handle_mcp(&mut stream, &req.body),
-        ("GET", "/mcp") => {
-            // No server-initiated stream in this PoC.
-            write_response(
-                &mut stream,
-                405,
-                "Method Not Allowed",
-                "{\"error\":\"no SSE stream\"}",
-            );
-            Ok(())
-        }
-        ("DELETE", "/mcp") => {
-            write_raw(&mut stream, 204, "No Content", "text/plain", b"", &[]);
+        (_, "/mcp") => {
+            handle_mcp(&mut stream, &req, sessions);
             Ok(())
         }
         ("POST", "/attach") => handle_attach(&mut stream, &req.body, registry, &principal),
@@ -722,6 +877,102 @@ fn handle_delete_attachment(
         None => write_response(stream, 404, "Not Found", "{\"error\":\"no such grant\"}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod mcp_socket_tests {
+    //! `/mcp` over a real socket, so the headers `mcp_route` sees are the ones
+    //! `read_http_request` parsed off the wire (the vectors call `mcp_route`
+    //! directly).
+    use super::*;
+
+    fn exchange(addr: std::net::SocketAddr, head: &str, body: &str) -> (u16, String, String) {
+        let mut s = TcpStream::connect(addr).unwrap();
+        let req = format!(
+            "{head}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        s.write_all(req.as_bytes()).unwrap();
+        let mut raw = String::new();
+        s.read_to_string(&mut raw).unwrap();
+        let (h, b) = raw.split_once("\r\n\r\n").unwrap();
+        let status = h.split_whitespace().nth(1).unwrap().parse().unwrap();
+        (status, h.to_string(), b.to_string())
+    }
+
+    fn session_header(head: &str) -> Option<String> {
+        head.lines()
+            .find_map(|l| l.strip_prefix("Mcp-Session-Id: "))
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn sessions_content_type_and_methods_over_the_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
+        let policy = Arc::new(AuthPolicy::new(None, vec![], true).unwrap());
+        let sessions = Arc::new(McpSessions::default());
+        thread::spawn(move || {
+            for s in listener.incoming().flatten() {
+                let _ = handle_conn(s, registry.clone(), policy.clone(), &sessions);
+            }
+        });
+        let post = "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json";
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+        let ping = r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#;
+
+        let (status, head, body) = exchange(addr, post, init);
+        assert_eq!(status, 200, "{head}");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
+        let sid = session_header(&head).expect("Mcp-Session-Id on initialize");
+        assert_eq!(sid.len(), 36, "{sid}");
+        assert_eq!(&sid[14..15], "4", "UUID v4: {sid}");
+
+        // The header name is matched case-insensitively.
+        let with_sid = format!("{post}\r\nmcp-session-id: {sid}");
+        let (status, head, body) = exchange(addr, &with_sid, ping);
+        assert_eq!(status, 200, "{head}");
+        assert!(session_header(&head).is_none(), "{head}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap()["result"],
+            json!({})
+        );
+
+        let unknown = format!("{post}\r\nMcp-Session-Id: no-such-session");
+        assert_eq!(exchange(addr, &unknown, ping).0, 404);
+
+        let text = "POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: text/plain";
+        assert_eq!(exchange(addr, text, ping).0, 415);
+        let none = "POST /mcp HTTP/1.1\r\nHost: x";
+        assert_eq!(exchange(addr, none, ping).0, 415);
+
+        let (status, _, body) = exchange(addr, post, "{nope");
+        assert_eq!(status, 400);
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["error"]["code"], -32700, "{v}");
+        assert_eq!(v["id"], Value::Null, "{v}");
+
+        assert_eq!(exchange(addr, "GET /mcp HTTP/1.1\r\nHost: x", "").0, 405);
+
+        let delete = format!("DELETE /mcp HTTP/1.1\r\nHost: x\r\nMcp-Session-Id: {sid}");
+        assert_eq!(exchange(addr, &delete, "").0, 204);
+        assert_eq!(exchange(addr, &with_sid, ping).0, 404);
+    }
+
+    #[test]
+    fn the_session_table_drops_the_oldest_past_its_bound() {
+        let sessions = McpSessions::default();
+        let first = sessions.open();
+        let ids: Vec<String> = (0..MAX_MCP_SESSIONS).map(|_| sessions.open()).collect();
+        assert!(!sessions.contains(&first), "the oldest is dropped");
+        assert!(ids.iter().all(|id| sessions.contains(id)));
+        assert_eq!(sessions.inner.lock().unwrap().0.len(), MAX_MCP_SESSIONS);
+        sessions.close(&ids[0]);
+        assert!(!sessions.contains(&ids[0]));
+        assert_eq!(sessions.inner.lock().unwrap().1.len(), MAX_MCP_SESSIONS - 1);
+    }
 }
 
 #[cfg(test)]

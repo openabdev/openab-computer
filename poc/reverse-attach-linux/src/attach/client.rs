@@ -14,7 +14,7 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
 use super::*;
-use crate::mcp::answer_attached;
+use crate::mcp::{answer_attached, error_response, parse_request};
 
 // mint(): replicate the Swift runtimeMintRequest contract (http/ws only)
 // ---------------------------------------------------------------------------
@@ -439,20 +439,20 @@ fn spawn_call_on(text: String, calls: &Calls, start: impl FnOnce(CallJob) -> std
     }
 }
 
-/// The JSON-RPC error for a request whose call thread could not start; `None`
-/// for a notification or a frame that is not JSON, which `answer` would not
-/// answer either.
+/// The JSON-RPC reply for a frame whose call thread could not start, the same
+/// as `answer` would give where `answer` needs no thread: the envelope error
+/// for a frame that does not parse, `None` for a notification, and an internal
+/// error carrying the id for a request.
 fn spawn_failed_reply(text: &str) -> Option<String> {
-    let req: Value = serde_json::from_str(text).ok()?;
-    let id = req.get("id").cloned()?;
-    Some(
-        json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": { "code": -32603, "message": "node busy: could not start the call" }
-        })
-        .to_string(),
-    )
+    let id = match parse_request(text) {
+        Ok(req) => req.id?,
+        Err((code, message)) => return Some(error_response(&Value::Null, code, &message)),
+    };
+    Some(error_response(
+        &id,
+        -32603,
+        "node busy: could not start the call",
+    ))
 }
 
 /// Bound how long one read on the attached socket blocks, on ws:// and wss://.

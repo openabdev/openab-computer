@@ -10,6 +10,8 @@
 mod attach;
 mod auth;
 mod http;
+#[cfg(test)]
+mod http_conformance;
 mod jobs;
 mod mcp;
 mod platform;

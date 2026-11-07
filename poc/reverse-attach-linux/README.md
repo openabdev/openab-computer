@@ -29,8 +29,11 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
   We also ping the runtime every 15 s. When a socket ends (close, error, `DELETE`), its running
   calls are cancelled and `bash` kills its process group.
 - MCP over the socket: `initialize` (with instructions: keep calls under ~60 s, issue `mouse` /
-  `key` steps one at a time), `tools/list`, `tools/call`; notifications get no reply;
-  ping → pong. Tools: `sys_info`, `screenshot`, `bash`, `mouse`, `key` — in **both** profiles
+  `key` steps one at a time), `ping`, `tools/list`, `tools/call`; notifications get no reply; a
+  frame that does not parse gets the JSON-RPC envelope error with a null id, as from Swift
+  (`conformance/mcp_wire_vectors.json`, #78); WebSocket ping → pong. The socket is the session:
+  no `Mcp-Session-Id` on this path, as in Swift. Tools: `sys_info`, `screenshot`, `bash`, `mouse`,
+  `key` — in **both** profiles
   (decision 2026-09-28: a lent node is only useful if the agent can act on it, and the macOS
   `desktop` profile already hands out a shell through `osascript`'s `do shell script`). Neither
   profile is a security boundary on Linux either (#45): lend a dedicated node. `bash` = `bash -c`
@@ -78,7 +81,12 @@ The same binary now also serves MCP Streamable-HTTP (JSON mode) on `POST /mcp`, 
 `AuthPolicy` with the Swift daemon's semantics — `MCP_TOKEN` / `MCP_TOKEN_FILE` (bearer,
 constant-time) AND `MCP_ALLOW_LOGIN` (matched against the `Tailscale-User-Login` header that
 `tailscale serve` injects); `MCP_INSECURE_LOCAL=1` for loopback debugging; refuses to start with
-nothing set. `/healthz` is open. `screenshot` returns MCP `image` content with the Swift tool's arguments: `format` jpeg
+nothing set. `/healthz` is open. HTTP behaviour after auth matches Swift `MCPHTTPEndpoint`
+(`conformance/mcp_http_vectors.json`, #78): `Content-Type` must be `application/json` (else 415), a
+body that fails the JSON-RPC envelope is 400 with the JSON-RPC error, `initialize` issues an
+`Mcp-Session-Id` (random UUID v4, in memory, the oldest dropped past 1024), an id we did not issue
+or that `DELETE /mcp` closed is 404 so the client re-initializes, a request without the header is
+served, `GET /mcp` and other methods are 405. `screenshot` returns MCP `image` content with the Swift tool's arguments: `format` jpeg
 (default) or png, `quality` 0–1 (default 0.7, floored at 0.1, so 1 = 100%; above 1 up to 100 is a percentage), `scale` (default 0.5, max 2),
 `region` {x,y,width,height} in display pixels (clipped to the output layout) and `display` 0.
 Debian's grim has no libjpeg, so for JPEG the daemon asks grim for raw PPM and encodes it
@@ -146,7 +154,7 @@ revoked grant not resumed.
 
 ## Not yet (vs the Swift implementation)
 
-- `/mcp` has no real session table (an `Mcp-Session-Id` is issued but not checked) and no SSE stream.
+- `/mcp` has no SSE stream (`GET /mcp` is 405, as in Swift).
 - `mouse` maps onto the layout the virtual pointer read at connect, so after an output hotplug
   it lags until the pointer reconnects. `screenshot` reads the outputs itself (no input device)
   unless a pointer is live, in which case it reports that pointer's layout so the two agree.

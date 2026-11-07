@@ -23,34 +23,59 @@ Every row must be green on both backends before Phase 3 starts:
 ## 2. Wire layer (JSON-RPC)
 
 One row per case in `conformance/mcp_wire_vectors.json`. The Swift result is the
-oracle. The Rust column reflects the `known_drift` list.
+oracle. The Rust column reflects the `known_drift` list, which has been empty
+since #78. The Rust runner sends every case through both entry points, `POST /mcp`
+(`mcp::answer`) and a reverse-attach socket (`mcp::answer_attached`), as Swift
+uses one parser and dispatcher for both.
 
 | Case | Swift | Rust | Test |
 |------|-------|------|------|
 | initialize negotiates 2024-11-05 | protocolVersion 2024-11-05 | pass | `WireConformanceTests`, `wire_conformance` |
-| initialize negotiates 2025-06-18 | protocolVersion 2025-06-18 | drift: returns 2024-11-05 | same |
-| initialize with unknown version | falls back to 2025-06-18 | drift: returns 2024-11-05 | same |
-| ping | result `{}` | drift: error -32601 | same |
+| initialize negotiates 2025-03-26 | protocolVersion 2025-03-26 | pass | same |
+| initialize negotiates 2025-06-18 | protocolVersion 2025-06-18 | pass (#78) | same |
+| initialize with unknown version | falls back to 2025-06-18 | pass (#78) | same |
+| initialize without a version | 2025-06-18 | pass | same |
+| ping | result `{}` | pass (#78) | same |
 | tools/list shape | tools with name, description, inputSchema | pass | same |
-| tools/call unknown tool | error -32602 | drift: error -32601 | same |
+| tools/call unknown tool | error -32602 | pass (#78) | same |
+| tools/call of a tool the profile hides | error -32602, same as unknown | pass (#78) | same |
 | tools/call missing name | error -32602 | pass | same |
 | unknown method | error -32601 | pass | same |
+| resources/list, prompts/list | empty lists | pass (#78) | same |
 | notification | no response | pass | same |
-| malformed JSON | error -32700 | drift: no response | same |
-| jsonrpc "1.0" | error -32600 | drift: result returned | same |
-| batch array | error -32600 | drift: no response | same |
+| `"id": null` | notification, no response | pass (#78) | same |
+| malformed JSON | error -32700, id null | pass (#78) | same |
+| empty array | error -32700 | pass (#78) | same |
+| object without `method` | error -32700 (the Swift decoder fails before the envelope check) | pass (#78) | same |
+| jsonrpc "1.0" | error -32600, id null | pass (#78) | same |
+| batch array | error -32600, id null | pass (#78) | same |
 
-## 3. HTTP layer (not in the fixtures)
+## 3. HTTP layer
 
-The fixtures stop at the JSON-RPC layer. These HTTP behaviours are open.
+One row per case in `conformance/mcp_http_vectors.json` (#78), which covers
+`/mcp` after auth. Swift runs it through `MCPHTTPEndpoint.handle`
+(`HTTPConformanceTests`), Rust through `http::mcp_route`
+(`http_conformance`); `http::mcp_socket_tests` repeats the main rows over a
+real socket so the Rust header parsing is covered too.
 
 | Behaviour | Swift | Rust | Status |
 |-----------|-------|------|--------|
-| `Mcp-Session-Id` unknown on POST | 404 | not enforced (no session state) | open |
-| `DELETE /mcp` | ends the session, 204 | bare 204, no session | open |
-| non-JSON Content-Type on POST | 415 | no check | open |
-| malformed JSON body on POST | 400 with JSON-RPC error -32700 | 202, no body | open (follows from the wire drift above) |
-| `GET /mcp` | 405 | 405 | open (not tested) |
+| `initialize` issues `Mcp-Session-Id` | yes, a UUID | yes, a random UUID v4 | pass |
+| known `Mcp-Session-Id` on POST | served, no new id | same | pass |
+| unknown `Mcp-Session-Id` on POST (request or notification) | 404 | 404 | pass |
+| no `Mcp-Session-Id` on POST | served (stateless clients) | same | pass |
+| `initialize` with a stale id | new session | same | pass |
+| `DELETE /mcp` | ends the session, 204; the id is 404 afterwards | same | pass |
+| `DELETE /mcp` without an id | 204 | 204 | pass |
+| notification | 202, empty body | same | pass |
+| non-JSON or missing Content-Type on POST | 415 | 415 | pass |
+| Content-Type match | prefix `application/json`, case-insensitive | same | pass |
+| malformed JSON body on POST | 400 with JSON-RPC -32700 | same | pass |
+| batch body, or jsonrpc other than "2.0" | 400 with JSON-RPC -32600 | same | pass |
+| JSON-RPC error on a valid envelope | HTTP 200 | HTTP 200 | pass |
+| `GET /mcp` | 405 | 405 | pass |
+| other methods on `/mcp` | 405 | 405 (was 404) | pass |
+| session table bound | unbounded | 1024, oldest dropped (the client gets 404 and re-initializes) | differs by design, Rust unit test |
 | `401` body on an auth deny | `text/plain` `unauthorized\n` | `{"error":"unauthorized"}` | open |
 
 ## 4. Reverse attach
@@ -103,4 +128,3 @@ per-connection enforcement at dispatch (owner, desktop, observe), sandbox denies
 
 - Origin policy for the WebSocket upgrade and for `/mcp`. Neither backend defines one.
 - Certificate pinning or verification for `wss://` runtimes.
-- Whether the Rust `ping` gap (section 2) blocks Phase 3, or is fixed first.
