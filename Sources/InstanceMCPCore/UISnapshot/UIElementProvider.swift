@@ -37,8 +37,10 @@ public protocol UIElement: AnyObject {
     /// An array-of-elements attribute (`AXWindows`); empty when absent.
     func elements(_ name: String) -> Result<[any UIElement], UIAXError>
     /// At most `max` children plus the total child count, so a 10 000-row table is
-    /// never copied whole. `max == 0` only counts.
-    func children(max: Int) -> Result<(elements: [any UIElement], total: Int), UIAXError>
+    /// never copied whole. `max == 0` only counts. Counting and copying are two IPCs;
+    /// `rearm` runs between them and returns false (the call then fails with `.timeout`)
+    /// once the budget is spent.
+    func children(max: Int, rearm: () -> Bool) -> Result<(elements: [any UIElement], total: Int), UIAXError>
     /// The first `utf16Length` UTF-16 units of the element's text (`AXStringForRange`),
     /// so a long value is not copied whole. nil when the element does not support it.
     func stringPrefix(utf16Length: Int) -> Result<String?, UIAXError>

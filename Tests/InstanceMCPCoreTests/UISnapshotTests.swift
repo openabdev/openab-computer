@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import XCTest
@@ -13,6 +14,9 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
     var named: [String: FakeUIElement] = [:]
     var lists: [String: [FakeUIElement]] = [:]
     var attrError: UIAXError?
+    /// Per-entry errors inside an otherwise successful batch, reduced the way the live
+    /// provider reduces them.
+    var entryErrors: [String: AXError] = [:]
     var valueError: UIAXError?
     var childError: UIAXError?
     var elementError: UIAXError?
@@ -47,9 +51,11 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
         if spend() { return .failure(.timeout) }
         if names == ["AXValue"], let valueError { return .failure(valueError) }
         if names != ["AXValue"], let attrError { return .failure(attrError) }
-        var out: [String: UIAttrValue] = [:]
-        for n in names { if let v = attrs[n] { out[n] = v } }
-        return .success(out)
+        var entries: [String: AXLiveElement.BatchEntry] = [:]
+        for n in names {
+            if let e = entryErrors[n] { entries[n] = .error(e) } else if let v = attrs[n] { entries[n] = .value(v) }
+        }
+        return AXLiveElement.reduceBatch(entries)
     }
 
     func element(_ name: String) -> Result<(any UIElement)?, UIAXError> {
@@ -64,11 +70,17 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
         return .success(lists[name] ?? [])
     }
 
-    func children(max: Int) -> Result<(elements: [any UIElement], total: Int), UIAXError> {
+    /// Two IPCs like the live provider: count, then (re-armed) copy.
+    func children(max: Int, rearm: () -> Bool) -> Result<(elements: [any UIElement], total: Int), UIAXError> {
         requested.append("AXChildren")
         if spend() { return .failure(.timeout) }
         if let childError { return .failure(childError) }
-        return .success((Array(kids.prefix(Swift.max(max, 0))), kids.count))
+        let want = Swift.min(Swift.max(max, 0), kids.count)
+        guard want > 0 else { return .success(([], kids.count)) }
+        guard rearm() else { return .failure(.timeout) }
+        requested.append("AXChildren.copy")
+        if spend() { return .failure(.timeout) }
+        return .success((Array(kids.prefix(want)), kids.count))
     }
 
     func stringPrefix(utf16Length: Int) -> Result<String?, UIAXError> {
@@ -192,7 +204,7 @@ final class UISnapshotWalkerTests: XCTestCase {
         XCTAssertEqual(s.windows[0].children.count + s.windows[0].childrenOmitted, 4)
         XCTAssertEqual(s.omittedCount, 3)
         // Re-armed before every call: min(0.5, remaining), floored at 0.05.
-        XCTAssertEqual(w.timeouts.map { Double($0) }, [0.1, 0.06, 0.05].map { Double(Float($0)) })
+        XCTAssertEqual(w.timeouts.map { Double($0) }, [0.1, 0.06, 0.05, 0.05].map { Double(Float($0)) })
         XCTAssertEqual(kids[0].timeouts, [0.05])
         XCTAssertFalse(kids[0].requested.contains("AXValue"), "no call starts after the budget is spent")
         XCTAssertTrue(kids[1].timeouts.isEmpty, "never touched once the budget ran out")
@@ -212,12 +224,24 @@ final class UISnapshotWalkerTests: XCTestCase {
         let s = r.snapshot
         XCTAssertTrue(s.timedOut)
         XCTAssertEqual(s.unresponsiveCount, 0, "a call cut by the budget is a timeout, not an unresponsive app")
-        XCTAssertEqual(w.timeouts.map { Double($0) }, [0.5, 0.5, 0.4].map { Double(Float($0)) })
-        XCTAssertEqual(kids[0].timeouts.map { Double($0) }, [Double(Float(0.1))])
+        // Base, value, child count, then the child copy re-armed with the last 0.1 s.
+        XCTAssertEqual(w.timeouts.map { Double($0) }, [0.5, 0.5, 0.4, 0.1].map { Double(Float($0)) })
         XCTAssertEqual(s.elapsedMs, 1000)
-        XCTAssertEqual(s.nodeCount, 2)
-        XCTAssertEqual(s.omittedCount, 2)
-        XCTAssertTrue(kids[1].requested.isEmpty)
+        XCTAssertEqual(s.nodeCount, 1)
+        for k in kids { XCTAssertTrue(k.requested.isEmpty) }
+    }
+
+    /// The child copy is a second IPC: it is not started once the count spent the budget.
+    func testChildCopyIsReArmed() throws {
+        let clock = FakeClock()
+        let w = el("AXWindow", "w", el("AXButton", "k"))
+        w.clock = clock
+        w.delay = 0.1
+        let r = try walk([w], limits: .init(timeoutMs: 300), clock: clock)
+        XCTAssertTrue(r.snapshot.timedOut)
+        XCTAssertEqual(r.snapshot.unresponsiveCount, 0)
+        XCTAssertEqual(w.requested.filter { $0.hasPrefix("AXChildren") }, ["AXChildren"], "count only, no copy")
+        XCTAssertEqual(clock.t, 0.3, accuracy: 1e-9)
     }
 
     func testMessagingTimeoutIsSetOnEveryElement() throws {
@@ -225,9 +249,10 @@ final class UISnapshotWalkerTests: XCTestCase {
         let w = el("AXWindow", "w")
         w.kids = kids
         _ = try walk([w])
-        for e in [w] + kids {
-            XCTAssertEqual(e.timeouts, [0.5, 0.5, 0.5], "armed before the base, value and children reads")
+        for e in kids {
+            XCTAssertEqual(e.timeouts, [0.5, 0.5, 0.5], "armed before the base, value and child-count reads")
         }
+        XCTAssertEqual(w.timeouts, [0.5, 0.5, 0.5, 0.5], "and again before the child copy")
     }
 
     func testHungNodeIsKeptButNotDescended() throws {
@@ -326,6 +351,46 @@ final class UISnapshotWalkerTests: XCTestCase {
 
     /// A long text is read as a prefix, not copied whole; without prefix support the
     /// walker falls back to AXValue.
+    /// A partial batch (role readable, subrole not) must not pass as a known
+    /// non-secure node: the value is never requested.
+    func testPartialBatchErrorOnSubroleNeverReadsTheValue() throws {
+        let secret: [String: UIAttrValue] = ["AXValue": .string("hunter2"), "AXSubrole": .string("AXSecureTextField")]
+        let cases: [(AXError, Bool)] = [(.cannotComplete, true), (.invalidUIElement, false), (.failure, true)]
+        for (code, kept) in cases {
+            let field = el("AXTextField", extra: secret)
+            field.entryErrors = ["AXSubrole": code]
+            let r = try walk([el("AXWindow", "w", field)])
+            XCTAssertFalse(field.requested.contains("AXValue"), "AXValue requested after subrole error \(code)")
+            XCTAssertEqual(r.snapshot.windows[0].children.count, kept ? 1 : 0, "\(code)")
+            XCTAssertFalse(encode(r.snapshot.json).contains("hunter2"))
+        }
+    }
+
+    func testReduceBatch() {
+        typealias B = AXLiveElement
+        let role: [String: B.BatchEntry] = ["AXRole": .value(.string("AXTextField"))]
+        XCTAssertEqual(try B.reduceBatch(role).get(), ["AXRole": .string("AXTextField")])
+        // Absent or unsupported entries are dropped.
+        for code in [AXError.noValue, .attributeUnsupported, .notImplemented] {
+            XCTAssertEqual(try B.reduceBatch(role.merging(["AXSubrole": .error(code), "AXHelp": .error(code)]) { a, _ in a }).get(),
+                           ["AXRole": .string("AXTextField")])
+        }
+        // Grant, timeout and vanished on any entry fail the element.
+        let failures: [(AXError, UIAXError)] = [(.apiDisabled, .apiDisabled), (.cannotComplete, .timeout),
+                                                (.invalidUIElement, .invalidElement)]
+        for (code, want) in failures {
+            for key in ["AXSubrole", "AXHelp"] {
+                let r = B.reduceBatch(role.merging([key: .error(code)]) { a, _ in a })
+                XCTAssertEqual(r.failureValue, want, "\(key) \(code)")
+            }
+        }
+        // Any other error fails only on a masking-relevant entry.
+        XCTAssertEqual(B.reduceBatch(role.merging(["AXSubrole": .error(.failure)]) { a, _ in a }).failureValue,
+                       .other(AXError.failure.rawValue))
+        XCTAssertEqual(try B.reduceBatch(role.merging(["AXHelp": .error(.failure)]) { a, _ in a }).get(),
+                       ["AXRole": .string("AXTextField")])
+    }
+
     func testLongTextIsReadAsAPrefix() throws {
         let long = String(repeating: "y", count: 5000)
         let attrs: [String: UIAttrValue] = ["AXValue": .string(long), "AXNumberOfCharacters": .number(5000)]
@@ -580,6 +645,13 @@ final class UISnapshotTargetTests: XCTestCase {
     }
 }
 
+private extension Result {
+    var failureValue: Failure? {
+        if case .failure(let e) = self { return e }
+        return nil
+    }
+}
+
 // MARK: - the tool
 
 final class LogBox: @unchecked Sendable {
@@ -631,6 +703,25 @@ final class UISnapshotToolTests: XCTestCase {
         XCTAssertEqual(r.result?["isError"], true)
         XCTAssertEqual(r.result?["content"]?.arrayValue?.first?["text"]?.stringValue,
                        "app not found: no running app has bundle id or name 'Nope'. Running apps: TextEdit")
+    }
+
+    /// App enumeration that uses up the budget: the system-wide frontmost lookup is not started.
+    func testFrontmostLookupIsNotStartedAfterTheBudget() {
+        let clock = FakeClock()
+        let asked = LogBox()
+        var env = Self.environment()
+        env.now = { clock.t }
+        env.runningApps = {
+            clock.t += 2
+            return [UIRunningApp(pid: 20, bundleID: "com.apple.TextEdit", name: "TextEdit")]
+        }
+        env.frontmostPid = { _ in asked.add("frontmost"); return 20 }
+        var req = UISnapshotTool.Request()
+        req.limits = UISnapshotLimits(maxDepth: nil, maxNodes: nil, timeoutMs: 1000)
+        XCTAssertThrowsError(try UISnapshotTool.run(req, env: env)) { e in
+            XCTAssertEqual((e as? ToolError)?.description, UISnapshotTool.Errors.budgetSpent)
+        }
+        XCTAssertTrue(asked.all.isEmpty)
     }
 
     func testConflictingArgumentsAreInvalidParams() async {

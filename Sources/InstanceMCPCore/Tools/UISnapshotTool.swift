@@ -40,6 +40,7 @@ public struct UISnapshotTool: Tool {
     public enum Errors {
         public static let notTrusted = "Accessibility not granted: ui_snapshot cannot read other apps' windows. Grant Accessibility to oab-instance-mcp (bundle id dev.openab.instance-mcp) in System Settings → Privacy & Security → Accessibility, then restart the agent."
         public static let noFrontmost = "no frontmost app (the screen may be locked or at the login window); pass app or pid"
+        public static let budgetSpent = "the timeout_ms budget ran out before the target app was chosen; raise timeout_ms, or pass app or pid"
         public static let selfApp = "ui_snapshot cannot read oab-instance-mcp's own windows"
         public static func noPid(_ pid: Int32) -> String { "no running app with pid \(pid)" }
         public static func appNotFound(_ app: String, running: [String]) -> String {
@@ -149,8 +150,12 @@ public struct UISnapshotTool: Tool {
         let deadline = UIDeadline(timeoutMs: req.limits.timeoutMs, now: env.now)
         let needsList = req.pid != nil || req.app != nil
         let running = env.runningApps()
-        let front = needsList ? nil
-            : env.frontmostPid(deadline.callTimeout() ?? Float(UISnapshotLimits.messagingTimeoutFloor))
+        var front: Int32?
+        if !needsList {
+            // No AX request starts once the budget is spent, this one included.
+            guard let t = deadline.callTimeout() else { throw ToolError(Errors.budgetSpent) }
+            front = env.frontmostPid(t)
+        }
         let app = try UITarget.resolveApp(app: req.app, pid: req.pid, frontmostPid: front,
                                           running: running, selfPid: env.selfPid).get()
         let root = env.appElement(app.pid)

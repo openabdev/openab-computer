@@ -36,24 +36,46 @@ final class AXLiveElement: UIElement {
         let err = AXUIElementCopyMultipleAttributeValues(ax, names as CFArray, [], &out)
         if err != .success { return Self.isAbsent(err) ? .success([:]) : .failure(Self.map(err)) }
         let arr = Self.list(out)
-        var result: [String: UIAttrValue] = [:]
-        var entryErrors: [AXError] = []
+        var entries: [String: BatchEntry] = [:]
         for (i, name) in names.enumerated() where i < arr.count {
             switch Self.convert(arr[i]) {
-            case .value(let v): result[name] = v
-            case .error(let e): entryErrors.append(e)
+            case .value(let v): entries[name] = .value(v)
+            case .error(let e): entries[name] = .error(e)
             case .none: break
             }
         }
-        // Per-entry errors arrive as AXValue(.axError). A grant or a timeout that hit
-        // every entry is the element's failure, not "no attributes".
-        if entryErrors.contains(.apiDisabled) { return .failure(.apiDisabled) }
-        if result.isEmpty, !entryErrors.isEmpty, entryErrors.allSatisfy({ $0 == .cannotComplete }) {
-            return .failure(.timeout)
+        return Self.reduceBatch(entries)
+    }
+
+    /// One entry of a multi-attribute read: a value, or a per-entry `AXValue(.axError)`.
+    enum BatchEntry: Equatable {
+        case value(UIAttrValue)
+        case error(AXError)
+    }
+
+    /// Reduce a partial batch to the element's result. Pure, so it is unit-tested.
+    ///
+    /// A batch can mix values and per-entry errors. Absent and unsupported attributes
+    /// are dropped. A grant, timeout or vanished-element error on any entry is the
+    /// element's failure: otherwise a readable `AXRole` next to an unreadable
+    /// `AXSubrole` would look like a known non-secure node, and the walker would ask
+    /// for its value. Any other error on a role or subrole entry also fails the batch,
+    /// so masking fails closed; on other entries it only drops that attribute.
+    static func reduceBatch(_ entries: [String: BatchEntry]) -> Result<[String: UIAttrValue], UIAXError> {
+        var result: [String: UIAttrValue] = [:]
+        var errors: [(name: String, error: AXError)] = []
+        for (name, entry) in entries {
+            switch entry {
+            case .value(let v): result[name] = v
+            case .error(let e) where !isAbsent(e): errors.append((name, e))
+            case .error: break
+            }
         }
-        if result.isEmpty, !entryErrors.isEmpty, entryErrors.allSatisfy({ $0 == .invalidUIElement }) {
-            return .failure(.invalidElement)
+        for e in [AXError.apiDisabled, .invalidUIElement, .cannotComplete] where errors.contains(where: { $0.error == e }) {
+            return .failure(map(e))
         }
+        let maskingKeys: Set<String> = [AXAttr.role, AXAttr.subrole]
+        if let e = errors.first(where: { maskingKeys.contains($0.name) }) { return .failure(map(e.error)) }
         return .success(result)
     }
 
@@ -119,13 +141,15 @@ final class AXLiveElement: UIElement {
         return .success(arr.compactMap { Self.asElement($0 as CFTypeRef) })
     }
 
-    func children(max: Int) -> Result<(elements: [any UIElement], total: Int), UIAXError> {
+    func children(max: Int, rearm: () -> Bool) -> Result<(elements: [any UIElement], total: Int), UIAXError> {
         let attr = kAXChildrenAttribute as CFString
         var count: CFIndex = 0
         let err = AXUIElementGetAttributeValueCount(ax, attr, &count)
         if err != .success { return Self.isAbsent(err) ? .success(([], 0)) : .failure(Self.map(err)) }
         let want = Swift.min(Swift.max(max, 0), count)
         guard want > 0 else { return .success(([], count)) }
+        // Second IPC: re-armed, so it gets only what is left of the budget.
+        guard rearm() else { return .failure(.timeout) }
         var out: CFArray?
         let err2 = AXUIElementCopyAttributeValues(ax, attr, 0, want, &out)
         if err2 != .success { return Self.isAbsent(err2) ? .success(([], 0)) : .failure(Self.map(err2)) }

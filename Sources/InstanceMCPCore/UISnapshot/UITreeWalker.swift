@@ -9,10 +9,11 @@ struct UISnapshotResult {
 }
 
 /// One time budget for a whole `ui_snapshot` call: frontmost-app lookup, window
-/// selection and the walk. Every synchronous AX call is armed through `arm` first,
-/// so no call starts after the budget is spent, and each call's messaging timeout is
-/// at most what is left. The overrun is bounded by one call of at most
-/// `messagingTimeoutFloor` (0 would mean "system default", about 6 s).
+/// selection and the walk. Every synchronous AX IPC is armed through `arm` first
+/// (including the second IPC of a children read), so no IPC starts after the budget
+/// is spent, and each IPC's messaging timeout is at most what is left. The overrun is
+/// bounded by one IPC of at most `messagingTimeoutFloor` (0 would mean "system
+/// default", about 6 s).
 struct UIDeadline {
     let start: TimeInterval
     let end: TimeInterval
@@ -178,7 +179,7 @@ struct UITreeWalker {
 
         let atDepthLimit = item.depth >= limits.maxDepth
         guard armed() else { return b }
-        switch e.children(max: atDepthLimit ? 0 : max(budget, 0)) {
+        switch e.children(max: atDepthLimit ? 0 : max(budget, 0), rearm: armed) {
         case .success(let c):
             let omitted = max(0, c.total - c.elements.count)
             if omitted > 0 {
