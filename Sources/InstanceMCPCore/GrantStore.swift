@@ -51,7 +51,9 @@ public struct PersistedGrant: Codable, Sendable, Equatable {
         principal = try c.decode(String.self, forKey: .principal)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         expiresAt = try c.decode(Date.self, forKey: .expiresAt)
-        requestedProfile = try c.decodeIfPresent(String.self, forKey: .requestedProfile)
+        // A non-string value (hand-edited file) counts as absent, as on Linux: the row
+        // keeps its stored profile and the rest of the file still loads.
+        requestedProfile = (try? c.decodeIfPresent(String.self, forKey: .requestedProfile)) ?? nil
         secret = ""
     }
 

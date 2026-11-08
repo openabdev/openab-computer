@@ -66,17 +66,21 @@ public actor AttachManager {
     private var secrets: [String: String] = [:]
     /// nil ⇒ grants live in memory only (tests, `--no-grant-persistence`).
     private let store: GrantStore?
+    /// nil ⇒ no audit trail (tests). Records every `desktop` → `observe` mapping (#59).
+    private let audit: AuditLog?
     /// Seam for tests: mint against the runtime's admin plane.
     private let mint: @Sendable (URL, String, String, TimeInterval) async throws -> (secret: String, expiresIn: TimeInterval)
 
     public init(server: MCPServer,
                 mint: (@Sendable (URL, String, String, TimeInterval) async throws -> (secret: String, expiresIn: TimeInterval))? = nil,
                 store: GrantStore? = nil,
+                audit: AuditLog? = nil,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.baseServer = server
         self.log = log
         self.mint = mint ?? AttachManager.mintAtRuntime
         self.store = store
+        self.audit = audit
     }
 
     /// Re-dial every persisted grant still inside its deadline, under its original
@@ -96,6 +100,8 @@ public actor AttachManager {
             let profile = resolved.profile
             if let warning = resolved.warning {
                 log("grant \(p.id.prefix(8)) profile \(resolved.requested) → \(profile.rawValue): \(warning)")
+                audit?.append(ProfileAudit.mapped(source: "resume", requested: resolved.requested, profile: profile,
+                                                  grant: p.id, session: p.session, principal: p.principal))
             }
             let grant = Grant(id: p.id, runtime: p.runtime, session: p.session, profile: profile,
                               requestedProfile: resolved.requested, warning: resolved.warning,
@@ -130,6 +136,12 @@ public actor AttachManager {
         guard req.ttl > 0, req.ttl <= Self.maxTTL else {
             throw Failure.badRequest("ttl_secs must be 1...\(Int(Self.maxTTL))")
         }
+        // The served profile is the narrower of `profile` and `requestedProfile`, the
+        // same rule as a resumed row, so no caller can pair `owner` with `desktop`.
+        guard let resolved = ToolProfile.resolve(stored: req.profile.rawValue, requested: req.requestedProfile) else {
+            throw Failure.badRequest(ToolProfile.rejectionMessage)
+        }
+        let profile = resolved.profile
         let secret: String
         var expiresAt = Date().addingTimeInterval(req.ttl)
         switch (req.secret, req.adminCredential) {
@@ -159,15 +171,15 @@ public actor AttachManager {
         }
 
         let id = UUID().uuidString.lowercased()
-        let requested = req.requestedProfile ?? req.profile.rawValue
-        let warning = ToolProfile.resolve(requested: requested)?.warning
-        let grant = Grant(id: id, runtime: req.runtime, session: req.session, profile: req.profile,
-                          requestedProfile: requested, warning: warning,
+        let grant = Grant(id: id, runtime: req.runtime, session: req.session, profile: profile,
+                          requestedProfile: resolved.requested, warning: resolved.warning,
                           principal: principal, createdAt: Date(), expiresAt: expiresAt, state: .idle)
-        if let warning {
-            log("grant \(id.prefix(8)) profile \(requested) → \(req.profile.rawValue): \(warning)")
+        if let warning = resolved.warning {
+            log("grant \(id.prefix(8)) profile \(resolved.requested) → \(profile.rawValue): \(warning)")
+            audit?.append(ProfileAudit.mapped(source: "attach", requested: resolved.requested, profile: profile,
+                                              grant: id, session: req.session, principal: principal))
         }
-        log("grant \(id.prefix(8)) by \(principal): \(req.profile.rawValue) → \(req.runtime.host ?? "?")/\(req.session) for \(Int(req.ttl))s")
+        log("grant \(id.prefix(8)) by \(principal): \(profile.rawValue) → \(req.runtime.host ?? "?")/\(req.session) for \(Int(req.ttl))s")
         let started = await startClient(grant, secret: secret)
         persist()
         return started

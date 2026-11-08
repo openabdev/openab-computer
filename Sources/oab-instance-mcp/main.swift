@@ -190,9 +190,15 @@ let server = MCPServer(
     tools: ToolCatalog.local(agentVersion: version),
     upstreams: opts.upstreams.map { UpstreamMCP(name: $0.0, url: $0.1, log: log) }
 )
+/// Every `desktop` → `observe` mapping is recorded here as well as in the log (#59).
+let auditLog = FileAuditLog(log: log)
+if let requested = opts.switchboardRequestedProfile, switchboardTarget != nil {
+    auditLog.append(ProfileAudit.mapped(source: "switchboard", requested: requested, profile: opts.switchboardProfile))
+}
 let attachManager: AttachManager? = opts.attach
     ? AttachManager(server: server,
                     store: opts.persistGrants ? FileGrantStore(log: log) : nil,
+                    audit: auditLog,
                     log: log)
     : nil
 let endpoint = MCPHTTPEndpoint(path: opts.path, server: server, auth: auth, attach: attachManager, log: log)

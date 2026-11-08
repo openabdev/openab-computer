@@ -8,6 +8,7 @@
 // Debian 13, Rust 1.98.
 
 mod attach;
+mod audit;
 mod auth;
 mod http;
 #[cfg(test)]

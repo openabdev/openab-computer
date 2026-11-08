@@ -124,7 +124,7 @@ the change is reported to the granter.
 
 | Input | Before | After |
 |---|---|---|
-| `POST /attach {"profile":"desktop"}` | a `desktop` grant | 202, runs as `observe`. The grant JSON has `"profile":"observe"`, `"requested_profile":"desktop"` and a `warning`. The daemon log records the mapping |
+| `POST /attach {"profile":"desktop"}` | a `desktop` grant | 202, runs as `observe`. The grant JSON has `"profile":"observe"`, `"requested_profile":"desktop"` and a `warning`. The daemon log and the audit file record the mapping |
 | `POST /attach` without `profile` | macOS `desktop`, Linux `observe` | `observe` on both |
 | `POST /attach` with `sandbox` or any other unknown name | 400 (two different messages) | 400 `profile must be one of [owner, observe]` on both |
 | A grant stored as `desktop` (macOS `~/Library/Application Support/oab-instance-mcp/grants.json`, Linux `grants.json`) | resumed as `desktop` | kept and re-dialled under its id, as `observe`. `GET /attach` shows `profile: observe`, `requested_profile: desktop` and the `warning`. The file is rewritten with `profile: observe` and the requested name |
@@ -141,7 +141,23 @@ the change is reported to the granter.
 
 For a stored row, `requested_profile` is display only. The effective profile is the narrower of
 `profile` and `requested_profile`, so editing the file to `{"profile":"owner",
-"requested_profile":"desktop"}` still loads as `observe`.
+"requested_profile":"desktop"}` still loads as `observe`. A `requested_profile` that is not a
+string counts as absent on both platforms: the row keeps its stored profile.
+
+**Audit file.** Every mapping is also appended as one JSON line to an audit file, separate from
+the daemon log so it survives log rotation: macOS
+`~/Library/Application Support/oab-instance-mcp/audit.jsonl`, Linux
+`~/.local/state/oab-instance-mcp/audit.jsonl` (`$XDG_STATE_HOME` if set; override with
+`MCP_AUDIT_FILE`, or `MCP_AUDIT_FILE=off` to disable). The file is mode 600 in a 0700 directory and
+is only appended to. A record looks like this:
+
+```json
+{"event":"profile_mapped","source":"attach","grant":"<id>","session":"<session>","principal":"<login>","requested_profile":"desktop","profile":"observe","ts_epoch_secs":1762300000}
+```
+
+`source` is `attach` (a new request), `resume` (a stored grant re-dialled at start, recorded on
+every restart while the grant lives) or `switchboard` (macOS `--switchboard-profile desktop`, with
+no `grant`, `session` or `principal`). A write failure is logged and never blocks the grant.
 
 **To restore shell or browser access**, grant `owner` explicitly: pick Owner in OpenAB Connect or
 OpenAB Remote, or send `POST /attach` with `"profile":"owner"`. The new grant replaces the old one

@@ -150,6 +150,10 @@ Live grants are written to `MCP_GRANTS_FILE` (default `$XDG_STATE_HOME/oab-insta
 id. Smoke covers `kill -9` → restart → redial, same id, secret absent from `GET /attach`, and a
 revoked grant not resumed.
 
+A `desktop` request or stored row runs as `observe` (#59), and each mapping is appended as one
+JSON line to `MCP_AUDIT_FILE` (default `$XDG_STATE_HOME/oab-instance-mcp/audit.jsonl`, `off`
+disables), mode 600. Smoke checks the `attach` and `resume` records.
+
 ## Not yet (vs the Swift implementation)
 
 - `/mcp` has no SSE stream (`GET /mcp` is 405, as in Swift).

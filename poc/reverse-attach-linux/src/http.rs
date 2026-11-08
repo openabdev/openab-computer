@@ -151,6 +151,10 @@ pub fn serve() {
         Some(path) => eprintln!("grants: persisted at {}", path.display()),
         None => eprintln!("grants: persistence off (MCP_GRANTS_FILE=off)"),
     }
+    match crate::audit::init_from_env() {
+        Some(path) => eprintln!("audit: profile mappings recorded at {}", path.display()),
+        None => eprintln!("audit: off (MCP_AUDIT_FILE=off)"),
+    }
     let policy: Arc<AuthPolicy> = match AuthPolicy::from_env() {
         Ok(p) => Arc::new(p),
         Err(e) => {
@@ -619,6 +623,14 @@ fn resume_grants(registry: &Registry) {
                 "grant {} profile {} -> {}: {warning}",
                 g.id, g.requested_profile, g.profile
             );
+            crate::audit::profile_mapped(
+                "resume",
+                &g.id,
+                &g.session,
+                &g.principal,
+                &g.requested_profile,
+                &g.profile,
+            );
         }
         let cancelled = registry
             .lock()
@@ -828,6 +840,14 @@ fn handle_attach(
         eprintln!(
             "grant {grant_id} profile {} -> {profile}: {warning}",
             resolved.requested
+        );
+        crate::audit::profile_mapped(
+            "attach",
+            &grant_id,
+            session,
+            principal,
+            &resolved.requested,
+            &profile,
         );
     }
 

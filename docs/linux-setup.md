@@ -305,6 +305,11 @@ under its original id — `journalctl --user -u oab-instance-mcp` shows `grants:
 file holds the attach secrets, at the same trust level as the bearer token file. A grant whose
 runtime has forgotten it (pod replaced) ends with `handshake_rejected_401`; lend again.
 
+A request or stored grant that names the retired `desktop` profile runs as `observe` (#59). Each
+such mapping is logged and appended to `~/.local/state/oab-instance-mcp/audit.jsonl` (mode 600;
+override with `MCP_AUDIT_FILE`, or `MCP_AUDIT_FILE=off` to disable). See
+[Upgrading from 0.8.x](tool-profiles.md#upgrading-from-08x-59).
+
 ### Background jobs
 
 Under `owner`, `exec_start` / `exec_poll` / `exec_list` / `exec_cancel` run long work without one

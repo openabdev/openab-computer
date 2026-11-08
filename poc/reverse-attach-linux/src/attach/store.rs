@@ -351,6 +351,36 @@ mod tests {
         let _ = fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
     }
 
+    /// #59 review: a non-string `requested_profile` counts as absent (as on macOS);
+    /// the row keeps its stored profile and the other rows still load.
+    #[test]
+    fn a_non_string_requested_profile_counts_as_absent() {
+        let now = 1_000;
+        let text = format!(
+            r#"{{"version":1,"grants":[
+            {{"id":"odd","runtime":"ws://x","session":"s","profile":"observe","requested_profile":7,"principal":"p","expires_at_epoch_secs": {},"secret":"k"}},
+            {{"id":"fine","runtime":"ws://x","session":"t","profile":"owner","principal":"p","expires_at_epoch_secs": {},"secret":"k"}}
+            ]}}"#,
+            now + 5,
+            now + 5
+        );
+        let grants = parse(&text, now).unwrap();
+        let got: Vec<(&str, &str, &str)> = grants
+            .iter()
+            .map(|g| {
+                (
+                    g.id.as_str(),
+                    g.profile.as_str(),
+                    g.requested_profile.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![("odd", "observe", "observe"), ("fine", "owner", "owner")]
+        );
+    }
+
     #[test]
     fn grants_stored_under_the_old_sandbox_name_are_dropped() {
         let now = 1_000;

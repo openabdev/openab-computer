@@ -16,6 +16,7 @@ rm -f "$LOG" "$RA_LOG"
 # Never touch the real ~/.local/state grants file from a test run.
 GRANTS_DIR=$(mktemp -d)
 export MCP_GRANTS_FILE="$GRANTS_DIR/grants.json"
+export MCP_AUDIT_FILE="$GRANTS_DIR/audit.jsonl"
 
 # 1000 → redial, then 4010 → stop(revoked). Third attach (if any) would be 4010 again.
 PORT=18090 ADMIN=admin-secret CLOSES=1000,4010 SECRETS=pre=preminted-xyz,bare=bare-xyz,dsk=dsk-xyz LOG=$LOG \
@@ -170,6 +171,8 @@ for i in $(seq 1 20); do grep -q '"ev": "closed"' $LOG 2>/dev/null && break; sle
 check "desktop tools/list = sys_info,screenshot" "[[ \$(py tools) == sys_info,screenshot ]]"
 check "desktop bash is an unknown tool" "[[ \$(py exec_err) == -32602* ]]"
 check "daemon logged the mapping" "grep -q 'profile desktop -> observe' $RA_LOG"
+check "the mapping is in the audit file (#59)" "grep -q '\"source\":\"attach\"' \"$MCP_AUDIT_FILE\" && grep -q '\"session\":\"dsk\"' \"$MCP_AUDIT_FILE\""
+check "audit file is mode 600" "[[ \$(stat -c %a \"$MCP_AUDIT_FILE\" 2>/dev/null || stat -f %Lp \"$MCP_AUDIT_FILE\") == 600 ]]"
 
 echo "== wrong secret → handshake 401 → stop =="
 : > $LOG
@@ -222,6 +225,7 @@ check "resumed under the same grant id" "$C 127.0.0.1:8790/attach | grep -q \"$G
 check "restart logged the resume" "grep -q \"grants: resuming $GID\" $RA_LOG"
 g=$($C 127.0.0.1:8790/attach/$GID)
 check "a stored desktop grant resumes as observe (#59)" "[[ '$g' == *'\"profile\":\"observe\"'* && '$g' == *'\"requested_profile\":\"desktop\"'* && '$g' == *'\"warning\"'* ]]"
+check "the resumed mapping is in the audit file (#59)" "grep '\"source\":\"resume\"' \"$MCP_AUDIT_FILE\" | grep -q \"$GID\""
 check "the grants file now says observe + requested desktop" "python3 -c 'import json,sys;g=json.load(open(sys.argv[1]))[\"grants\"][0];sys.exit(0 if (g[\"profile\"],g[\"requested_profile\"])==(\"observe\",\"desktop\") else 1)' \"$MCP_GRANTS_FILE\""
 $C -o /dev/null -X DELETE 127.0.0.1:8790/attach/$GID
 check "DELETE removes it from the file" "! grep -q \"$GID\" \"$MCP_GRANTS_FILE\""
