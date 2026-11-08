@@ -31,7 +31,7 @@ struct Options {
 
 func usage() -> Never {
     print("""
-    oab-instance-mcp \(version) — MCP server exposing this Mac (exec / screenshot / mouse / key / osascript / sys_info)
+    oab-instance-mcp \(version) — MCP server exposing this Mac (exec / screenshot / ui_snapshot / mouse / key / osascript / sys_info)
 
     USAGE: oab-instance-mcp [--host 127.0.0.1] [--port 8795] [--path /mcp]
                         [--allow-login <email>]... [--token <str> | --token-file <path>]
@@ -180,7 +180,10 @@ let server = MCPServer(
         probably showing: screenshot it and click Allow. `exec` is a plain `zsh -f` shell as the desktop user \
         (add `/opt/homebrew/bin` to PATH via `env` if needed) and is the right tool for files and commands; \
         for long jobs (builds) that outlive one request use `exec_start` then `exec_poll`/`exec_cancel`. \
-        Call `sys_info` when unsure which permissions or displays exist.\(opts.upstreams.isEmpty ? "" : """
+        Call `sys_info` when unsure which permissions or displays exist. If `ui_snapshot` is available, \
+        use it for native apps: it returns the window's accessibility tree (roles, titles, values, frames \
+        in the same display points `mouse` takes), cheaper and more exact than reading a screenshot; fall \
+        back to `screenshot` for custom-drawn content.\(opts.upstreams.isEmpty ? "" : """
          A browser is available through the `browser_*` tools (Playwright, a real window on this Mac's \
         desktop): prefer `browser_navigate` + `browser_snapshot` (accessibility tree as text) to read a \
         page, and `browser_click` / `browser_type` / `browser_fill_form` to act — they are exact and need \

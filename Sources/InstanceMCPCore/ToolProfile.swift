@@ -102,6 +102,7 @@ public enum ToolProfile: String, Codable, Sendable, CaseIterable {
         "screenshot": .observe,
         "exec_poll": .observe,     // reads a job's state and output; starts nothing
         "exec_list": .observe,
+        "ui_snapshot": .observe,   // reads other apps' UI; owner-only in phase 1 (#67), not in observeTools
         "exec_cancel": .act,       // signals a job's process group
         "exec": .shell,
         "exec_start": .shell,

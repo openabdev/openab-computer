@@ -42,7 +42,7 @@ final class ProfileBoundaryTests: XCTestCase {
 
     func testEveryDeclaredToolIsInTheCatalog() throws {
         let declared = try declaredToolNames()
-        XCTAssertTrue(declared.isSuperset(of: ["exec", "osascript", "key", "mouse", "screenshot", "sys_info"]),
+        XCTAssertTrue(declared.isSuperset(of: ["exec", "osascript", "key", "mouse", "screenshot", "sys_info", "ui_snapshot"]),
                       "source scan broke: \(declared.sorted())")
         let outside = declared.subtracting(served)
         XCTAssertTrue(outside.isEmpty, "declared but not in ToolCatalog.local: \(outside.sorted())")
@@ -84,6 +84,16 @@ final class ProfileBoundaryTests: XCTestCase {
         for tool in ["browser_navigate", "browser_snapshot", "browser_take_screenshot", "browser_something_new", "exec", "osascript"] {
             XCTAssertFalse(ToolProfile.observe.allows(tool), "\(tool) is an action, or unknown")
         }
+    }
+
+    /// #67 phase 1: `ui_snapshot` only reads, but it can read field values and text
+    /// outside the visible area, so it stays out of `observe` until that is decided.
+    func testUISnapshotIsOwnerOnlyInPhaseOne() {
+        XCTAssertTrue(served.contains("ui_snapshot"))
+        XCTAssertEqual(ToolProfile.localToolClass["ui_snapshot"], .observe)
+        XCTAssertFalse(ToolProfile.observeTools.contains("ui_snapshot"))
+        XCTAssertFalse(ToolProfile.observe.allows("ui_snapshot"))
+        XCTAssertTrue(ToolProfile.owner.allows("ui_snapshot"))
     }
 
     /// Exactly two profiles (#59). `sandbox` promised a boundary that does not exist

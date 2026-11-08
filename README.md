@@ -29,7 +29,7 @@ flowchart LR
             s8443[":8443 → 127.0.0.1:8794"]
         end
         subgraph gui["Aqua session · LaunchAgents in gui/501"]
-            mcp["<b>oab-instance-mcp</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · mouse · key · osascript"]
+            mcp["<b>oab-instance-mcp</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · mouse · key · osascript"]
             pw["@playwright/mcp<br/>headed Chromium, persistent profile"]
         end
         subgraph hands["What the daemon touches — nothing a logged-in user could not"]
@@ -127,9 +127,16 @@ same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-instance-mcp
 | `exec_list` | all running jobs + the 10 most recently finished | recover a forgotten `job_id` or see what is running; each entry has state, pid, exit_code, command, cwd, timestamps, stdout/stderr byte sizes |
 | `exec_cancel` | stop a running job (or drop a finished one) | `job_id`, `signal` `KILL` (default) / `TERM` — signals the whole process group; poll once more for final output. Finished jobs are dropped from the registry (log files stay on disk) |
 | `screenshot` | ScreenCaptureKit → JPEG/PNG as MCP `image` content | `display`, `scale` (px per point, default 1.0), `region` {x,y,w,h} crop in points, `format`, `quality`. Needs Screen Recording TCC. Read small UI text with `region` + `scale: 2` |
+| `ui_snapshot` | Accessibility tree of a native app's window (AXUIElement), read-only | `owner` only. Default: the frontmost app's focused window; `app` (bundle id or name) or `pid`, `window` (title or index) or `all_windows`. Per node: role, subrole, title, value (secure fields always masked), state, frame in display points (the `screenshot`/`mouse` space, with display index) and a `ref` valid within the `snapshot_id`. `max_depth` 20 (≤50), `max_nodes` 300 (≤2000), `timeout_ms` 3000 (≤10000); partial results are flagged `truncated` / `timed_out`. Needs Accessibility TCC. macOS only |
 | `mouse` | CGEvent: `move` `click` `double_click` `right_click` `drag` `scroll` | coordinates in display points = screenshot pixels at scale 1. `modifiers`. Needs Accessibility TCC |
 | `key` | CGEvent: `type` (unicode, layout-independent) / `press` combos (`cmd+shift+4`) | Needs Accessibility TCC |
 | `osascript` | AppleScript / JXA via `/usr/bin/osascript` in the GUI session | `timeout_secs` (default 15). First script against an app raises an Automation consent dialog on the Mac — screenshot, then `mouse` click Allow |
+
+Which tool reads the screen: `browser_snapshot` for web pages, `ui_snapshot` for native apps
+(exact roles, titles and frames, cheaper than reading an image), and `screenshot` + `mouse` for
+custom-drawn or canvas content that has no accessibility tree. A `ui_snapshot` contains field
+values and on-screen text (secure text fields are masked, other fields are not), so a caller
+that stores snapshots must mask them first.
 
 The loop the tools are designed for: `screenshot` → decide → `mouse`/`key`/`osascript` → `screenshot` to confirm.
 Verified 2026-09-22 from the laptop: open TextEdit, type a line, read it back, close via the save

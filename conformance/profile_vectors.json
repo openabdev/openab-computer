@@ -1,17 +1,17 @@
 {
   "version": 1,
-  "about": "Profile resolution and membership, issue #59. Swift oracle: ConformanceVectorTests.testProfileVectors + BrowserProfileTests. Rust: profile_conformance. status 400 cases expect error == rejection_message; warning true expects warning == retired_warning.",
+  "about": "Profile resolution and membership, issue #59. Swift oracle: ConformanceVectorTests.testProfileVectors + BrowserProfileTests. Rust: profile_conformance. status 400 cases expect error == rejection_message; warning true expects warning == retired_warning. macOS-only local tools (osascript, exec, ui_snapshot) are absent from the linux lists; Rust asserts it does not serve them.",
   "profiles": ["owner", "observe"],
   "default_profile": "observe",
   "rejection_message": "profile must be one of [owner, observe]",
   "retired_warning": "The `desktop` profile was removed (openab-computer#59). This grant runs as `observe`: sys_info and screenshot only. Grant `owner` explicitly for shell and browser access.",
   "local_tools": {
-    "macos": ["sys_info", "screenshot", "exec", "exec_start", "exec_poll", "exec_list", "exec_cancel", "osascript", "key", "mouse"],
+    "macos": ["sys_info", "screenshot", "exec", "exec_start", "exec_poll", "exec_list", "exec_cancel", "osascript", "key", "mouse", "ui_snapshot"],
     "linux": ["sys_info", "screenshot", "bash", "mouse", "key", "exec_start", "exec_poll", "exec_list", "exec_cancel"]
   },
   "tool_class": {
     "macos": {
-      "observe": ["sys_info", "screenshot", "exec_poll", "exec_list"],
+      "observe": ["sys_info", "screenshot", "exec_poll", "exec_list", "ui_snapshot"],
       "act": ["exec_cancel"],
       "shell": ["exec", "exec_start", "osascript", "key", "mouse"]
     },
