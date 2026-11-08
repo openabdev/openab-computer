@@ -67,6 +67,8 @@ public struct UISnapshotTool: Tool {
         var runningApps: @Sendable () -> [UIRunningApp]
         /// The argument is the messaging timeout for the lookup, from the call's deadline.
         var frontmostPid: @Sendable (Float) -> Int32?
+        /// Held around `frontmostPid`: its timeout is process-global.
+        var frontmostGate: UIAXGate
         var appElement: @Sendable (Int32) -> any UIElement
         var displays: @Sendable () -> UIDisplayMap
         var now: @Sendable () -> TimeInterval
@@ -77,6 +79,7 @@ public struct UISnapshotTool: Tool {
             selfPid: ProcessInfo.processInfo.processIdentifier,
             runningApps: { AXLive.runningApps() },
             frontmostPid: { AXLive.frontmostPid(timeout: $0) },
+            frontmostGate: .systemWide,
             appElement: { AXLive.appElement($0) },
             displays: { AXLive.displays() },
             now: { ProcessInfo.processInfo.systemUptime },
@@ -152,9 +155,10 @@ public struct UISnapshotTool: Tool {
         let running = env.runningApps()
         var front: Int32?
         if !needsList {
-            // No AX request starts once the budget is spent, this one included.
-            guard let t = deadline.callTimeout() else { throw ToolError(Errors.budgetSpent) }
-            front = env.frontmostPid(t)
+            // No AX request starts once the budget is spent, this one included. The gate
+            // computes the timeout after any wait, so a queued call cannot use a stale one.
+            guard let pid = env.frontmostGate.run(deadline, env.frontmostPid) else { throw ToolError(Errors.budgetSpent) }
+            front = pid
         }
         let app = try UITarget.resolveApp(app: req.app, pid: req.pid, frontmostPid: front,
                                           running: running, selfPid: env.selfPid).get()

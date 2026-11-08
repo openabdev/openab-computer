@@ -45,6 +45,25 @@ struct UIDeadline {
     var elapsedMs: Int { max(0, Int(((now() - start) * 1000).rounded())) }
 }
 
+/// Serializes an AX call whose timeout is process-global (one set on the system-wide
+/// element) with the timeout it sets, so concurrent snapshots cannot replace each
+/// other's timeout in between. Waiting for the gate counts against the caller's
+/// budget, and the timeout is computed only once the gate is held.
+final class UIAXGate: @unchecked Sendable {
+    static let systemWide = UIAXGate()
+    private let lock = NSLock()
+
+    /// Runs `body` with the caller's next messaging timeout while holding the gate.
+    /// nil, without running `body`, when the budget ran out before or while waiting.
+    func run<T>(_ deadline: UIDeadline, _ body: (Float) -> T) -> T? {
+        let remaining = deadline.end - deadline.now()
+        guard remaining > 0, lock.lock(before: Date(timeIntervalSinceNow: remaining)) else { return nil }
+        defer { lock.unlock() }
+        guard let t = deadline.callTimeout() else { return nil }
+        return body(t)
+    }
+}
+
 /// Walks accessibility elements into a `UISnapshot`. Pure over `UIElement`, so the
 /// fake provider exercises every limit and error path without a GUI.
 ///

@@ -36,8 +36,11 @@ final class AXLiveElement: UIElement {
         let err = AXUIElementCopyMultipleAttributeValues(ax, names as CFArray, [], &out)
         if err != .success { return Self.isAbsent(err) ? .success([:]) : .failure(Self.map(err)) }
         let arr = Self.list(out)
+        // AX returns one entry per name. A short batch could hide AXSubrole and let the
+        // walker read a secure value, so it fails the element instead.
+        guard arr.count == names.count else { return .failure(.other(AXError.failure.rawValue)) }
         var entries: [String: BatchEntry] = [:]
-        for (i, name) in names.enumerated() where i < arr.count {
+        for (i, name) in names.enumerated() {
             switch Self.convert(arr[i]) {
             case .value(let v): entries[name] = .value(v)
             case .error(let e): entries[name] = .error(e)
@@ -187,8 +190,10 @@ enum AXLive {
     /// The app owning keyboard focus, from the system-wide element; NSWorkspace as fallback.
     ///
     /// Setting the messaging timeout on the system-wide element sets the process-global
-    /// AX timeout. That is intended: no other tool makes AX messaging calls, and every
-    /// element `ui_snapshot` touches gets its own timeout through `UIDeadline.arm`.
+    /// AX timeout. Callers go through `UIAXGate.systemWide`, so concurrent snapshots
+    /// cannot replace each other's timeout between the set and the read. No other tool
+    /// makes AX messaging calls, and every element `ui_snapshot` walks gets its own
+    /// timeout through `UIDeadline.arm`.
     static func frontmostPid(timeout: Float) -> Int32? {
         let sys = AXUIElementCreateSystemWide()
         AXUIElementSetMessagingTimeout(sys, timeout)

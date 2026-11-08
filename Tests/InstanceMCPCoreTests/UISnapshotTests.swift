@@ -349,8 +349,6 @@ final class UISnapshotWalkerTests: XCTestCase {
         XCTAssertEqual(r.snapshot.nodeCount, 3)
     }
 
-    /// A long text is read as a prefix, not copied whole; without prefix support the
-    /// walker falls back to AXValue.
     /// A partial batch (role readable, subrole not) must not pass as a known
     /// non-secure node: the value is never requested.
     func testPartialBatchErrorOnSubroleNeverReadsTheValue() throws {
@@ -391,6 +389,8 @@ final class UISnapshotWalkerTests: XCTestCase {
                        ["AXRole": .string("AXTextField")])
     }
 
+    /// A long text is read as a prefix, not copied whole; without prefix support the
+    /// walker falls back to AXValue.
     func testLongTextIsReadAsAPrefix() throws {
         let long = String(repeating: "y", count: 5000)
         let attrs: [String: UIAttrValue] = ["AXValue": .string(long), "AXNumberOfCharacters": .number(5000)]
@@ -661,6 +661,14 @@ final class LogBox: @unchecked Sendable {
     var all: [String] { lock.lock(); defer { lock.unlock() }; return lines }
 }
 
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var n = 0
+    @discardableResult func add(_ d: Int) -> Int { lock.lock(); defer { lock.unlock() }; n += d; return n }
+    func max(_ v: Int) { lock.lock(); n = Swift.max(n, v); lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return n }
+}
+
 final class UISnapshotToolTests: XCTestCase {
     static func environment(trusted: Bool = true, window: FakeUIElement? = nil) -> UISnapshotTool.Environment {
         let w = window ?? el("AXWindow", "Untitled", frame: CGRect(x: 100, y: 80, width: 800, height: 600),
@@ -671,6 +679,7 @@ final class UISnapshotToolTests: XCTestCase {
         let running = [UIRunningApp(pid: 20, bundleID: "com.apple.TextEdit", name: "TextEdit")]
         return UISnapshotTool.Environment(
             isTrusted: { trusted }, selfPid: 99, runningApps: { running }, frontmostPid: { _ in 20 },
+            frontmostGate: UIAXGate(),
             appElement: { _ in app }, displays: { mainDisplay }, now: { 0 }, newSnapshotID: { "snap-0000beef" })
     }
 
@@ -722,6 +731,70 @@ final class UISnapshotToolTests: XCTestCase {
             XCTAssertEqual((e as? ToolError)?.description, UISnapshotTool.Errors.budgetSpent)
         }
         XCTAssertTrue(asked.all.isEmpty)
+    }
+
+    /// Concurrent default-target calls take the frontmost lookup one at a time, so one
+    /// call cannot replace another's process-global timeout between the set and the read.
+    func testFrontmostLookupsAreSerialized() {
+        let gate = UIAXGate()
+        let inside = Counter(), peak = Counter()
+        var env = Self.environment()
+        env.frontmostGate = gate
+        env.now = { ProcessInfo.processInfo.systemUptime }
+        // A fresh fake tree per call: the fakes are not thread-safe, the gate is under test.
+        env.appElement = { pid in Self.environment().appElement(pid) }
+        env.frontmostPid = { _ in
+            let n = inside.add(1)
+            peak.max(n)
+            Thread.sleep(forTimeInterval: 0.02)
+            inside.add(-1)
+            return 20
+        }
+        var req = UISnapshotTool.Request()
+        req.limits = UISnapshotLimits(maxDepth: nil, maxNodes: nil, timeoutMs: 5000)
+        let ok = Counter()
+        DispatchQueue.concurrentPerform(iterations: 8) { _ in
+            if (try? UISnapshotTool.run(req, env: env)) != nil { ok.add(1) }
+        }
+        XCTAssertEqual(ok.value, 8)
+        XCTAssertEqual(peak.value, 1)
+    }
+
+    /// A call whose budget runs out while another holds the gate never starts its lookup.
+    func testFrontmostLookupIsNotStartedAfterWaitingOutTheBudget() {
+        let gate = UIAXGate()
+        let asked = LogBox()
+        let now: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        var env = Self.environment()
+        env.frontmostGate = gate
+        env.now = now
+        env.frontmostPid = { _ in asked.add("frontmost"); return 20 }
+        let holding = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = gate.run(UIDeadline(timeoutMs: 10_000, now: now)) { _ in holding.signal(); release.wait() }
+            done.signal()
+        }
+        holding.wait()
+        var req = UISnapshotTool.Request()
+        req.limits = UISnapshotLimits(maxDepth: nil, maxNodes: nil, timeoutMs: UISnapshotLimits.minTimeoutMs)
+        XCTAssertThrowsError(try UISnapshotTool.run(req, env: env)) { e in
+            XCTAssertEqual((e as? ToolError)?.description, UISnapshotTool.Errors.budgetSpent)
+        }
+        release.signal()
+        done.wait()
+        XCTAssertTrue(asked.all.isEmpty)
+    }
+
+    /// The timeout is computed after the gate is acquired: time spent waiting shrinks it.
+    func testGateTimeoutIsComputedAfterTheWait() {
+        let clock = FakeClock()
+        clock.t = 0
+        let deadline = UIDeadline(timeoutMs: 1000, now: { clock.t })
+        clock.t = 0.9
+        XCTAssertEqual(UIAXGate().run(deadline) { $0 } ?? -1, 0.1, accuracy: 0.0001)
+        clock.t = 1.0
+        XCTAssertNil(UIAXGate().run(deadline) { $0 })
     }
 
     func testConflictingArgumentsAreInvalidParams() async {
