@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "about": "Profile resolution and membership, issue #59. Swift oracle: ConformanceVectorTests.testProfileVectors + BrowserProfileTests. Rust: profile_conformance. status 400 cases expect error == rejection_message; warning true expects warning == retired_warning.",
+  "profiles": ["owner", "observe"],
+  "default_profile": "observe",
+  "rejection_message": "profile must be one of [owner, observe]",
+  "retired_warning": "The `desktop` profile was removed (openab-computer#59). This grant runs as `observe`: sys_info and screenshot only. Grant `owner` explicitly for shell and browser access.",
+  "local_tools": {
+    "macos": ["sys_info", "screenshot", "exec", "exec_start", "exec_poll", "exec_list", "exec_cancel", "osascript", "key", "mouse"],
+    "linux": ["sys_info", "screenshot", "bash", "mouse", "key", "exec_start", "exec_poll", "exec_list", "exec_cancel"]
+  },
+  "tool_class": {
+    "macos": {
+      "observe": ["sys_info", "screenshot", "exec_poll", "exec_list"],
+      "act": ["exec_cancel"],
+      "shell": ["exec", "exec_start", "osascript", "key", "mouse"]
+    },
+    "linux": {
+      "observe": ["sys_info", "screenshot"],
+      "act": [],
+      "shell": ["bash", "mouse", "key", "exec_start", "exec_poll", "exec_list", "exec_cancel"]
+    }
+  },
+  "upstream_fixture": [
+    "browser_navigate", "browser_navigate_back", "browser_snapshot", "browser_find", "browser_click",
+    "browser_type", "browser_fill_form", "browser_press_key", "browser_hover", "browser_select_option",
+    "browser_wait_for", "browser_tabs", "browser_take_screenshot", "browser_console_messages",
+    "browser_resize", "browser_evaluate", "browser_run_code_unsafe", "browser_file_upload", "browser_drop",
+    "browser_pdf_save", "browser_network_requests", "browser_network_request", "browser_handle_dialog",
+    "browser_emulate_media", "browser_close", "browser_drag", "browser_mouse_move_xy",
+    "browser_mouse_click_xy", "browser_mouse_drag_xy", "browser_mouse_down", "browser_mouse_up",
+    "browser_mouse_wheel"
+  ],
+  "unlisted_upstream": ["browser_something_new", "not_a_browser_tool"],
+  "served": {
+    "owner": {"local": "all", "upstream": "all", "shell_equivalent": true},
+    "observe": {"local": ["sys_info", "screenshot"], "upstream": [], "shell_equivalent": false}
+  },
+  "attach_requests": [
+    {"name": "owner", "body": {"profile": "owner"}, "expect": {"status": 202, "profile": "owner", "requested_profile": "owner", "warning": false}},
+    {"name": "observe", "body": {"profile": "observe"}, "expect": {"status": 202, "profile": "observe", "requested_profile": "observe", "warning": false}},
+    {"name": "no profile field gets the default", "body": {}, "expect": {"status": 202, "profile": "observe", "requested_profile": "observe", "warning": false}},
+    {"name": "null profile gets the default", "body": {"profile": null}, "expect": {"status": 202, "profile": "observe", "requested_profile": "observe", "warning": false}},
+    {"name": "non-string profile gets the default", "body": {"profile": 5}, "expect": {"status": 202, "profile": "observe", "requested_profile": "observe", "warning": false}},
+    {"name": "desktop maps to observe, never owner", "body": {"profile": "desktop"}, "expect": {"status": 202, "profile": "observe", "requested_profile": "desktop", "warning": true}},
+    {"name": "sandbox", "body": {"profile": "sandbox"}, "expect": {"status": 400}},
+    {"name": "Sandbox", "body": {"profile": "Sandbox"}, "expect": {"status": 400}},
+    {"name": "Desktop", "body": {"profile": "Desktop"}, "expect": {"status": 400}},
+    {"name": "OWNER", "body": {"profile": "OWNER"}, "expect": {"status": 400}},
+    {"name": "Observe", "body": {"profile": "Observe"}, "expect": {"status": 400}},
+    {"name": "browser", "body": {"profile": "browser"}, "expect": {"status": 400}},
+    {"name": "empty", "body": {"profile": ""}, "expect": {"status": 400}},
+    {"name": "leading space", "body": {"profile": " owner"}, "expect": {"status": 400}}
+  ],
+  "persisted_grants": [
+    {"name": "0.8.x desktop row", "stored": {"profile": "desktop"}, "expect": {"outcome": "keep", "profile": "observe", "requested_profile": "desktop", "warning": true}},
+    {"name": "migrated row", "stored": {"profile": "observe", "requested_profile": "desktop"}, "expect": {"outcome": "keep", "profile": "observe", "requested_profile": "desktop", "warning": true}},
+    {"name": "edited row never widens", "stored": {"profile": "owner", "requested_profile": "desktop"}, "expect": {"outcome": "keep", "profile": "observe", "requested_profile": "desktop", "warning": true}},
+    {"name": "owner", "stored": {"profile": "owner"}, "expect": {"outcome": "keep", "profile": "owner", "requested_profile": "owner", "warning": false}},
+    {"name": "observe", "stored": {"profile": "observe"}, "expect": {"outcome": "keep", "profile": "observe", "requested_profile": "observe", "warning": false}},
+    {"name": "owner row requested owner", "stored": {"profile": "owner", "requested_profile": "owner"}, "expect": {"outcome": "keep", "profile": "owner", "requested_profile": "owner", "warning": false}},
+    {"name": "observe row requested owner never widens", "stored": {"profile": "observe", "requested_profile": "owner"}, "expect": {"outcome": "keep", "profile": "observe", "requested_profile": "owner", "warning": false}},
+    {"name": "sandbox is dropped (#46)", "stored": {"profile": "sandbox"}, "expect": {"outcome": "drop"}},
+    {"name": "Desktop is unknown", "stored": {"profile": "Desktop"}, "expect": {"outcome": "drop"}},
+    {"name": "unknown", "stored": {"profile": "admin"}, "expect": {"outcome": "drop"}},
+    {"name": "unknown requested", "stored": {"profile": "observe", "requested_profile": "sandbox"}, "expect": {"outcome": "drop"}}
+  ]
+}

@@ -25,6 +25,8 @@ struct Options {
     var switchboard: String? = nil
     var switchboardSecretFile: String? = nil
     var switchboardProfile: ToolProfile = .observe
+    /// The name given to --switchboard-profile when it was mapped (`desktop`, #59).
+    var switchboardRequestedProfile: String? = nil
 }
 
 func usage() -> Never {
@@ -45,7 +47,7 @@ func usage() -> Never {
       --upstream <name=url>  Re-serve the tools of a loopback MCP server (e.g. the Playwright MCP
                       at browser=http://127.0.0.1:8794/mcp) under this daemon, subject to the
                       connection's tool profile. Repeatable. Tools appear with the upstream's
-                      own names; desktop sees an allowlisted subset of browser_*, observe none.
+                      own names; owner sees every upstream tool, observe none.
       --no-attach     Disable the reverse-attach plane (POST/GET /attach, DELETE /attach/{id}):
                       the human-credentialed endpoint through which Connect / Remote lends this
                       Mac to one openab-pty session (this Mac dials the pod; see the ADR).
@@ -60,9 +62,10 @@ func usage() -> Never {
       --switchboard-secret-file <path>
                       The VM secret from `openab-sb gen-secret` (required with --switchboard). Re-read
                       on every dial, so rotating it is: update the file; the next retry picks it up.
-      --switchboard-profile observe|desktop|owner
-                      Tool profile served to the switchboard (default observe: sys_info + screenshot).
-                      The switchboard's own per-caller allowlist applies on top.
+      --switchboard-profile observe|owner
+                      Tool profile served to the switchboard (default observe: sys_info + screenshot;
+                      owner: every tool, including the shell and the browser). The switchboard's own
+                      per-caller allowlist applies on top.
       --menu-bar      Show a status item in the menu bar (permissions, activity, restart/quit).
       --public-url    The URL clients use (shown/copied from the menu); defaults to the local one.
 
@@ -99,10 +102,17 @@ while !args.isEmpty {
     case "--switchboard-secret-file": opts.switchboardSecretFile = next(a)
     case "--switchboard-profile":
         let v = next(a)
-        guard let p = ToolProfile(rawValue: v) else {
-            fputs("--switchboard-profile wants observe, desktop or owner\n", stderr); usage()
+        // The retired `desktop` (a 0.8.x plist flag) serves `observe` with a warning
+        // rather than exiting: launchd would restart a refusing daemon forever and
+        // take /mcp and /attach down with it (#59).
+        guard let r = ToolProfile.resolve(requested: v) else {
+            fputs("--switchboard-profile wants observe or owner\n", stderr); usage()
         }
-        opts.switchboardProfile = p
+        if let warning = r.warning {
+            fputs("--switchboard-profile \(v): \(warning)\n", stderr)
+            opts.switchboardRequestedProfile = v
+        }
+        opts.switchboardProfile = r.profile
     case "--upstream":
         let v = next(a)
         guard let eq = v.firstIndex(of: "="), let u = URL(string: String(v[v.index(after: eq)...])),
@@ -180,9 +190,15 @@ let server = MCPServer(
     tools: ToolCatalog.local(agentVersion: version),
     upstreams: opts.upstreams.map { UpstreamMCP(name: $0.0, url: $0.1, log: log) }
 )
+/// Every `desktop` → `observe` mapping is recorded here as well as in the log (#59).
+let auditLog = FileAuditLog(log: log)
+if let requested = opts.switchboardRequestedProfile, switchboardTarget != nil {
+    auditLog.append(ProfileAudit.mapped(source: "switchboard", requested: requested, profile: opts.switchboardProfile))
+}
 let attachManager: AttachManager? = opts.attach
     ? AttachManager(server: server,
                     store: opts.persistGrants ? FileGrantStore(log: log) : nil,
+                    audit: auditLog,
                     log: log)
     : nil
 let endpoint = MCPHTTPEndpoint(path: opts.path, server: server, auth: auth, attach: attachManager, log: log)
@@ -216,7 +232,8 @@ let switchboardClient: ReverseAttachClient? = switchboardTarget.map { t in
                        server: server, log: log)
 }
 if let switchboardClient, let t = switchboardTarget {
-    log("switchboard: dialling \(t.url.absoluteString) as \(opts.switchboardProfile.rawValue)")
+    log("switchboard: dialling \(t.url.absoluteString) as \(opts.switchboardProfile.rawValue)" +
+        (opts.switchboardRequestedProfile.map { " (requested \($0))" } ?? ""))
     Task { await switchboardClient.start() }
 }
 

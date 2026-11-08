@@ -90,7 +90,8 @@ Latency is not the bottleneck; the LLM round trip is. Good enough for the thin-e
   `macmini:8443` to the laptop before leaving this running unattended, or front it with the
   Swift daemon that checks `Tailscale-User-Login`.
 - `browser_run_code_unsafe` is in the tool list — arbitrary Playwright JS on the box. Fine
-  for "my CLI on my Mac"; must be filtered before any sandboxed OAB bot gets this endpoint.
+  for "my CLI on my Mac". A lent session reaches the browser only through the daemon's
+  `--upstream`, and only under the `owner` profile: `observe` gets no browser tool (#59).
 
 ## What this proves for the design
 
@@ -105,5 +106,4 @@ Latency is not the bottleneck; the LLM round trip is. Good enough for the thin-e
 Step 2 shipped 2026-09-22: the Swift `oab-instance-mcp` daemon (see top-level README) runs beside
 this on `127.0.0.1:8795` → `tailscale serve --https=8444`, same LaunchAgent pattern, with
 `exec` / `screenshot` / `sys_info` and Tailscale-identity auth. Remaining for the browser
-half: a Tailscale ACL on :8443, and filtering `browser_run_code_unsafe` before any
-sandboxed caller is allowed in.
+half: a Tailscale ACL on :8443. Lent callers get the browser only under `owner` (#59).

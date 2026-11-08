@@ -218,6 +218,8 @@ impl Client {
                 runtime: runtime.clone(),
                 session: "s1".to_string(),
                 profile: "owner".to_string(),
+                requested_profile: "owner".to_string(),
+                warning: None,
                 principal: "a@b".to_string(),
                 state: "dialing".to_string(),
                 ended: None,
@@ -488,11 +490,9 @@ fn initialize_carries_the_long_call_and_ui_order_instructions() {
         let v: Value = serde_json::from_str(&crate::mcp::answer(init, profile).unwrap()).unwrap();
         v["result"]["instructions"].as_str().unwrap().to_string()
     };
-    for profile in ["owner", "desktop"] {
-        let text = instructions(profile);
-        assert!(text.contains("60 seconds"), "{profile}: {text}");
-        assert!(text.contains("one at a time"), "{profile}: {text}");
-    }
+    let owner = instructions("owner");
+    assert!(owner.contains("60 seconds"), "{owner}");
+    assert!(owner.contains("one at a time"), "{owner}");
     let observe = instructions("observe");
     assert!(observe.contains("60 seconds"), "{observe}");
     assert!(!observe.contains("bash"), "observe has no bash: {observe}");

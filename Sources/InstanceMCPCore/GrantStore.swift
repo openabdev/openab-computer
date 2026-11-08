@@ -26,16 +26,20 @@ public struct PersistedGrant: Codable, Sendable, Equatable {
     public var principal: String
     public var createdAt: Date
     public var expiresAt: Date
+    /// The profile name the granter asked for, when it was mapped (`desktop` →
+    /// `observe`, #59). Display only: `ToolProfile.resolve(stored:requested:)` never
+    /// lets it widen `profile`. Absent in files written by 0.8.x, ignored by them.
+    public var requestedProfile: String?
     /// Not encoded into the record file; carried to and from the secret store.
     public var secret: String
 
-    enum CodingKeys: String, CodingKey { case id, runtime, session, profile, principal, createdAt, expiresAt }
+    enum CodingKeys: String, CodingKey { case id, runtime, session, profile, principal, createdAt, expiresAt, requestedProfile }
 
     public init(id: String, runtime: URL, session: String, profile: String, principal: String,
-                createdAt: Date, expiresAt: Date, secret: String) {
+                createdAt: Date, expiresAt: Date, secret: String, requestedProfile: String? = nil) {
         self.id = id; self.runtime = runtime; self.session = session; self.profile = profile
         self.principal = principal; self.createdAt = createdAt; self.expiresAt = expiresAt
-        self.secret = secret
+        self.secret = secret; self.requestedProfile = requestedProfile
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,6 +51,9 @@ public struct PersistedGrant: Codable, Sendable, Equatable {
         principal = try c.decode(String.self, forKey: .principal)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
         expiresAt = try c.decode(Date.self, forKey: .expiresAt)
+        // A non-string value (hand-edited file) counts as absent, as on Linux: the row
+        // keeps its stored profile and the rest of the file still loads.
+        requestedProfile = (try? c.decodeIfPresent(String.self, forKey: .requestedProfile)) ?? nil
         secret = ""
     }
 
@@ -56,6 +63,7 @@ public struct PersistedGrant: Codable, Sendable, Equatable {
         try c.encode(session, forKey: .session); try c.encode(profile, forKey: .profile)
         try c.encode(principal, forKey: .principal)
         try c.encode(createdAt, forKey: .createdAt); try c.encode(expiresAt, forKey: .expiresAt)
+        try c.encodeIfPresent(requestedProfile, forKey: .requestedProfile)
     }
 }
 

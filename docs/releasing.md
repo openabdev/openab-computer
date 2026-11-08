@@ -108,6 +108,13 @@ deleted in an `always()` cleanup step.
 
 Never move or recreate a tag after an artifact has been published.
 
+**Breaking changes need a migration section in the release notes.** The first release that
+contains #59 (two profiles, `observe` and `owner`; `desktop` removed and mapped to `observe`)
+must carry the upgrade table and the operator steps from
+[`tool-profiles.md` → Upgrading from 0.8.x](tool-profiles.md#upgrading-from-08x-59): what
+happens to `desktop` requests, to stored `desktop` grants and to a `switchboard.profile` of
+`desktop`, and how to grant `owner` again.
+
 ## Linux version
 
 The Linux hands node reports the release version in `sys_info.agent.version` and in MCP

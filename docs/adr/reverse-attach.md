@@ -58,8 +58,9 @@ allowlist), not something this design provides.
    and multiplexes requests over the reverse socket by JSON-RPC `id`. The CLI's `mcp.json`
    points at a plain local URL — no token, no TLS, no proxy; its HTTP stack is irrelevant.
 4. **The Mac chooses the tool profile per attach.** The Mac *is* the MCP server, so scoping is
-   a per-connection tool list in `MCPServer` (`owner` = everything, `desktop` = no `exec*`;
-   originally named `sandbox`, a name since removed and refused). No MCP parsing in a proxy.
+   a per-connection tool list in `MCPServer` (today `owner` = everything, `observe` =
+   `sys_info` + `screenshot`; see the 2026-11 amendment below for the history). No MCP parsing
+   in a proxy.
    **Amended 2026-09-30 ([#45](https://github.com/openabdev/instance-mcp/issues/45)):** a tool
    list over one desktop session is not a privilege boundary. `osascript` (`do shell script`),
    `key` and `mouse` each reach the desktop user's shell, so `desktop` is shell-equivalent and the
@@ -70,6 +71,23 @@ allowlist), not something this design provides.
    narrower tier must be built from tools that cannot reach a shell (`observe`: `sys_info` +
    `screenshot`; `browser`: Playwright with a per-grant throwaway profile), and the hands
    themselves are isolated only by lending a dedicated machine or VM.
+   **Amended 2026-11 ([openab-computer#59](https://github.com/openabdev/openab-computer/issues/59)):
+   two profiles only. `owner` is the full local and upstream tool set, every `browser_*` tool
+   included: the browser uses this computer's persistent profile and network, so it is
+   owner-level, like the shell. `observe` is `sys_info` + `screenshot` and is the default for an
+   attach that names no profile, on both platforms. `desktop` (formerly `sandbox`) is removed. As
+   input, a requested or stored `desktop` resolves to `observe`, never to `owner`; the grant
+   reports `requested_profile` and a `warning` so the granter sees it. Unknown names, `sandbox`
+   included, are refused with `400 profile must be one of [owner, observe]`. Alternatives
+   rejected: aliasing `desktop` to `owner` (silently widens live and persisted grants to `exec*`
+   and arbitrary JavaScript in the logged-in browser); refusing `desktop` with a 400 like
+   `sandbox` (fails every existing attach call and leaves stored rows that cannot be served;
+   `sandbox` was never a granted profile, `desktop` was); an alias with explicit client opt-in
+   (a consent flow to keep a name that is going away, where an explicit `owner` grant gives the
+   same consent); keeping `desktop` as a named preset (fewer accidents, but keeps the three-name
+   confusion; revisit as a custom policy); building the isolated browser tier (#45) first (not
+   required: the collapse is reversible and the tier can be added later as a new profile or a
+   proxy). Tool lists and the upgrade table: `docs/tool-profiles.md`.
 5. **The human decides which pod the Mac dials**, from OpenAB Connect (Mac) **or OpenAB Remote
    (iPhone)**: pick a PTY session → "lend my Mac to this agent" with profile + TTL → the client
    calls `POST /attach {runtime, session, profile, ttl}` on `oab-instance-mcp` with the human's
@@ -131,8 +149,9 @@ Verified on the real hop (Mac → pod inbound → loopback mux → CLI), never M
 - From inside the shell, with no `*_PROXY` set: `curl http://127.0.0.1:<port>/healthz` succeeds
   while attached.
 - One `sys_info` and one streaming call round-trip end to end.
-- `tools/list` under the `desktop` profile contains no `exec*`; a forced `tools/call exec` is
-  rejected. (This verifies the filter, not a boundary — see decision 4's amendment.)
+- `tools/list` under the `observe` profile contains only `sys_info` and `screenshot`; a forced
+  `tools/call exec` is an *unknown tool*. (Originally verified under the profile then named
+  `sandbox`, later `desktop`, removed in #59; see decision 4's amendments.)
 - Deleting the attach verifier (or TTL expiry) closes the socket; the CLI's next call fails
   cleanly and `tools/list` reports "not attached" rather than an error.
 - From inside the shell, `curl` to any other tailnet node **fails** — the property this

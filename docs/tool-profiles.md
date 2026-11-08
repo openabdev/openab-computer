@@ -5,48 +5,48 @@ the **profile decides which tools the agent in that session can see and call**. 
 a profile is a managed policy, a grant attaches it to a principal (the session), and the lease
 (1–24 hours) is the session duration.
 
+There are two profiles, `observe` and `owner` ([#59](https://github.com/openabdev/openab-computer/issues/59)).
+They are named after the one boundary that is real: shell-equivalent or not.
+
 - The filter runs **on the lent computer** (macOS: `ToolProfile.swift`; Linux:
   `poc/reverse-attach-linux/src/mcp.rs`). The session in the pod cannot change it.
 - A tool outside the profile is absent from `tools/list`. A forced `tools/call` gets *unknown
   tool*, the same answer as for a tool that does not exist.
-- Unknown profile names are refused: HTTP 400 on `POST /attach`, and a stored grant with an
-  unknown profile is dropped when it is loaded. They are never widened to `owner`.
-- A `POST /attach` **without** `profile` gets the default profile. On Linux the default is
-  `observe`. On macOS it is still `desktop`, which is shell-equivalent; moving it to `observe` is
-  tracked in [#59](https://github.com/openabdev/openab-computer/issues/59). Clients should always
-  send `profile`; OpenAB Connect and OpenAB Remote do.
+- Unknown profile names are refused with HTTP 400 and the body
+  `{"error":"profile must be one of [owner, observe]"}`, on both platforms. A stored grant with an
+  unknown profile is dropped when it is loaded. Names never widen to `owner`. Matching is exact:
+  `Owner`, `OBSERVE`, `sandbox` and `browser` are unknown.
+- A `POST /attach` **without** `profile` (or with a non-string one) gets `observe`, on both
+  platforms. Clients should still send `profile`.
+- The retired name `desktop` is accepted as input only and runs as `observe`. See
+  [Upgrading from 0.8.x](#upgrading-from-08x-59).
 
-> ⚠️ **Only `observe` is a security boundary.** GUI control is a shell: `osascript` runs
-> `do shell script`, `key` can type into a terminal, and `mouse` can open one. `desktop` removes
-> `exec*`, but that takes away a convenient entry point, not a privilege
-> ([#45](https://github.com/openabdev/instance-mcp/issues/45)). When you grant full control, lend
-> a **dedicated computer** (a Linux hands node, a throwaway machine or VM), not the one you work
-> on. Every **local** tool is classified `observe` (reads only), `act` (changes state) or `shell`
-> (reaches the desktop user's shell); the boundary tests fail on any **unclassified** local tool, on any
-> profile that claims to be narrower than a shell while allowing a `shell` tool, and on `observe`
-> holding anything but `observe` tools (macOS `ProfileBoundaryTests`, Linux `profile_tests`).
-> Upstream `browser_*` tools are governed by their own allowlist (`desktop` gets 15, `observe`
-> none) and are not in that classification yet; they must be before a `browser` tier ships.
+> ⚠️ **Only `observe` is a security boundary.** `owner` is shell-equivalent: it serves the shell
+> tools, and GUI control is a shell too (`osascript` runs `do shell script`, `key` can type into a
+> terminal, and `mouse` can open one). It also serves every browser tool. The browser uses this
+> computer's persistent profile and network, so it is owner-level as well
+> ([#45](https://github.com/openabdev/instance-mcp/issues/45)). When you grant `owner`, lend a
+> **dedicated computer** (a Linux hands node, a throwaway machine or VM), not the one you work on.
+>
+> Every **local** tool is classified `observe` (reads only), `act` (changes state) or `shell`
+> (reaches the desktop user's shell). The boundary tests fail on any **unclassified** local tool,
+> on a profile that claims to be narrower than a shell while allowing a `shell` tool, and on
+> `observe` holding anything but `observe` tools (macOS `ProfileBoundaryTests`, Linux
+> `profile_tests`). Upstream `browser_*` tools are classified by profile: `owner` gets all of them,
+> including tools the upstream adds later, and `observe` gets none. Both platforms check this
+> against the same 32-tool fixture in `conformance/profile_vectors.json` (`BrowserProfileTests`,
+> `profile_conformance`).
 
 ## 1. Available profiles
 
 | Profile | Shell-equivalent? | Tools on macOS | Tools on Linux | Purpose |
 |---|---|---|---|---|
-| `owner` | yes (directly) | 42 | 41 | The owner's own CLI: every tool |
-| `desktop` | **yes** (through the GUI) | 20 | 20 | Let an agent drive the desktop: look, click, type, AppleScript, browser interaction |
-| `observe` | **no** | 2 | 2 | Look, never act: system info and screenshots |
+| `owner` | **yes** | 42 | 41 | Full control: every local tool and every browser tool |
+| `observe` | **no** | 2 | 2 | Look, never act: system info and screenshots. The default |
 
-The former name `sandbox` has been **removed and is refused**, because it implied a boundary
-that does not exist. Sending `sandbox` returns HTTP 400. A grant stored under `sandbox` is
-dropped when it is loaded.
-
-The counts include the browser tools (`browser_*`), which exist only when the computer is
-configured with the Playwright upstream (`--upstream browser=…`; macmini, rpi1 and black are).
-Without it, `owner` has 10 tools on macOS and 9 on Linux, `desktop` has 5 on both, and `observe`
-is unchanged.
-
-Lists taken on 2026-09-30 from the live `tools/list` of macmini (instance-mcp, macOS) and black
-(Linux hands node), then filtered by this repository's profile rules.
+The counts include the 32 browser tools (`browser_*`), which exist only when the computer is
+configured with the Playwright upstream (`--upstream browser=…` on macOS, `MCP_UPSTREAM` on
+Linux). Without it, `owner` has 10 tools on macOS and 9 on Linux, and `observe` is unchanged.
 
 ## 2. Complete tool lists per profile
 
@@ -73,28 +73,11 @@ Lists taken on 2026-09-30 from the live `tools/list` of macmini (instance-mcp, m
 Linux has no `osascript`. `bash` is the counterpart of macOS `exec`; the four job tools have
 the same names and contract on both (#32 item 4).
 
-### `desktop`
-
-#### macOS — 20 tools
-
-| Category | Tools |
-|---|---|
-| System | `sys_info` |
-| Screen / input | `screenshot`, `mouse`, `key`, `osascript` |
-| Browser (15) | `browser_navigate`, `browser_navigate_back`, `browser_snapshot`, `browser_find`, `browser_click`, `browser_type`, `browser_fill_form`, `browser_press_key`, `browser_hover`, `browser_select_option`, `browser_wait_for`, `browser_tabs`, `browser_take_screenshot`, `browser_console_messages`, `browser_resize` |
-
-#### Linux — 20 tools
-
-| Category | Tools |
-|---|---|
-| System | `sys_info` |
-| Shell | `bash` |
-| Screen / input | `screenshot`, `mouse`, `key` |
-| Browser (15) | the same 15 as macOS `desktop` |
-
-The browser filter narrows the *tools*, not the browser. The browser runs with the computer's
-**persistent profile**, including cookies for sites it is logged in to, and it reaches whatever
-network the computer reaches, localhost and the tailnet included.
+`owner` gets every upstream tool, so a tool that Playwright adds later appears under `owner`
+without a code change. The browser runs with the computer's **persistent profile**, including
+cookies for sites it is logged in to, and it reaches whatever network the computer reaches,
+localhost and the tailnet included. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary
+JavaScript in that profile.
 
 ### `observe`
 
@@ -107,8 +90,9 @@ network the computer reaches, localhost and the tailnet included.
 
 This is an allowlist. Any tool added later, local or upstream (browser), is denied under
 `observe` until it is added to `ToolProfile.observeTools` (Linux: `OBSERVE_TOOLS`) **and**
-classified `observe`. A screenshot still discloses whatever is on screen, but the agent cannot
-change anything.
+classified `observe`. `exec_poll` and `exec_list` are `observe`-class on macOS but are not in
+`observe`. A screenshot still discloses whatever is on screen, but the agent cannot change
+anything.
 
 **`observe` protects the computer, not the agent.** Every screenshot goes into the agent's
 context. If the screen shows a hostile page or message, its text can act as a prompt injection
@@ -118,54 +102,82 @@ access by default**: it can send whatever it reads to any host. Treat what is on
 untrusted input to the agent; deployments that need to contain this should give the pod an egress
 allowlist (model API, git remotes, package registries).
 
-## 3. What each profile loses against the previous one
-
-### `owner` → `desktop`
+## 3. What `observe` removes from `owner`
 
 | | macOS | Linux |
 |---|---|---|
-| Local tools removed | `exec`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` (5) | `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` (4; `bash` stays, see below) |
-| Browser tools removed (17) | `browser_evaluate`, `browser_run_code_unsafe` (arbitrary JavaScript); `browser_file_upload`, `browser_drop`, `browser_pdf_save` (filesystem); `browser_network_requests`, `browser_network_request` (network inspection); `browser_handle_dialog`, `browser_emulate_media`, `browser_close`; `browser_drag`, `browser_mouse_move_xy`, `browser_mouse_click_xy`, `browser_mouse_drag_xy`, `browser_mouse_down`, `browser_mouse_up`, `browser_mouse_wheel` (raw coordinate mouse) | the same 17 |
-| Total | 42 → 20 | 41 → 20 |
-| **Less privilege?** | **No**: `osascript`, `key` and `mouse` still reach the desktop user's shell | **No**: `bash` is a shell |
-
-Linux `desktop` keeps `bash` because `mouse` and `key` can open a terminal anyway. Hiding it would
-only inconvenience the agent without removing any privilege, and the profile does not pretend
-otherwise. The job tools are `shell`-class and `owner`-only, as on macOS (`OWNER_ONLY_TOOLS` in
-`mcp.rs`); under `desktop` the agent runs long work with `bash` and `nohup … &`.
-
-### `desktop` → `observe`
-
-| | macOS | Linux |
-|---|---|---|
-| Local tools removed | `mouse`, `key`, `osascript` (3) | `bash`, `mouse`, `key` (3) |
-| Browser tools removed | all 15 | all 15 |
-| Total | 20 → 2 | 20 → 2 |
+| Local tools removed | `exec`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel`, `osascript`, `mouse`, `key` (8) | `bash`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel`, `mouse`, `key` (7) |
+| Browser tools removed | all 32, and any added later | all 32, and any added later |
+| Total | 42 → 2 | 41 → 2 |
 | **Less privilege?** | **Yes**: no tool can type, run or change state | **Yes** |
 
-## Compatibility and status
+On a reverse attach, a long `exec`, `osascript` or `bash` call (`timeout_secs` over 100) is
+refused with a pointer to `exec_start`. Under `observe` that refusal does not apply: the call is
+an *unknown tool* like any other hidden call, so the agent is not told the tool exists.
 
-- **Accepted wire values:** `owner`, `desktop`, `observe`. Anything else is a 400, including the
-  former `sandbox`.
-- **Breaking change:** clients and computers must be updated together. An older Connect or Remote
-  that sends `sandbox` is refused by an updated computer. An updated client that sends `desktop`
-  or `observe` is refused by an older computer. The client side is oablab/oab-pty-mac#77, which
-  also makes `observe` the default choice.
-- **Existing grants:** a grant stored as `sandbox` by an older build is dropped when the updated
-  daemon loads it, so the grant ends and must be made again.
-- **Linux default profile (behaviour change):** up to 0.8.2 the Linux daemon gave a bare
-  `POST /attach` (no `profile`) the `owner` profile. It now gives `observe`. A caller that relied
-  on the implicit `owner` gets a grant with only `sys_info` and `screenshot`, and must send
-  `"profile":"owner"` (or `desktop`) explicitly. Grants already stored keep the profile they were
-  made with.
-- **Downgrade:** grants stored by this build carry `desktop` or `observe`. An older daemon does
-  not recognize them and drops them, so the grant ends instead of widening.
+## Upgrading from 0.8.x (#59)
+
+Up to 0.8.4 there were three profiles: `owner`, `desktop` and `observe`. `desktop` hid the `exec*`
+tools and allowed 15 browser tools, but it was still shell-equivalent through the GUI. It is
+removed. Nothing in the upgrade grants `owner`: every old `desktop` input runs as `observe`, and
+the change is reported to the granter.
+
+| Input | Before | After |
+|---|---|---|
+| `POST /attach {"profile":"desktop"}` | a `desktop` grant | 202, runs as `observe`. The grant JSON has `"profile":"observe"`, `"requested_profile":"desktop"` and a `warning`. The daemon log and the audit file record the mapping |
+| `POST /attach` without `profile` | macOS `desktop`, Linux `observe` | `observe` on both |
+| `POST /attach` with `sandbox` or any other unknown name | 400 (two different messages) | 400 `profile must be one of [owner, observe]` on both |
+| A grant stored as `desktop` (macOS `~/Library/Application Support/oab-instance-mcp/grants.json`, Linux `grants.json`) | resumed as `desktop` | kept and re-dialled under its id, as `observe`. `GET /attach` shows `profile: observe`, `requested_profile: desktop` and the `warning`. The file is rewritten with `profile: observe` and the requested name |
+| A grant stored as `sandbox` or an unknown name | dropped | dropped (unchanged, #46) |
+| macOS `--switchboard-profile desktop` (a flag in the LaunchAgent plist) | `desktop` | serves `observe`, prints the warning to the agent log, and logs `switchboard: dialling … as observe (requested desktop)`. Any other unknown value still exits with status 64 |
+| macOS `~/.config/oab-instance-mcp/switchboard.profile` containing `desktop` | copied into the plist | the installer writes `--switchboard-profile observe` and prints a warning. It does not edit your file |
+| Linux environment and config | no profile setting exists | nothing to migrate |
+
+`requested_profile` is in every grant JSON (it equals `profile` when nothing was mapped).
+`warning` appears only when `desktop` was mapped. Its text is the same on both platforms:
+
+> The `desktop` profile was removed (openab-computer#59). This grant runs as `observe`: sys_info
+> and screenshot only. Grant `owner` explicitly for shell and browser access.
+
+For a stored row, `requested_profile` is display only. The effective profile is the narrower of
+`profile` and `requested_profile`, so editing the file to `{"profile":"owner",
+"requested_profile":"desktop"}` still loads as `observe`. A `requested_profile` that is not a
+string counts as absent on both platforms: the row keeps its stored profile.
+
+**Audit file.** Every mapping is also appended as one JSON line to an audit file, separate from
+the daemon log so it survives log rotation: macOS
+`~/Library/Application Support/oab-instance-mcp/audit.jsonl`, Linux
+`~/.local/state/oab-instance-mcp/audit.jsonl` (`$XDG_STATE_HOME` if set; override with
+`MCP_AUDIT_FILE`, or `MCP_AUDIT_FILE=off` to disable). The file is mode 600 in a 0700 directory and
+is only appended to. A record looks like this:
+
+```json
+{"event":"profile_mapped","source":"attach","grant":"<id>","session":"<session>","principal":"<login>","requested_profile":"desktop","profile":"observe","ts_epoch_secs":1762300000}
+```
+
+`source` is `attach` (a new request), `resume` (a stored grant re-dialled at start, recorded on
+every restart while the grant lives) or `switchboard` (macOS `--switchboard-profile desktop`, with
+no `grant`, `session` or `principal`). A write failure is logged and never blocks the grant.
+
+**To restore shell or browser access**, grant `owner` explicitly: pick Owner in OpenAB Connect or
+OpenAB Remote, or send `POST /attach` with `"profile":"owner"`. The new grant replaces the old one
+for the same runtime and session. For a switchboard, write `owner` to
+`~/.config/oab-instance-mcp/switchboard.profile` and re-run the installer: the flag lives in the
+plist, so restarting the agent alone does not apply it. To keep `observe` and silence the warning,
+write `observe` there.
+
+**Rolling back** to 0.8.x keeps migrated grants at `observe`: the old daemon reads
+`profile: observe` and ignores the extra field. The file `version` stays 1.
+
+**Clients.** OpenAB Connect and Remote decode the grant's `profile` as a string and ignore unknown
+keys, so they keep working. Until they are updated, picking "Desktop" there gets `observe`.
 
 ## Planned (not yet available)
 
-- **`browser`**: Playwright tools only, with a **per-grant throwaway** browser profile and no
-  `browser_evaluate`. The browser provides the boundary. It still reaches the computer's network,
-  and the documentation must say so.
+- **Isolated browser tier**: Playwright tools with a **per-grant throwaway** browser profile, an
+  egress block or a separate VM. This decision covers only the current shared-profile browser;
+  the isolated tier can be added later as a new profile or as a proxy in front of the browser, once
+  it has a real boundary.
 - **Typed app control** in place of generic `osascript` for restricted tiers: open an app, click a
   menu item, list windows, all limited by a bundle-ID allowlist. The allowlist must exclude
   Terminal, iTerm, Script Editor and System Settings.

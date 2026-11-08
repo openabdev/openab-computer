@@ -33,15 +33,14 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
   frame that does not parse gets the JSON-RPC envelope error with a null id, as from Swift
   (`conformance/mcp_wire_vectors.json`, #78); WebSocket ping → pong. The socket is the session:
   no `Mcp-Session-Id` on this path, as in Swift. Tools: `sys_info`, `screenshot`, `bash`, `mouse`,
-  `key` — in **both** profiles
-  (decision 2026-09-28: a lent node is only useful if the agent can act on it, and the macOS
-  `desktop` profile already hands out a shell through `osascript`'s `do shell script`). Neither
-  profile is a security boundary on Linux either (#45): lend a dedicated node. `bash` = `bash -c`
+  `key` and the job tools under `owner`; `sys_info` and `screenshot` under `observe`, the default.
+  Two profiles since #59: `owner` is shell-equivalent, only `observe` is a boundary (#45), so
+  lend a dedicated node for `owner`. The retired `desktop` runs as `observe` with a warning. `bash` = `bash -c`
   as the daemon user with `cwd` (`~` expands), `timeout_secs` (default 60, max 600; the whole
   process group is killed → exit 137, `timed_out=true`), `max_output_bytes` per stream (≤1 MiB).
   On a reverse attach `bash` refuses `timeout_secs` over 100 s, because the runtime fails any
   call still running after 120 s; the refusal and `initialize` point `owner` at
-  `exec_start` + `exec_poll` (`desktop`, which has no job tools, at `nohup cmd > log 2>&1 &`).
+  `exec_start` + `exec_poll`. Under `observe` a long `bash` is an *unknown tool*.
 - Background jobs (`src/jobs/`, #32 item 4, `owner` only): `exec_start` / `exec_poll` /
   `exec_list` / `exec_cancel`, same arguments and `structuredContent` as the Swift tools, with
   `bash -c` in a new session. stdout/stderr go to `$XDG_STATE_HOME/oab-instance-mcp/jobs/<id>.out`
@@ -72,7 +71,7 @@ bash smoke.sh                  # RESULT: 55 passed, 0 failed
 | control contract | `POST /attach` 202 with every Connect-required grant field; `GET /attach` wrapper; `GET /attach/{id}`; `DELETE` 204 + removal; principal and dynamic expiry |
 | redial / stop | close `1000` → redialed after 1 s; close `4010` → `state=ended, ended=revoked`; wrong secret → `ended=handshake_rejected_401` with exactly one attempt; unreachable runtime → `ended=deadline` |
 | MCP | `serverInfo.name=instance-mcp-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=<node>`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
-| desktop | list = `sys_info,screenshot`; forced `exec` → error, not executed (2026-09-28 run, before `bash` joined both profiles) |
+| desktop (removed in #59) | list = `sys_info,screenshot`; forced `exec` → error, not executed (2026-09-28 run). Since #59 `smoke.sh` checks that a `desktop` request runs as `observe` with `requested_profile` and a `warning`, and that a stored `desktop` grant resumes as `observe` |
 | close handshake | client echoes the Close frame (was a bare EOF before the `socket.flush()` fix in `dial_loop`) |
 
 ## Direct `/mcp` for OpenAB Connect's Screens pane (added 2026-09-28)
@@ -129,16 +128,15 @@ re-serves its tools under its own `tools/list`, filtered by the connection's pro
   400/404 (the stale id must be dropped *before* re-`initialize`, or the upstream 404s that too),
   SSE or JSON replies, `tools/list` cached 30 s (failures not cached), upstream down → its
   tools absent. Local names win on collision.
-- Profile filter is the verbatim Swift `ToolProfile.desktopBrowserTools` list (15 tools).
-  `owner` sees all 32; `desktop` never sees `evaluate`,
-  `run_code_unsafe`, upload, pdf, network, raw
-  mouse-by-coordinate, dialogs, `browser_close`, or any new upstream tool.
+- Profile filter (#59): `owner` sees every upstream tool (all 32, and any added later);
+  `observe` sees none. `profile_conformance` checks both against the 32-tool fixture in
+  `conformance/profile_vectors.json` through a fake upstream.
 - Chromium managed policy `/etc/chromium/policies/managed/oab-instance-mcp.json` blocks
   camera/mic/notification/geolocation prompts: YouTube triggered the xdg-desktop-portal
   "Allow app to use the Camera?" dialog, which nothing but `mouse` could dismiss.
 
 Verified on a Raspberry Pi: owner `/mcp` → 37 tools (5 local + 32 browser); after a pw-mcp restart the
-next call re-initializes and still lists 37. Lent to `kiro-1040` session `mac` (then named `sandbox`, now `desktop`):
+next call re-initializes and still lists 37. Lent to a pod session (under the profile then named `sandbox`, later `desktop`, removed in #59):
 22 tools = 5 local + 16 browser + `instance_status`; forced `browser_run_code_unsafe` →
 `-32601 unknown tool`; `browser_navigate` example.com 13 s (Pi 4 class, first page), then
 `browser_snapshot` → `heading "Example Domain"`, `link "Learn more"`. The Chromium window is
@@ -151,6 +149,10 @@ Live grants are written to `MCP_GRANTS_FILE` (default `$XDG_STATE_HOME/oab-insta
 `DELETE` / terminal end. On start, grants still inside their deadline are re-dialled under the same
 id. Smoke covers `kill -9` → restart → redial, same id, secret absent from `GET /attach`, and a
 revoked grant not resumed.
+
+A `desktop` request or stored row runs as `observe` (#59), and each mapping is appended as one
+JSON line to `MCP_AUDIT_FILE` (default `$XDG_STATE_HOME/oab-instance-mcp/audit.jsonl`, `off`
+disables), mode 600. Smoke checks the `attach` and `resume` records.
 
 ## Not yet (vs the Swift implementation)
 

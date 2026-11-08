@@ -15,6 +15,11 @@ public actor AttachManager {
         public let runtime: URL
         public let session: String
         public let profile: ToolProfile
+        /// The profile name the granter asked for. Equals `profile.rawValue` unless a
+        /// retired name was mapped (`desktop` → `observe`, #59). Display only.
+        public let requestedProfile: String
+        /// Set when `requestedProfile` was mapped; shown in the grant JSON.
+        public let warning: String?
         public let principal: String
         public let createdAt: Date
         public let expiresAt: Date
@@ -31,6 +36,9 @@ public actor AttachManager {
         /// mint ourselves (used for that one call, never stored).
         public var secret: String?
         public var adminCredential: String?
+        /// The name the caller sent, when it differs from `profile` (`desktop`, #59).
+        /// nil ⇒ `profile.rawValue`.
+        public var requestedProfile: String? = nil
     }
 
     public enum Failure: Error, Equatable, CustomStringConvertible {
@@ -58,17 +66,21 @@ public actor AttachManager {
     private var secrets: [String: String] = [:]
     /// nil ⇒ grants live in memory only (tests, `--no-grant-persistence`).
     private let store: GrantStore?
+    /// nil ⇒ no audit trail (tests). Records every `desktop` → `observe` mapping (#59).
+    private let audit: AuditLog?
     /// Seam for tests: mint against the runtime's admin plane.
     private let mint: @Sendable (URL, String, String, TimeInterval) async throws -> (secret: String, expiresIn: TimeInterval)
 
     public init(server: MCPServer,
                 mint: (@Sendable (URL, String, String, TimeInterval) async throws -> (secret: String, expiresIn: TimeInterval))? = nil,
                 store: GrantStore? = nil,
+                audit: AuditLog? = nil,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.baseServer = server
         self.log = log
         self.mint = mint ?? AttachManager.mintAtRuntime
         self.store = store
+        self.audit = audit
     }
 
     /// Re-dial every persisted grant still inside its deadline, under its original
@@ -81,11 +93,18 @@ public actor AttachManager {
         let persisted = store.load()
         var resumed = 0
         for p in persisted where grants[p.id] == nil {
-            guard let profile = ToolProfile(rawValue: p.profile) else {
-                log("grant \(p.id.prefix(8)) has unknown profile \(p.profile); dropping it")
+            guard let resolved = ToolProfile.resolve(stored: p.profile, requested: p.requestedProfile) else {
+                log("grant \(p.id.prefix(8)) has unknown profile \(p.profile)\(p.requestedProfile.map { " (requested \($0))" } ?? ""); dropping it")
                 continue
             }
+            let profile = resolved.profile
+            if let warning = resolved.warning {
+                log("grant \(p.id.prefix(8)) profile \(resolved.requested) → \(profile.rawValue): \(warning)")
+                audit?.append(ProfileAudit.mapped(source: "resume", requested: resolved.requested, profile: profile,
+                                                  grant: p.id, session: p.session, principal: p.principal))
+            }
             let grant = Grant(id: p.id, runtime: p.runtime, session: p.session, profile: profile,
+                              requestedProfile: resolved.requested, warning: resolved.warning,
                               principal: p.principal, createdAt: p.createdAt, expiresAt: p.expiresAt, state: .idle)
             log("grant \(p.id.prefix(8)) resumed: \(profile.rawValue) → \(p.runtime.host ?? "?")/\(p.session), \(Int(p.expiresAt.timeIntervalSinceNow))s left")
             await startClient(grant, secret: p.secret)
@@ -117,6 +136,12 @@ public actor AttachManager {
         guard req.ttl > 0, req.ttl <= Self.maxTTL else {
             throw Failure.badRequest("ttl_secs must be 1...\(Int(Self.maxTTL))")
         }
+        // The served profile is the narrower of `profile` and `requestedProfile`, the
+        // same rule as a resumed row, so no caller can pair `owner` with `desktop`.
+        guard let resolved = ToolProfile.resolve(stored: req.profile.rawValue, requested: req.requestedProfile) else {
+            throw Failure.badRequest(ToolProfile.rejectionMessage)
+        }
+        let profile = resolved.profile
         let secret: String
         var expiresAt = Date().addingTimeInterval(req.ttl)
         switch (req.secret, req.adminCredential) {
@@ -146,9 +171,15 @@ public actor AttachManager {
         }
 
         let id = UUID().uuidString.lowercased()
-        let grant = Grant(id: id, runtime: req.runtime, session: req.session, profile: req.profile,
+        let grant = Grant(id: id, runtime: req.runtime, session: req.session, profile: profile,
+                          requestedProfile: resolved.requested, warning: resolved.warning,
                           principal: principal, createdAt: Date(), expiresAt: expiresAt, state: .idle)
-        log("grant \(id.prefix(8)) by \(principal): \(req.profile.rawValue) → \(req.runtime.host ?? "?")/\(req.session) for \(Int(req.ttl))s")
+        if let warning = resolved.warning {
+            log("grant \(id.prefix(8)) profile \(resolved.requested) → \(profile.rawValue): \(warning)")
+            audit?.append(ProfileAudit.mapped(source: "attach", requested: resolved.requested, profile: profile,
+                                              grant: id, session: req.session, principal: principal))
+        }
+        log("grant \(id.prefix(8)) by \(principal): \(profile.rawValue) → \(req.runtime.host ?? "?")/\(req.session) for \(Int(req.ttl))s")
         let started = await startClient(grant, secret: secret)
         persist()
         return started
@@ -158,7 +189,7 @@ public actor AttachManager {
     @discardableResult
     private func startClient(_ grant: Grant, secret: String) async -> Grant {
         let id = grant.id
-        let instructions = Self.desktopInstructions(profile: grant.profile, base: baseServer.instructions)
+        let instructions = Self.grantInstructions(profile: grant.profile, base: baseServer.instructions)
         let scoped = baseServer.scoped(to: grant.profile, instructions: instructions)
         let config = ReverseAttachClient.Config(runtime: grant.runtime, session: grant.session, secret: secret,
                                                 profile: grant.profile, deadline: grant.expiresAt)
@@ -213,7 +244,7 @@ public actor AttachManager {
             guard g.expiresAt > now, let secret = secrets[g.id] else { return nil }
             return PersistedGrant(id: g.id, runtime: g.runtime, session: g.session, profile: g.profile.rawValue,
                                   principal: g.principal, createdAt: g.createdAt, expiresAt: g.expiresAt,
-                                  secret: secret)
+                                  secret: secret, requestedProfile: g.requestedProfile)
         }
         store.save(live.sorted { $0.createdAt < $1.createdAt })
     }
@@ -236,26 +267,16 @@ public actor AttachManager {
         wait for each result before sending the next.
         """
 
-    static func desktopInstructions(profile: ToolProfile, base: String?) -> String? {
+    static func grantInstructions(profile: ToolProfile, base: String?) -> String? {
         let head = base.map { $0 + "\n\n" } ?? ""
         switch profile {
         case .observe:
             return head + """
                 You reached this computer through OpenAB Connect under the `observe` profile: a human lets \
-                you look, not act. Only `sys_info` and `screenshot` are available — you cannot click, type \
-                or run anything here. If the task needs input on this computer, ask the human to grant \
-                the `desktop` profile instead.
+                you look, not act. Only `sys_info` and `screenshot` are available — you cannot click, type, \
+                use the browser or run anything here. If the task needs more, ask the human whether to grant \
+                the `owner` profile, which is full control of this computer (shell-equivalent).
                 """ + "\n\n" + longCallNotice
-        case .desktop:
-            return head + """
-                You reached this Mac through OpenAB Connect: a human lent it to your sandbox session for a \
-                limited time and is likely watching the screen. This is the `desktop` profile — there is no \
-                `exec` tool here (prefer the shell in your own session for local work); drive the Mac through \
-                `screenshot`, `mouse`, `key` and `osascript`, and — when `browser_*` tools are listed — through \
-                the browser directly: `browser_navigate` then `browser_snapshot` gives you the page as text, \
-                no screenshot needed. If a tool starts failing with "not attached", the grant ended; ask the \
-                human to lend the Mac again.
-                """ + "\n\n" + uiOrderNotice + "\n\n" + longCallNotice
         case .owner:
             return head + uiOrderNotice + "\n\n" + longCallNotice
         }
@@ -315,11 +336,13 @@ extension AttachManager.Grant {
             "runtime": .string(runtime.absoluteString),
             "session": .string(session),
             "profile": .string(profile.rawValue),
+            "requested_profile": .string(requestedProfile),
             "principal": .string(principal),
             "created_at": .string(ISO8601DateFormatter().string(from: createdAt)),
             "expires_at": .string(ISO8601DateFormatter().string(from: expiresAt)),
             "expires_in_secs": .number(max(0, expiresAt.timeIntervalSinceNow).rounded()),
         ]
+        if let warning { o["warning"] = .string(warning) }
         switch state {
         case .idle: o["state"] = "idle"
         case .dialing: o["state"] = "dialing"

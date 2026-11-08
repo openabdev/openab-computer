@@ -22,7 +22,7 @@ final class GrantPersistenceTests: XCTestCase {
     }
 
     private func grant(_ id: String, expiresIn: TimeInterval) -> PersistedGrant {
-        PersistedGrant(id: id, runtime: URL(string: "ws://127.0.0.1:9")!, session: "s", profile: "desktop",
+        PersistedGrant(id: id, runtime: URL(string: "ws://127.0.0.1:9")!, session: "s", profile: "owner",
                        principal: "a@b", createdAt: Date(), expiresAt: Date().addingTimeInterval(expiresIn),
                        secret: "secret-\(id)")
     }
@@ -86,7 +86,7 @@ final class GrantPersistenceTests: XCTestCase {
 
     private func request(_ session: String, secret: String = "abc", ttl: TimeInterval = 60) -> AttachManager.Request {
         // Unreachable runtime: the grant exists and its client keeps redialling.
-        AttachManager.Request(runtime: URL(string: "ws://127.0.0.1:9")!, session: session, profile: .desktop,
+        AttachManager.Request(runtime: URL(string: "ws://127.0.0.1:9")!, session: session, profile: .owner,
                               ttl: ttl, secret: secret, adminCredential: nil)
     }
 
@@ -104,7 +104,7 @@ final class GrantPersistenceTests: XCTestCase {
         let grants = await second.list()
         XCTAssertEqual(grants.map(\.id), [created.id])
         XCTAssertEqual(grants.first?.session, "laptop")
-        XCTAssertEqual(grants.first?.profile, .desktop)
+        XCTAssertEqual(grants.first?.profile, .owner)
         XCTAssertEqual(grants.first?.principal, "a@b")
         XCTAssertEqual(grants.first?.expiresAt.timeIntervalSince1970 ?? 0,
                        created.expiresAt.timeIntervalSince1970, accuracy: 1)
@@ -149,6 +149,113 @@ final class GrantPersistenceTests: XCTestCase {
         XCTAssertEqual(resumed, 0)
         let remaining = await mgr.list()
         XCTAssertTrue(remaining.isEmpty)
+    }
+
+    /// #59: a grant stored as `desktop` by 0.8.x is kept and re-dialled under its id,
+    /// but serves `observe`, reports the mapping, and is rewritten so the file says so.
+    func testAGrantStoredAsDesktopResumesAsObserve() async throws {
+        let secrets = InMemorySecretStore()
+        let s = store(secrets)
+        // Exactly what 0.8.x wrote: no requestedProfile key.
+        try FileManager.default.createDirectory(at: s.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(600))
+        let created = ISO8601DateFormatter().string(from: Date())
+        try Data("""
+            {"grants":[{"createdAt":"\(created)","expiresAt":"\(expires)","id":"old-desktop","principal":"a@b","profile":"desktop","runtime":"ws:\\/\\/127.0.0.1:9","session":"s"}],"version":1}
+            """.utf8).write(to: s.url)
+        _ = secrets.set("secret-old", account: "old-desktop")
+
+        let audit = InMemoryAuditLog()
+        let mgr = AttachManager(server: fullServer(), store: s, audit: audit)
+        let resumed = await mgr.resume()
+        XCTAssertEqual(resumed, 1)
+        let entry = try XCTUnwrap(audit.entries.first)
+        XCTAssertEqual(audit.entries.count, 1)
+        XCTAssertEqual(entry["event"]?.stringValue, "profile_mapped")
+        XCTAssertEqual(entry["source"]?.stringValue, "resume")
+        XCTAssertEqual(entry["grant"]?.stringValue, "old-desktop")
+        XCTAssertEqual(entry["requested_profile"]?.stringValue, "desktop")
+        XCTAssertEqual(entry["profile"]?.stringValue, "observe")
+        let fetched = await mgr.get("old-desktop")
+        let g = try XCTUnwrap(fetched)
+        XCTAssertEqual(g.profile, .observe)
+        XCTAssertEqual(g.requestedProfile, "desktop")
+        XCTAssertEqual(g.warning, ToolProfile.retiredWarning)
+        XCTAssertEqual(g.json["profile"]?.stringValue, "observe")
+        XCTAssertEqual(g.json["requested_profile"]?.stringValue, "desktop")
+        XCTAssertEqual(g.json["warning"]?.stringValue, ToolProfile.retiredWarning)
+
+        let rewritten = s.load()
+        XCTAssertEqual(rewritten.map(\.profile), ["observe"])
+        XCTAssertEqual(rewritten.map(\.requestedProfile), ["desktop"])
+
+        // A second restart keeps it at observe, with the same report.
+        let again = AttachManager(server: fullServer(), store: store(secrets))
+        _ = await again.resume()
+        let g2 = await again.get("old-desktop")
+        XCTAssertEqual(g2?.profile, .observe)
+        XCTAssertEqual(g2?.warning, ToolProfile.retiredWarning)
+        await again.revoke("old-desktop")
+        await mgr.revoke("old-desktop")
+    }
+
+    /// #59 review: `create` serves the narrower of `profile` and `requestedProfile`,
+    /// so a caller pairing `owner` with `desktop` still gets `observe`, and the
+    /// mapping is audited. An unmapped request writes no audit record.
+    func testCreateNeverServesWiderThanTheRequestedName() async throws {
+        let audit = InMemoryAuditLog()
+        let mgr = AttachManager(server: fullServer(), audit: audit)
+        var r = request("mixed")
+        r.requestedProfile = "desktop"
+        let g = try await mgr.create(r, principal: "a@b")
+        XCTAssertEqual(g.profile, .observe)
+        XCTAssertEqual(g.warning, ToolProfile.retiredWarning)
+        XCTAssertEqual(audit.entries.map { $0["source"]?.stringValue }, ["attach"])
+        XCTAssertEqual(audit.entries.first?["grant"]?.stringValue, g.id)
+        XCTAssertEqual(audit.entries.first?["session"]?.stringValue, "mixed")
+        let plain = try await mgr.create(request("plain"), principal: "a@b")
+        XCTAssertEqual(plain.profile, .owner)
+        XCTAssertEqual(audit.entries.count, 1)
+        await mgr.revoke(g.id); await mgr.revoke(plain.id)
+    }
+
+    /// #59 review: a non-string `requestedProfile` counts as absent (as on Linux), so
+    /// one hand-edited row does not drop the whole file.
+    func testANonStringRequestedProfileCountsAsAbsent() throws {
+        let secrets = InMemorySecretStore()
+        let s = store(secrets)
+        try FileManager.default.createDirectory(at: s.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let expires = ISO8601DateFormatter().string(from: Date().addingTimeInterval(600))
+        let created = ISO8601DateFormatter().string(from: Date())
+        try Data("""
+            {"grants":[{"createdAt":"\(created)","expiresAt":"\(expires)","id":"odd","principal":"a@b","profile":"observe","requestedProfile":7,"runtime":"ws:\\/\\/127.0.0.1:9","session":"s"},{"createdAt":"\(created)","expiresAt":"\(expires)","id":"fine","principal":"a@b","profile":"owner","runtime":"ws:\\/\\/127.0.0.1:9","session":"t"}],"version":1}
+            """.utf8).write(to: s.url)
+        _ = secrets.set("k1", account: "odd"); _ = secrets.set("k2", account: "fine")
+        let loaded = s.load()
+        XCTAssertEqual(loaded.map(\.id), ["odd", "fine"])
+        XCTAssertEqual(loaded.map(\.profile), ["observe", "owner"])
+        XCTAssertEqual(loaded.map(\.requestedProfile), [nil, nil])
+    }
+
+    /// #59: the audit file is append-only JSON lines, mode 600, in a 0700 directory.
+    func testFileAuditLogAppendsPrivateJSONLines() throws {
+        let url = dir.appendingPathComponent("audit/audit.jsonl")
+        let log = FileAuditLog(url: url)
+        let when = Date(timeIntervalSince1970: 1_700_000_000)
+        log.append(ProfileAudit.mapped(source: "switchboard", requested: "desktop", profile: .observe, at: when))
+        log.append(ProfileAudit.mapped(source: "attach", requested: "desktop", profile: .observe,
+                                       grant: "g", session: "s", principal: "a@b", at: when))
+        XCTAssertEqual(mode(url.path) & 0o777, 0o600)
+        XCTAssertEqual(mode(url.deletingLastPathComponent().path) & 0o777, 0o700)
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+        XCTAssertEqual(lines.count, 2)
+        let first = decodeJSON(Data(lines[0].utf8))
+        XCTAssertEqual(first["source"]?.stringValue, "switchboard")
+        XCTAssertEqual(first["ts_epoch_secs"]?.intValue, 1_700_000_000)
+        XCTAssertNil(first["grant"])
+        let second = decodeJSON(Data(lines[1].utf8))
+        XCTAssertEqual(second["grant"]?.stringValue, "g")
+        XCTAssertEqual(second["principal"]?.stringValue, "a@b")
     }
 
     func testWithoutAStoreNothingIsPersisted() async throws {

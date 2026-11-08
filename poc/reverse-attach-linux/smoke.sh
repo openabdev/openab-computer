@@ -16,9 +16,10 @@ rm -f "$LOG" "$RA_LOG"
 # Never touch the real ~/.local/state grants file from a test run.
 GRANTS_DIR=$(mktemp -d)
 export MCP_GRANTS_FILE="$GRANTS_DIR/grants.json"
+export MCP_AUDIT_FILE="$GRANTS_DIR/audit.jsonl"
 
 # 1000 → redial, then 4010 → stop(revoked). Third attach (if any) would be 4010 again.
-PORT=18090 ADMIN=admin-secret CLOSES=1000,4010 SECRETS=pre=preminted-xyz,bare=bare-xyz LOG=$LOG \
+PORT=18090 ADMIN=admin-secret CLOSES=1000,4010 SECRETS=pre=preminted-xyz,bare=bare-xyz,dsk=dsk-xyz LOG=$LOG \
   python3 mock_runtime.py > /tmp/mock-runtime.out 2>&1 &
 MOCK=$!
 # Job logs go under XDG_STATE_HOME: keep them in the scratch dir too.
@@ -41,9 +42,13 @@ check "reject both secret+admin" "[[ '$r' == *'exactly one'* ]]"
 r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"a"}')
 check "reject neither secret nor admin" "[[ '$r' == *'exactly one'* ]]"
 r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"a","secret":"s","profile":"Sandbox"}')
-check "reject unknown profile (no silent widening)" "[[ '$r' == *'profile must be owner, desktop or observe'* ]]"
+check "reject unknown profile (no silent widening)" "[[ '$r' == *'profile must be one of [owner, observe]'* ]]"
 r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"a","secret":"s","profile":"sandbox"}')
-check "reject the old sandbox profile name (#45)" "[[ '$r' == *'profile must be owner, desktop or observe'* ]]"
+check "reject the old sandbox profile name (#45)" "[[ '$r' == *'profile must be one of [owner, observe]'* ]]"
+for p in Desktop OWNER browser; do
+  r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"a","secret":"s","profile":"'$p'"}')
+  check "reject profile $p with the shared message (#59)" "[[ '$r' == '{\"error\":\"profile must be one of [owner, observe]\"}' ]]"
+done
 r=$($C -o /dev/null -w '%{http_code}' -X POST 127.0.0.1:8790/attach -H 'Content-Length: 99999999' -d '{}')
 check "oversized Content-Length refused before auth" "[[ '$r' == 000 || '$r' == 4* ]]"
 r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"a","secret":"s","ttl_secs":0}')
@@ -97,6 +102,7 @@ if q=="exec":   print(byid(4)["result"]["structuredContent"]["stdout"].strip().r
 if q=="timeout":
     sc=byid(7)["result"]["structuredContent"]; print(f'{sc["exit_code"]},{sc["timed_out"] and sc["duration_ms"]<3000}')
 if q=="unk":    print(byid(5)["error"]["code"], byid(5)["error"]["message"])
+if q=="exec_err": print(byid(4)["error"]["code"], byid(4)["error"]["message"])
 if q=="bogus":  print(find("bogus/method")["error"]["code"])
 if q=="pong":   print([e for e in log if e["ev"]=="pong"][0]["ok"])
 if q=="job":    print(byid(8)["result"]["structuredContent"]["job_id"])
@@ -132,27 +138,41 @@ check "job log tee'd under XDG_STATE_HOME" "[[ -s '$GRANTS_DIR/oab-instance-mcp/
 check "job survived the attach drop (polled on attach 2)" "[[ \$(py survived) == running ]]"
 check "exec_cancel → killed with exit code" "[[ \$(py killed) == killed,137 ]]"
 
-echo "== pre-minted secret path + desktop profile (session pre) =="
+echo "== pre-minted secret path + owner profile (session pre) =="
 : > $LOG
-r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"pre","profile":"desktop","ttl_secs":30,"secret":"preminted-xyz"}')
+r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"pre","profile":"owner","ttl_secs":30,"secret":"preminted-xyz"}')
 echo "$r"
-check "grant reports profile desktop" "[[ '$r' == *'\"profile\":\"desktop\"'* ]]"
+check "grant reports profile owner" "[[ '$r' == *'\"profile\":\"owner\"'* && '$r' == *'\"requested_profile\":\"owner\"'* && '$r' != *'warning'* ]]"
 for i in $(seq 1 20); do grep -q '"ev": "closed"' $LOG 2>/dev/null && break; sleep 0.5; done
 check "no mint call for secret path" "! grep -q '\"ev\": \"mint\"' $LOG"
-check "desktop tools/list = sys_info,screenshot,bash,mouse,key" "[[ \$(py tools) == sys_info,screenshot,bash,mouse,key ]]"
-check "desktop bash ran on node" "[[ \$(py exec) == \"hands-node-$(hostname) $HOME\" ]]"
+check "owner tools/list on the secret path = every local tool" "[[ \$(py tools) == sys_info,screenshot,bash,mouse,key,exec_start,exec_poll,exec_list,exec_cancel ]]"
+check "owner bash ran on node" "[[ \$(py exec) == \"hands-node-$(hostname) $HOME\" ]]"
 check "no sleep leaked after timeout" "! pgrep -f 'sleep 30' >/dev/null"
-check "close frame echoed (desktop attach)" "grep -q '\"ev\": \"close_echo\"' $LOG"
+check "close frame echoed (owner attach)" "grep -q '\"ev\": \"close_echo\"' $LOG"
 st=$($C 127.0.0.1:8790/attach); echo "$st"
-check "desktop grant ended/revoked (CLOSES tail=4010)" "[[ \$(echo '$st' | state_of pre) == ended && \$(echo '$st' | ended_of pre) == revoked ]]"
+check "owner grant ended/revoked (CLOSES tail=4010)" "[[ \$(echo '$st' | state_of pre) == ended && \$(echo '$st' | ended_of pre) == revoked ]]"
 
 echo "== bare attach (no profile) → observe surface (#59) =="
 : > $LOG
 r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"bare","ttl_secs":30,"secret":"bare-xyz"}')
 echo "$r"
-check "bare grant reports profile observe" "[[ '$r' == *'\"profile\":\"observe\"'* ]]"
+check "bare grant reports profile observe" "[[ '$r' == *'\"profile\":\"observe\"'* && '$r' == *'\"requested_profile\":\"observe\"'* && '$r' != *'warning'* ]]"
 for i in $(seq 1 20); do grep -q '"ev": "closed"' $LOG 2>/dev/null && break; sleep 0.5; done
 check "bare tools/list = sys_info,screenshot" "[[ \$(py tools) == sys_info,screenshot ]]"
+
+echo "== desktop request → observe with a warning (#59) =="
+: > $LOG
+r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"dsk","profile":"desktop","ttl_secs":30,"secret":"dsk-xyz"}')
+echo "$r"
+check "desktop grant runs as observe, never owner" "[[ '$r' == *'\"profile\":\"observe\"'* && '$r' != *'\"profile\":\"owner\"'* ]]"
+check "desktop grant reports requested_profile desktop" "[[ '$r' == *'\"requested_profile\":\"desktop\"'* ]]"
+check "desktop grant carries the warning" "[[ '$r' == *'\"warning\":\"The \`desktop\` profile was removed (openab-computer#59).'* ]]"
+for i in $(seq 1 20); do grep -q '"ev": "closed"' $LOG 2>/dev/null && break; sleep 0.5; done
+check "desktop tools/list = sys_info,screenshot" "[[ \$(py tools) == sys_info,screenshot ]]"
+check "desktop bash is an unknown tool" "[[ \$(py exec_err) == -32602* ]]"
+check "daemon logged the mapping" "grep -q 'profile desktop -> observe' $RA_LOG"
+check "the mapping is in the audit file (#59)" "grep -q '\"source\":\"attach\"' \"$MCP_AUDIT_FILE\" && grep -q '\"session\":\"dsk\"' \"$MCP_AUDIT_FILE\""
+check "audit file is mode 600" "[[ \$(stat -c %a \"$MCP_AUDIT_FILE\" 2>/dev/null || stat -f %Lp \"$MCP_AUDIT_FILE\") == 600 ]]"
 
 echo "== wrong secret → handshake 401 → stop =="
 : > $LOG
@@ -180,7 +200,7 @@ MOCK=$!
 start_ra() { BIND=127.0.0.1:8790 MCP_INSECURE_LOCAL=1 $BIN >> "$RA_LOG" 2>&1 & RA=$!; sleep 0.5; }
 attaches() { grep -c '"ev": "attach", "session": "keep", "status": 101' $LOG 2>/dev/null || echo 0; }
 start_ra
-r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"keep","profile":"desktop","ttl_secs":120,"secret":"k1"}')
+r=$($C -X POST 127.0.0.1:8790/attach -d '{"runtime":"ws://127.0.0.1:18090","session":"keep","profile":"owner","ttl_secs":120,"secret":"k1"}')
 GID=$(echo "$r" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 for i in $(seq 1 20); do [[ $(attaches) -ge 1 ]] && break; sleep 0.3; done
 check "grants file written with mode 600" "[[ \$(stat -c %a \"$MCP_GRANTS_FILE\" 2>/dev/null || stat -f %Lp \"$MCP_GRANTS_FILE\") == 600 ]]"
@@ -188,11 +208,25 @@ check "grants file holds the grant" "grep -q \"$GID\" \"$MCP_GRANTS_FILE\""
 check "secret never appears in GET /attach" "! $C 127.0.0.1:8790/attach | grep -q k1"
 before=$(attaches)
 kill -9 $RA 2>/dev/null; wait $RA 2>/dev/null
+# Rewrite the row as 0.8.x stored a desktop grant (#59): profile desktop, no requested_profile.
+python3 - "$MCP_GRANTS_FILE" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+for g in d["grants"]:
+    g["profile"] = "desktop"
+    g.pop("requested_profile", None)
+json.dump(d, open(p, "w"))
+PY
 start_ra
 for i in $(seq 1 30); do [[ $(attaches) -gt $before ]] && break; sleep 0.3; done
 check "after kill -9 + restart the node redialled on its own" "[[ \$(attaches) -gt $before ]]"
 check "resumed under the same grant id" "$C 127.0.0.1:8790/attach | grep -q \"$GID\""
 check "restart logged the resume" "grep -q \"grants: resuming $GID\" $RA_LOG"
+g=$($C 127.0.0.1:8790/attach/$GID)
+check "a stored desktop grant resumes as observe (#59)" "[[ '$g' == *'\"profile\":\"observe\"'* && '$g' == *'\"requested_profile\":\"desktop\"'* && '$g' == *'\"warning\"'* ]]"
+check "the resumed mapping is in the audit file (#59)" "grep '\"source\":\"resume\"' \"$MCP_AUDIT_FILE\" | grep -q \"$GID\""
+check "the grants file now says observe + requested desktop" "python3 -c 'import json,sys;g=json.load(open(sys.argv[1]))[\"grants\"][0];sys.exit(0 if (g[\"profile\"],g[\"requested_profile\"])==(\"observe\",\"desktop\") else 1)' \"$MCP_GRANTS_FILE\""
 $C -o /dev/null -X DELETE 127.0.0.1:8790/attach/$GID
 check "DELETE removes it from the file" "! grep -q \"$GID\" \"$MCP_GRANTS_FILE\""
 kill $RA 2>/dev/null; wait $RA 2>/dev/null

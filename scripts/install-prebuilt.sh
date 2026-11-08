@@ -187,13 +187,20 @@ elif [ "${TEST_WITH_UPSTREAM:-0}" = "1" ]; then
 fi
 # Switchboard mode is configured by files, so an update keeps it: the URL in
 # switchboard.url plus the secret in switchboard.secret turn it on, and
-# switchboard.profile (observe|desktop|owner) optionally picks the profile.
+# switchboard.profile (observe|owner) optionally picks the profile. The retired
+# `desktop` (#59) is written as `observe`, never `owner`, with a warning; the
+# file itself is left as it is.
 SB_DIR="$HOME_DIR/.config/oab-instance-mcp"
 if [ -s "$SB_DIR/switchboard.url" ] && [ -s "$SB_DIR/switchboard.secret" ]; then
   SB_URL=$(/usr/bin/head -n 1 "$SB_DIR/switchboard.url" | /usr/bin/tr -d '[:space:]')
   ARGS+=(--switchboard "$SB_URL" --switchboard-secret-file "$SB_DIR/switchboard.secret")
   if [ -s "$SB_DIR/switchboard.profile" ]; then
-    ARGS+=(--switchboard-profile "$(/usr/bin/head -n 1 "$SB_DIR/switchboard.profile" | /usr/bin/tr -d '[:space:]')")
+    SB_PROFILE=$(/usr/bin/head -n 1 "$SB_DIR/switchboard.profile" | /usr/bin/tr -d '[:space:]')
+    if [ "$SB_PROFILE" = "desktop" ]; then
+      echo "installer: warning: $SB_DIR/switchboard.profile says 'desktop', which was removed (openab-computer#59); serving 'observe' (sys_info and screenshot only). Write 'observe' or 'owner' to that file and re-run the installer." >&2
+      SB_PROFILE=observe
+    fi
+    ARGS+=(--switchboard-profile "$SB_PROFILE")
   fi
 fi
 for i in "${!ARGS[@]}"; do "$PB" -c "Add :ProgramArguments:$i string ${ARGS[$i]}" "$PLIST"; done

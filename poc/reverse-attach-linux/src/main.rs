@@ -8,6 +8,7 @@
 // Debian 13, Rust 1.98.
 
 mod attach;
+mod audit;
 mod auth;
 mod http;
 #[cfg(test)]
@@ -15,6 +16,8 @@ mod http_conformance;
 mod jobs;
 mod mcp;
 mod platform;
+#[cfg(test)]
+mod profile_conformance;
 mod tools;
 #[cfg(test)]
 mod wire_conformance;

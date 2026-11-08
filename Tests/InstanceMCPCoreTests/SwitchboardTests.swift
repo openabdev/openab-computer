@@ -76,7 +76,7 @@ final class SwitchboardConfigTests: XCTestCase {
     }
 
     func testInstructionsSayHowTheCallerArrived() {
-        for p in [ToolProfile.observe, .desktop] {
+        for p in [ToolProfile.observe] {
             let text = Switchboard.instructions(profile: p, base: "base") ?? ""
             XCTAssertTrue(text.hasPrefix("base\n\n"), p.rawValue)
             XCTAssertTrue(text.contains("OpenAB Switchboard"), p.rawValue)
@@ -120,13 +120,13 @@ final class SwitchboardEndToEndTests: XCTestCase {
         let sb = try FakeRuntime(secret: "s", closeWith: .privateCode(code))
         let states = StateSink()
         var cfg = ReverseAttachClient.Config.switchboard(
-            url: URL(string: "ws://127.0.0.1:\(sb.port)/vm/attach")!, secret: "s", profile: .desktop)
+            url: URL(string: "ws://127.0.0.1:\(sb.port)/vm/attach")!, secret: "s", profile: .observe)
         cfg.initialBackoff = 0.2
         let server = fullServer()
         let client = ReverseAttachClient(
             config: cfg,
-            server: server.scoped(to: .desktop,
-                                  instructions: Switchboard.instructions(profile: .desktop, base: server.instructions)),
+            server: server.scoped(to: .observe,
+                                  instructions: Switchboard.instructions(profile: .observe, base: server.instructions)),
             onStateChange: { states.push($0) })
         await client.start()
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
@@ -139,8 +139,8 @@ final class SwitchboardEndToEndTests: XCTestCase {
         XCTAssertEqual(sb.received.count, 4, "\(sb.received)")
         XCTAssertTrue(sb.received[0]["result"]?["instructions"]?.stringValue?.contains("OpenAB Switchboard") == true)
         let names = sb.received[1]["result"]?["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue }
-        XCTAssertEqual(names, ["echo", "screenshot"], "desktop profile: no exec*")
-        XCTAssertNotNil(sb.received[2]["error"], "exec under desktop is refused")
+        XCTAssertEqual(names, ["screenshot"], "observe profile: look only")
+        XCTAssertNotNil(sb.received[2]["error"], "exec under observe is refused")
         let final_ = await client.state
         XCTAssertEqual(final_, .ended(.secretRevoked), "\(states.all)")
         XCTAssertEqual(sb.upgradeAttempts, 1, "4003 must not redial")

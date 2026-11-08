@@ -20,7 +20,12 @@ pub(crate) struct GrantInfo {
     pub(crate) id: String,
     pub(crate) runtime: String,
     pub(crate) session: String,
+    /// The effective profile (`owner` | `observe`).
     pub(crate) profile: String,
+    /// The name the granter asked for; `desktop` when it was mapped (#59).
+    pub(crate) requested_profile: String,
+    /// Set when `requested_profile` was mapped; shown in `grant_json`.
+    pub(crate) warning: Option<String>,
     pub(crate) principal: String,
     pub(crate) state: String,
     pub(crate) ended: Option<String>,
@@ -76,10 +81,14 @@ pub(crate) fn grant_json(g: &GrantInfo) -> Value {
         "runtime": g.runtime,
         "session": g.session,
         "profile": g.profile,
+        "requested_profile": g.requested_profile,
         "principal": g.principal,
         "state": g.state,
         "expires_in_secs": g.expires_at_epoch_secs.saturating_sub(now_epoch_secs()),
     });
+    if let Some(warning) = &g.warning {
+        out["warning"] = Value::String(warning.clone());
+    }
     if let Some(ended) = &g.ended {
         out["ended"] = Value::String(ended.clone());
     }

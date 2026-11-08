@@ -54,14 +54,6 @@ public enum Switchboard {
                 look, not act. Only `sys_info` and `screenshot` are available — you cannot click, type or run \
                 anything here. If the task needs input, ask the operator to change the profile.
                 """
-        case .desktop:
-            return head + """
-                You reached this computer through OpenAB Switchboard under the `desktop` profile. Calls are \
-                relayed over the network, so expect a second or more per call. There is no `exec` tool; drive \
-                the computer through `screenshot`, `mouse`, `key` and `osascript`, and — when `browser_*` tools \
-                are listed — through the browser directly (`browser_navigate`, then `browser_snapshot`). A \
-                human may be watching the screen.
-                """
         case .owner:
             return base
         }

@@ -473,11 +473,11 @@ tools. Use a test session, not one doing real work.
 
 Source: `poc/reverse-attach-linux/src/mcp.rs` (`OBSERVE_TOOLS`, `upstream_tool_allowed`). The owner counts were checked live.
 
-The code on `main` still has a `desktop` profile; the two-profile model described here (`observe` and `owner`) is the target, tracked in [openabdev/instance-mcp#59](https://github.com/openabdev/instance-mcp/issues/59).
+These are the two profiles the code has since [#59](https://github.com/openabdev/openab-computer/issues/59).
 
 | Profile | Local tools | Browser tools | Shell-equivalent? |
 |---|---|---|---|
-| `owner` | `sys_info`, `screenshot`, `bash`, `mouse`, `key` | all 32, including `browser_evaluate` and `browser_run_code_unsafe` | **Yes** |
+| `owner` | `sys_info`, `screenshot`, `bash`, `mouse`, `key`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` | all 32, including `browser_evaluate` and `browser_run_code_unsafe` | **Yes** |
 | `observe` | `sys_info`, `screenshot` | none | No |
 
 `owner` is the only profile with `bash`, `mouse`, `key` and the browser tools. `bash` runs as
@@ -734,4 +734,4 @@ sudo tailscale serve --https=8444 off
 - The tailnet handshake (4.3) returned 200, 202, and the 37-tool owner list.
 - A request to loopback without the login header returned 401.
 - `tailscale serve status` shows the 8444 mapping.
-- The Linux profile source on `main` confirms the `observe` and `owner` lists in 5.1. `main` still defines a `desktop` profile; the two-profile model is tracked in [#59](https://github.com/openabdev/instance-mcp/issues/59).
+- The Linux profile source on `main` confirms the `observe` and `owner` lists in 5.1. These are the only two profiles since [#59](https://github.com/openabdev/openab-computer/issues/59).

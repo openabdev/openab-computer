@@ -151,6 +151,10 @@ pub fn serve() {
         Some(path) => eprintln!("grants: persisted at {}", path.display()),
         None => eprintln!("grants: persistence off (MCP_GRANTS_FILE=off)"),
     }
+    match crate::audit::init_from_env() {
+        Some(path) => eprintln!("audit: profile mappings recorded at {}", path.display()),
+        None => eprintln!("audit: off (MCP_AUDIT_FILE=off)"),
+    }
     let policy: Arc<AuthPolicy> = match AuthPolicy::from_env() {
         Ok(p) => Arc::new(p),
         Err(e) => {
@@ -594,6 +598,8 @@ fn resume_grants(registry: &Registry) {
                     runtime: g.runtime.clone(),
                     session: g.session.clone(),
                     profile: g.profile.clone(),
+                    requested_profile: g.requested_profile.clone(),
+                    warning: crate::mcp::profile_warning(&g.requested_profile).map(String::from),
                     principal: g.principal.clone(),
                     state: "idle".to_string(),
                     ended: None,
@@ -606,11 +612,26 @@ fn resume_grants(registry: &Registry) {
     }
     for g in grants {
         eprintln!(
-            "grants: resuming {} (session {}, {}s left)",
+            "grants: resuming {} as {} (session {}, {}s left)",
             g.id,
+            g.profile,
             g.session,
             g.expires_at_epoch_secs.saturating_sub(now_epoch_secs())
         );
+        if let Some(warning) = crate::mcp::profile_warning(&g.requested_profile) {
+            eprintln!(
+                "grant {} profile {} -> {}: {warning}",
+                g.id, g.requested_profile, g.profile
+            );
+            crate::audit::profile_mapped(
+                "resume",
+                &g.id,
+                &g.session,
+                &g.principal,
+                &g.requested_profile,
+                &g.profile,
+            );
+        }
         let cancelled = registry
             .lock()
             .ok()
@@ -698,18 +719,23 @@ fn bad_request(stream: &mut TcpStream, message: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Profile of a bare `POST /attach` (no `profile` field): the narrowest one,
-/// so a caller that forgets the field never lends a shell (#59). Wider
-/// profiles must be asked for by name.
-const DEFAULT_ATTACH_PROFILE: &str = "observe";
-
 /// The `profile` a `POST /attach` body asks for, before validation. A missing
-/// or non-string field falls back to [`DEFAULT_ATTACH_PROFILE`].
+/// or non-string field falls back to [`crate::mcp::DEFAULT_PROFILE`] (`observe`),
+/// so a caller that forgets the field never lends a shell (#59).
 fn requested_profile(parsed: &Value) -> &str {
     parsed
         .get("profile")
         .and_then(|v| v.as_str())
-        .unwrap_or(DEFAULT_ATTACH_PROFILE)
+        .unwrap_or(crate::mcp::DEFAULT_PROFILE)
+}
+
+/// The profile a `POST /attach` body resolves to, or the shared 400 message. A
+/// retired `desktop` resolves to `observe` with a warning, never to `owner`.
+pub(crate) fn resolve_attach_profile(
+    parsed: &Value,
+) -> Result<crate::mcp::ProfileResolution, &'static str> {
+    crate::mcp::resolve_requested_profile(requested_profile(parsed))
+        .ok_or(crate::mcp::PROFILE_REJECTION)
 }
 
 fn handle_attach(
@@ -725,7 +751,6 @@ fn handle_attach(
 
     let runtime = parsed.get("runtime").and_then(|v| v.as_str()).unwrap_or("");
     let session = parsed.get("session").and_then(|v| v.as_str()).unwrap_or("");
-    let profile = requested_profile(&parsed).to_string();
     let ttl_secs = parsed
         .get("ttl_secs")
         .and_then(|v| v.as_u64())
@@ -744,11 +769,12 @@ fn handle_attach(
         return bad_request(stream, "session must match ^[a-z0-9-]{1,32}$");
     }
     // Only the known profiles. Anything else — including the old `sandbox` — must not
-    // silently widen to owner.
-    let Some(profile) = crate::mcp::normalize_profile(&profile) else {
-        return bad_request(stream, "profile must be owner, desktop or observe");
+    // silently widen; `desktop` runs as `observe` and says so (#59).
+    let resolved = match resolve_attach_profile(&parsed) {
+        Ok(r) => r,
+        Err(message) => return bad_request(stream, message),
     };
-    let profile = profile.to_string();
+    let profile = resolved.profile.to_string();
     if !(1..=86400).contains(&ttl_secs) {
         return bad_request(stream, "ttl_secs must be in 1..=86400");
     }
@@ -798,6 +824,8 @@ fn handle_attach(
                 runtime: runtime.to_string(),
                 session: session.to_string(),
                 profile: profile.clone(),
+                requested_profile: resolved.requested.clone(),
+                warning: resolved.warning.map(String::from),
                 principal: principal.to_string(),
                 state: "idle".to_string(),
                 ended: None,
@@ -808,6 +836,20 @@ fn handle_attach(
         );
     }
     store::save(&registry);
+    if let Some(warning) = resolved.warning {
+        eprintln!(
+            "grant {grant_id} profile {} -> {profile}: {warning}",
+            resolved.requested
+        );
+        crate::audit::profile_mapped(
+            "attach",
+            &grant_id,
+            session,
+            principal,
+            &resolved.requested,
+            &profile,
+        );
+    }
 
     spawn_dial(
         &registry,
@@ -1004,7 +1046,10 @@ mod mcp_socket_tests {
 #[cfg(test)]
 mod attach_profile_tests {
     use super::*;
-    use crate::mcp::{local_tool_allowed, normalize_profile, upstream_tool_allowed};
+    use crate::mcp::{
+        local_tool_allowed, normalize_profile, upstream_tool_allowed, DEFAULT_PROFILE,
+        DESKTOP_RETIRED_WARNING, PROFILE_REJECTION,
+    };
 
     #[test]
     fn bare_attach_defaults_to_observe() {
@@ -1019,14 +1064,11 @@ mod attach_profile_tests {
 
     #[test]
     fn the_default_is_a_known_profile_that_lends_no_shell() {
-        assert_eq!(normalize_profile(DEFAULT_ATTACH_PROFILE), Some("observe"));
+        assert_eq!(normalize_profile(DEFAULT_PROFILE), Some("observe"));
         for tool in ["bash", "mouse", "key"] {
-            assert!(!local_tool_allowed(tool, DEFAULT_ATTACH_PROFILE), "{tool}");
+            assert!(!local_tool_allowed(tool, DEFAULT_PROFILE), "{tool}");
         }
-        assert!(!upstream_tool_allowed(
-            "browser_navigate",
-            DEFAULT_ATTACH_PROFILE
-        ));
+        assert!(!upstream_tool_allowed("browser_navigate", DEFAULT_PROFILE));
     }
 
     #[test]
@@ -1034,6 +1076,27 @@ mod attach_profile_tests {
         for p in ["owner", "desktop", "observe", "sandbox", ""] {
             let body = json!({"profile": p});
             assert_eq!(requested_profile(&body), p);
+        }
+    }
+
+    #[test]
+    fn desktop_resolves_to_observe_and_unknown_names_get_the_shared_400() {
+        let d = resolve_attach_profile(&json!({"profile": "desktop"})).unwrap();
+        assert_eq!(d.profile, "observe");
+        assert_eq!(d.requested, "desktop");
+        assert_eq!(d.warning, Some(DESKTOP_RETIRED_WARNING));
+        let bare = resolve_attach_profile(&json!({})).unwrap();
+        assert_eq!(
+            (bare.profile, bare.requested.as_str()),
+            ("observe", "observe")
+        );
+        assert_eq!(bare.warning, None);
+        for p in ["sandbox", "Desktop", "OWNER", "browser", ""] {
+            assert_eq!(
+                resolve_attach_profile(&json!({ "profile": p })),
+                Err(PROFILE_REJECTION),
+                "{p}"
+            );
         }
     }
 }

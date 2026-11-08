@@ -4,38 +4,76 @@ import Foundation
 /// the MCP server, so scoping is a per-connection tool list here, never MCP
 /// parsing in a proxy (instance-mcp `docs/adr/reverse-attach.md`).
 ///
-/// `owner` is the logged-in human's own CLI: everything. `desktop` is an agent in
-/// an `openab-pty` session that a human lent this computer to: the see→act→see
-/// loop (screenshot / mouse / key / osascript / sys_info) without the `exec*`
-/// tools.
+/// Two profiles (openab-computer#59), named after the one boundary that is real:
+/// shell-equivalent or not.
 ///
-/// **`desktop` is not a security boundary** (instance-mcp#45). GUI control is a
-/// shell: `osascript` runs `do shell script`, `key` can type into a terminal, and
-/// `mouse` can open one. Removing `exec*` removes a convenient entry point, not a
-/// privilege; lending under `desktop` hands the agent the desktop user's shell for
-/// the lease. A profile that is meant to be narrower must be built from tools that
-/// cannot reach a shell — `ToolProfileTests` enforces that for every profile that
-/// does not declare itself `isShellEquivalent`.
+/// `owner` is everything: every local tool (shell, input, `osascript`, background
+/// jobs) and every upstream tool, including all `browser_*` tools. The browser uses
+/// this computer's persistent profile and network, so it is owner-level, like the
+/// shell. `owner` is shell-equivalent.
 ///
-/// `observe` is the first profile that *is* a boundary: `sys_info` and
-/// `screenshot` only. The agent can see the screen (which still discloses what is
-/// on it) but cannot change anything, so it is not shell-equivalent.
+/// `observe` is the boundary: `sys_info` and `screenshot` only, no upstream tool.
+/// The agent can see the screen (which still discloses what is on it) but cannot
+/// change anything, so it is not shell-equivalent. It is also the default when an
+/// attach request names no profile.
 ///
-/// The old name `sandbox` is **not** accepted: it described a boundary that does not
-/// exist, and a client still sending it has not been updated to say so to its user.
-/// It is refused (400) like any unknown profile, and a grant stored under it is dropped.
-/// Full per-profile tool lists: `docs/tool-profiles.md`.
+/// The retired name `desktop` is accepted as *input* only and resolves to
+/// `observe`, never to `owner`, with `retiredWarning` returned to the granter
+/// (`resolve(requested:)`, `resolve(stored:requested:)`). The old name `sandbox` is
+/// **not** accepted: it is refused (400) like any unknown profile, and a grant stored
+/// under it is dropped (#46). Full per-profile tool lists: `docs/tool-profiles.md`.
 public enum ToolProfile: String, Codable, Sendable, CaseIterable {
     case owner
-    case desktop
     case observe
+
+    /// The profile of an attach request that names none. Fails closed.
+    public static let defaultProfile: ToolProfile = .observe
+
+    /// The profile name removed in #59. Input only; never a `ToolProfile`.
+    public static let retiredName = "desktop"
+
+    /// The 400 body for an unknown profile name. Byte-identical on Linux and pinned in
+    /// `conformance/profile_vectors.json`.
+    public static let rejectionMessage = "profile must be one of [owner, observe]"
+
+    /// Shown to the granter when `desktop` was asked for (or stored) and `observe` is
+    /// served. Byte-identical on Linux and pinned in the vectors.
+    public static let retiredWarning = "The `desktop` profile was removed (openab-computer#59). This grant runs as `observe`: sys_info and screenshot only. Grant `owner` explicitly for shell and browser access."
+
+    /// What a profile name resolved to: the profile served, the name asked for, and
+    /// the warning the granter must see when the two differ.
+    public struct Resolution: Sendable, Equatable {
+        public let profile: ToolProfile
+        public let requested: String
+        public let warning: String?
+    }
+
+    /// Resolve a name from an attach request or a `--switchboard-profile` flag. Exact,
+    /// case-sensitive match. `desktop` → `observe` with `retiredWarning`; any other
+    /// unknown name → nil (refuse).
+    public static func resolve(requested name: String) -> Resolution? {
+        if let p = ToolProfile(rawValue: name) { return Resolution(profile: p, requested: name, warning: nil) }
+        if name == retiredName { return Resolution(profile: .observe, requested: name, warning: retiredWarning) }
+        return nil
+    }
+
+    /// Resolve a persisted grant row. `requested` is display-only and never widens:
+    /// the effective profile is the narrower of the two resolutions. Either name
+    /// unknown → nil (drop the row).
+    public static func resolve(stored: String, requested: String?) -> Resolution? {
+        guard let s = resolve(requested: stored) else { return nil }
+        guard let requested else { return s }
+        guard let r = resolve(requested: requested) else { return nil }
+        let profile: ToolProfile = (s.profile == .observe || r.profile == .observe) ? .observe : .owner
+        return Resolution(profile: profile, requested: requested, warning: s.warning ?? r.warning)
+    }
 
     /// Whether this profile grants (directly or through GUI control) the desktop
     /// user's shell. `observe` is not, and `ProfileBoundaryTests` holds it to that:
     /// it must allow no shell-capable tool.
     public var isShellEquivalent: Bool {
         switch self {
-        case .owner, .desktop: return true
+        case .owner: return true
         case .observe: return false
         }
     }
@@ -78,32 +116,17 @@ public enum ToolProfile: String, Codable, Sendable, CaseIterable {
         Set(localToolClass.filter { $0.value == .shell }.keys)
     }
 
-    /// Match is on the tool name.
+    /// Match is on the tool name. `owner` allows every tool, local or upstream,
+    /// including every `browser_*` tool.
     public func allows(_ toolName: String) -> Bool {
         switch self {
         case .owner: return true
-        case .desktop:
-            if toolName.hasPrefix("exec") { return false }
-            if toolName.hasPrefix("browser_") { return Self.desktopBrowserTools.contains(toolName) }
-            return true
         case .observe:
             // Both: on the allowlist *and* classified as observation, so a tool added
             // to the allowlist by mistake is still refused unless it changes nothing.
             return Self.observeTools.contains(toolName) && Self.localToolClass[toolName] == .observe
         }
     }
-
-    /// Playwright MCP tools a lent `desktop` grant may use: navigate, read, interact.
-    /// Not: arbitrary JavaScript (`browser_evaluate`, `browser_run_code_unsafe`), the
-    /// filesystem (upload / PDF), raw network inspection, dialogs, media emulation,
-    /// closing the browser. Anything Playwright adds later is denied until listed here.
-    /// The browser still uses this computer's persistent profile and network.
-    public static let desktopBrowserTools: Set<String> = [
-        "browser_navigate", "browser_navigate_back", "browser_snapshot", "browser_find",
-        "browser_click", "browser_type", "browser_fill_form", "browser_press_key", "browser_hover",
-        "browser_select_option", "browser_wait_for", "browser_tabs", "browser_take_screenshot",
-        "browser_console_messages", "browser_resize",
-    ]
 }
 
 extension MCPServer {
