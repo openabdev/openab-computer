@@ -65,6 +65,17 @@ jobs:
             test "$(id -u)" = "1000" && echo non-root-ok &&
             test -w /var/log/oab-jobs && echo jobs-dir-ok'
 
+  linux-installer:
+    name: Linux installer units
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: ShellCheck
+        run: shellcheck scripts/install-linux.sh scripts/test-install-linux.sh
+      - name: Generated units (fake HOME, stubbed systemctl/tailscale/loginctl)
+        # Diffs each written unit against its expected text and runs systemd-analyze verify (#90).
+        run: bash scripts/test-install-linux.sh
+
   linux-hands-node:
     name: Linux hands node (${{ matrix.arch }})
     strategy:
