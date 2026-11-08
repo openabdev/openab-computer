@@ -26,12 +26,12 @@ func fullServer() -> MCPServer {
 // MARK: - Tool profiles
 
 final class ToolProfileTests: XCTestCase {
-    func testSandboxDropsEveryExecTool() async {
-        let scoped = fullServer().scoped(to: .desktop)
-        XCTAssertEqual(scoped.toolNames, ["echo", "screenshot"])
+    func testObserveDropsEverythingButLooking() async {
+        let scoped = fullServer().scoped(to: .observe)
+        XCTAssertEqual(scoped.toolNames, ["screenshot"])
         let list = await scoped.handle(try! JSONCoding.decoder.decode(JSONRPCRequest.self, from: rpc("tools/list")))
         let names = list?.result?["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue }
-        XCTAssertEqual(names, ["echo", "screenshot"])
+        XCTAssertEqual(names, ["screenshot"])
     }
 
     func testOwnerKeepsEverything() {
@@ -39,7 +39,7 @@ final class ToolProfileTests: XCTestCase {
     }
 
     func testCallingAnOmittedToolLooksLikeAnUnknownTool() async {
-        let scoped = fullServer().scoped(to: .desktop)
+        let scoped = fullServer().scoped(to: .observe)
         let call = await scoped.handle(try! JSONCoding.decoder.decode(JSONRPCRequest.self,
             from: rpc("tools/call", params: ["name": "exec", "arguments": ["command": "id"]])))
         XCTAssertEqual(call?.error?.code, JSONRPCError.invalidParams)
@@ -51,10 +51,10 @@ final class ToolProfileTests: XCTestCase {
     }
 
     func testScopedCanCarryItsOwnInstructions() async {
-        let scoped = fullServer().scoped(to: .desktop, instructions: "sandboxed")
+        let scoped = fullServer().scoped(to: .observe, instructions: "sandboxed")
         let init_ = await scoped.handle(try! JSONCoding.decoder.decode(JSONRPCRequest.self, from: rpc("initialize")))
         XCTAssertEqual(init_?.result?["instructions"]?.stringValue, "sandboxed")
-        XCTAssertEqual(fullServer().scoped(to: .desktop).instructions, "base")
+        XCTAssertEqual(fullServer().scoped(to: .observe).instructions, "base")
     }
 }
 
@@ -111,6 +111,25 @@ final class ReverseAttachPolicyTests: XCTestCase {
         XCTAssertEqual(decodeJSON(Data(start!.utf8))["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue, "ran exec_start")
     }
 
+    /// The long-call guard must not name a tool the profile hides: under `observe`
+    /// a long `exec` / `osascript` is an *unknown tool*, like any hidden call (#59).
+    func testLongExecUnderObserveIsAnUnknownTool() async {
+        let c = ReverseAttachClient.Config(runtime: URL(string: "ws://h:1")!, session: "s", secret: "x",
+                                           profile: .observe, deadline: .distantFuture)
+        let client = ReverseAttachClient(config: c, server: fullServer().scoped(to: .observe))
+        for (tool, args) in [("exec", ["command": "id", "timeout_secs": 600] as JSONValue),
+                             ("osascript", ["script": "delay 1", "timeout_secs": 200])] {
+            let req = try! JSONCoding.decoder.decode(JSONRPCRequest.self,
+                from: rpc("tools/call", id: 3, params: ["name": .string(tool), "arguments": args]))
+            let refusal = await client.refuseLongExec(req)
+            XCTAssertNil(refusal, tool)
+            let text = await client.answer(String(decoding: rpc("tools/call", id: 3, params: ["name": .string(tool), "arguments": args]), as: UTF8.self))
+            let r = decodeJSON(Data(text!.utf8))
+            XCTAssertEqual(r["error"]?["code"]?.intValue, JSONRPCError.invalidParams, "\(tool): \(r)")
+            XCTAssertTrue(r["error"]?["message"]?.stringValue?.contains("unknown tool") == true, "\(r)")
+        }
+    }
+
     func testLongExecIsNotRefusedOnASwitchboardAttach() async {
         let c = ReverseAttachClient.Config.switchboard(url: URL(string: "ws://127.0.0.1:1/vm/attach")!, secret: "x", profile: .owner)
         let client = ReverseAttachClient(config: c, server: fullServer())
@@ -120,14 +139,14 @@ final class ReverseAttachPolicyTests: XCTestCase {
 
     func testEveryGrantProfileIsToldToKeepCallsShort() {
         for p in ToolProfile.allCases {
-            let text = AttachManager.desktopInstructions(profile: p, base: "base") ?? ""
+            let text = AttachManager.grantInstructions(profile: p, base: "base") ?? ""
             XCTAssertTrue(text.hasPrefix("base\n\n"), p.rawValue)
             XCTAssertTrue(text.contains("60 seconds"), p.rawValue)
             XCTAssertTrue(text.contains("`exec_start`") && text.contains("`exec_poll`"), p.rawValue)
             XCTAssertTrue(text.contains("never `sleep` inside `exec`"), p.rawValue)
             XCTAssertEqual(text.contains("one at a time"), p != .observe, p.rawValue)
         }
-        XCTAssertEqual(AttachManager.desktopInstructions(profile: .owner, base: nil),
+        XCTAssertEqual(AttachManager.grantInstructions(profile: .owner, base: nil),
                        AttachManager.uiOrderNotice + "\n\n" + AttachManager.longCallNotice)
     }
 
@@ -140,7 +159,7 @@ final class ReverseAttachPolicyTests: XCTestCase {
 
     func testAttachURLIsBuiltFromTheRuntimeBase() {
         let c = ReverseAttachClient.Config(runtime: URL(string: "ws://100.1.2.3:8090")!, session: "laptop",
-                                           secret: "s", profile: .desktop, deadline: .distantFuture)
+                                           secret: "s", profile: .owner, deadline: .distantFuture)
         XCTAssertEqual(c.attachURL.absoluteString, "ws://100.1.2.3:8090/tools/attach/laptop")
         let tls = ReverseAttachClient.Config(runtime: URL(string: "wss://pod.tail.ts.net/")!, session: "x",
                                              secret: "s", profile: .owner, deadline: .distantFuture)
@@ -151,12 +170,12 @@ final class ReverseAttachPolicyTests: XCTestCase {
     /// and sessions: the grant *is* the auth, no header on the socket is trusted.
     func testFrameAnsweringMatchesDispatch() async {
         let c = ReverseAttachClient.Config(runtime: URL(string: "ws://h:1")!, session: "s", secret: "x",
-                                           profile: .desktop, deadline: .distantFuture)
-        let client = ReverseAttachClient(config: c, server: fullServer().scoped(to: .desktop))
+                                           profile: .observe, deadline: .distantFuture)
+        let client = ReverseAttachClient(config: c, server: fullServer().scoped(to: .observe))
         let list = await client.answer(String(decoding: rpc("tools/list", id: 7), as: UTF8.self))
         let parsed = decodeJSON(Data(list!.utf8))
         XCTAssertEqual(parsed["id"]?.intValue, 7)
-        XCTAssertEqual(parsed["result"]?["tools"]?.arrayValue?.count, 2)
+        XCTAssertEqual(parsed["result"]?["tools"]?.arrayValue?.count, 1)
         let note = await client.answer(String(decoding: rpc("notifications/initialized", id: nil), as: UTF8.self))
         XCTAssertNil(note)
         let garbage = await client.answer("not json")
@@ -212,6 +231,38 @@ final class AttachEndpointTests: XCTestCase {
         }
     }
 
+    /// #59: the retired `desktop` succeeds as `observe`, never `owner`, and says so
+    /// in the response and in the grant list.
+    func testDesktopRequestRunsAsObserveWithAWarning() async {
+        let (ep, mgr) = makeEndpoint()
+        let r = await ep.handle(req("POST", "/attach", body: ["runtime": "ws://127.0.0.1:9", "session": "d", "secret": "abc", "profile": "desktop"]), remoteIsLoopback: true)
+        XCTAssertEqual(r.status, 202, String(decoding: r.body, as: UTF8.self))
+        let g = decodeJSON(r.body)
+        XCTAssertEqual(g["profile"]?.stringValue, "observe")
+        XCTAssertEqual(g["requested_profile"]?.stringValue, "desktop")
+        XCTAssertEqual(g["warning"]?.stringValue, ToolProfile.retiredWarning)
+        let id = g["id"]!.stringValue!
+        let one = decodeJSON(await ep.handle(req("GET", "/attach/\(id)"), remoteIsLoopback: true).body)
+        XCTAssertEqual(one["profile"]?.stringValue, "observe")
+        XCTAssertEqual(one["requested_profile"]?.stringValue, "desktop")
+        XCTAssertEqual(one["warning"]?.stringValue, ToolProfile.retiredWarning)
+        let listed = decodeJSON(await ep.handle(req("GET", "/attach"), remoteIsLoopback: true).body)["grants"]?.arrayValue?.first
+        XCTAssertEqual(listed?["requested_profile"]?.stringValue, "desktop")
+        let grant = await mgr.get(id)
+        XCTAssertEqual(grant?.profile, .observe)
+    }
+
+    func testUnknownProfilesGetTheSharedRejection() async {
+        let (ep, mgr) = makeEndpoint()
+        for name in ["sandbox", "Desktop", "OWNER", "browser", "", " owner"] {
+            let r = await ep.handle(req("POST", "/attach", body: ["runtime": "ws://127.0.0.1:9", "session": "u", "secret": "abc", "profile": .string(name)]), remoteIsLoopback: true)
+            XCTAssertEqual(r.status, 400, name)
+            XCTAssertEqual(decodeJSON(r.body)["error"]?.stringValue, ToolProfile.rejectionMessage, name)
+        }
+        let grants = await mgr.list()
+        XCTAssertTrue(grants.isEmpty)
+    }
+
     func testCreateListRevoke() async {
         let (ep, _) = makeEndpoint()
         // Unreachable runtime: the grant exists and the client is dialing/redialing.
@@ -219,7 +270,9 @@ final class AttachEndpointTests: XCTestCase {
         XCTAssertEqual(r.status, 202, String(decoding: r.body, as: UTF8.self))
         let g = decodeJSON(r.body)
         let id = g["id"]!.stringValue!
-        XCTAssertEqual(g["profile"]?.stringValue, "desktop", "the default profile, reported under its honest name")
+        XCTAssertEqual(g["profile"]?.stringValue, "observe", "the fail-closed default (#59)")
+        XCTAssertEqual(g["requested_profile"]?.stringValue, "observe")
+        XCTAssertNil(g["warning"])
         XCTAssertEqual(g["principal"]?.stringValue, "a@b")
         XCTAssertEqual(g["session"]?.stringValue, "laptop")
 
@@ -364,11 +417,11 @@ final class FakeRuntime: @unchecked Sendable {
                 // 2. tools/list on behalf of the CLI.
                 self.send(conn, ["jsonrpc": "2.0", "id": 2, "method": "tools/list"]) {
                     self.recv(conn) { _ in
-                        // 3. a tools/call for exec — must be refused under sandbox.
+                        // 3. a tools/call for exec — must be refused under observe.
                         self.send(conn, ["jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": ["name": "exec", "arguments": ["command": "id"]]]) {
                             self.recv(conn) { _ in
-                                // 4. a permitted call.
-                                self.send(conn, ["jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": ["name": "echo", "arguments": ["msg": "hi"]]]) {
+                                // 4. a call every profile permits.
+                                self.send(conn, ["jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": ["name": "screenshot", "arguments": [:]]]) {
                                     self.recv(conn) { _ in
                                         let meta = NWProtocolWebSocket.Metadata(opcode: .close)
                                         meta.closeCode = self.closeWith
@@ -389,13 +442,13 @@ final class FakeRuntime: @unchecked Sendable {
 }
 
 final class ReverseAttachEndToEndTests: XCTestCase {
-    func testMacServesTheRuntimeWithTheSandboxProfileAndStopsOnRevoke() async throws {
+    func testMacServesTheRuntimeWithTheObserveProfileAndStopsOnRevoke() async throws {
         let runtime = try FakeRuntime(secret: "s3", closeWith: .privateCode(4010))
         defer { runtime.stop() }
         let states = StateSink()
         let cfg = ReverseAttachClient.Config(runtime: URL(string: "ws://127.0.0.1:\(runtime.port)")!, session: "laptop",
-                                             secret: "s3", profile: .desktop, deadline: Date().addingTimeInterval(30))
-        let client = ReverseAttachClient(config: cfg, server: fullServer().scoped(to: .desktop),
+                                             secret: "s3", profile: .observe, deadline: Date().addingTimeInterval(30))
+        let client = ReverseAttachClient(config: cfg, server: fullServer().scoped(to: .observe),
                                          onStateChange: { states.push($0) })
         await client.start()
 
@@ -408,9 +461,9 @@ final class ReverseAttachEndToEndTests: XCTestCase {
         XCTAssertEqual(runtime.received[0]["id"]?.intValue, 1)
         XCTAssertEqual(runtime.received[0]["result"]?["serverInfo"]?["name"]?.stringValue, "t")
         let names = runtime.received[1]["result"]?["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue }
-        XCTAssertEqual(names, ["echo", "screenshot"], "sandbox profile: no exec*")
-        XCTAssertNotNil(runtime.received[2]["error"], "exec under sandbox is refused")
-        XCTAssertEqual(runtime.received[3]["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue, "hi")
+        XCTAssertEqual(names, ["screenshot"], "observe profile: look only")
+        XCTAssertNotNil(runtime.received[2]["error"], "exec under observe is refused")
+        XCTAssertEqual(runtime.received[3]["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue, "ran screenshot")
 
         // 4010 is terminal: no redial.
         let final_ = await client.state
@@ -460,7 +513,7 @@ final class ReverseAttachEndToEndTests: XCTestCase {
         // (A real 401 is exercised by openab-pty's own suite; here we prove the
         // client does not spin: it backs off and stops at the deadline.)
         var cfg = ReverseAttachClient.Config(runtime: URL(string: "ws://127.0.0.1:1")!, session: "x",
-                                             secret: "s", profile: .desktop, deadline: Date().addingTimeInterval(1.2))
+                                             secret: "s", profile: .owner, deadline: Date().addingTimeInterval(1.2))
         cfg.initialBackoff = 0.3
         let states = StateSink()
         let client = ReverseAttachClient(config: cfg, server: fullServer(), onStateChange: { states.push($0) })

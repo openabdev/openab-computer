@@ -424,6 +424,9 @@ public actor ReverseAttachClient {
     func refuseLongExec(_ rpc: JSONRPCRequest) -> JSONRPCResponse? {
         guard config.kind == .openabPty, rpc.method == "tools/call",
               let tool = rpc.params?["name"]?.stringValue, tool == "exec" || tool == "osascript",
+              // A tool the profile hides must answer *unknown tool*, not a message that
+              // names it (#59).
+              config.profile.allows(tool),
               let asked = rpc.params?["arguments"]?["timeout_secs"]?.doubleValue,
               asked > Self.maxAttachedExecTimeout else { return nil }
         let limit = Int(Self.maxAttachedExecTimeout)

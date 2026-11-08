@@ -5,7 +5,7 @@ import XCTest
 
 /// A tiny Streamable-HTTP MCP server on loopback that plays `@playwright/mcp`:
 /// issues an `Mcp-Session-Id` on initialize, 400s without it afterwards, answers
-/// `tools/list` with three `browser_*` tools, echoes `tools/call` arguments, and
+/// `tools/list` with three `browser_*` tools (or `toolNames`), echoes `tools/call` arguments, and
 /// replies as SSE frames (`data: {…}`) — the shape the real one uses.
 final class FakeUpstream: @unchecked Sendable {
     private(set) var port: UInt16 = 0
@@ -16,8 +16,12 @@ final class FakeUpstream: @unchecked Sendable {
     private let sid = UUID().uuidString
     var initializeCount = 0
     var down = false
+    /// nil ⇒ the default three `browser_*` tools plus a `screenshot` that collides
+    /// with the local one.
+    private let toolNames: [String]?
 
-    init() throws {
+    init(toolNames: [String]? = nil) throws {
+        self.toolNames = toolNames
         listener = try NWListener(using: .tcp, on: .any)
         let sem = DispatchSemaphore(value: 0)
         listener.stateUpdateHandler = { [weak self] st in
@@ -73,6 +77,11 @@ final class FakeUpstream: @unchecked Sendable {
         }
         switch rpc.method {
         case "tools/list":
+            if let toolNames {
+                return sse(["jsonrpc": "2.0", "id": id, "result": ["tools": .array(toolNames.map {
+                    ["name": .string($0), "description": "fixture", "inputSchema": ["type": "object"]]
+                })]])
+            }
             return sse(["jsonrpc": "2.0", "id": id, "result": ["tools": [
                 ["name": "browser_navigate", "description": "go", "inputSchema": ["type": "object", "properties": ["url": ["type": "string"]]]],
                 ["name": "browser_snapshot", "description": "read", "inputSchema": ["type": "object"]],
@@ -104,12 +113,15 @@ final class UpstreamMCPTests: XCTestCase {
         r?.result?["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue } ?? []
     }
 
-    func testSandboxSeesOnlyAllowlistedBrowserToolsAndLocalNamesWin() async throws {
+    func testObserveSeesNoUpstreamToolAndLocalNamesWin() async throws {
         let up = try FakeUpstream(); defer { up.stop() }
-        let s = makeServer(up, profile: .desktop)
+        let s = makeServer(up, profile: .observe)
         let list = await s.handle(try JSONCoding.decoder.decode(JSONRPCRequest.self, from: rpc("tools/list")))
-        XCTAssertEqual(names(list), ["echo", "screenshot", "browser_navigate", "browser_snapshot"],
-                       "no exec, no browser_run_code_unsafe, upstream 'screenshot' shadowed by the local one")
+        XCTAssertEqual(names(list), ["screenshot"],
+                       "no exec, no browser_*, upstream 'screenshot' shadowed by the local one")
+        let owner = makeServer(up, profile: .owner)
+        let all = names(await owner.handle(try JSONCoding.decoder.decode(JSONRPCRequest.self, from: rpc("tools/list"))))
+        XCTAssertEqual(all.filter { $0 == "screenshot" }.count, 1, "the local screenshot wins: \(all)")
         XCTAssertEqual(up.hostHeaders.first, "127.0.0.1", "Host must be the bare host — Playwright's allowed-hosts check")
     }
 
@@ -122,7 +134,7 @@ final class UpstreamMCPTests: XCTestCase {
 
     func testCallIsForwardedAndResultPassedThroughVerbatim() async throws {
         let up = try FakeUpstream(); defer { up.stop() }
-        let s = makeServer(up, profile: .desktop)
+        let s = makeServer(up, profile: .owner)
         let nav = await s.handle(try JSONCoding.decoder.decode(JSONRPCRequest.self,
             from: rpc("tools/call", params: ["name": "browser_navigate", "arguments": ["url": "https://x"]])))
         XCTAssertEqual(nav?.result?["content"]?.arrayValue?.first?["text"]?.stringValue, "did browser_navigate with https://x")
@@ -136,11 +148,11 @@ final class UpstreamMCPTests: XCTestCase {
         XCTAssertEqual(content?[1]["mimeType"]?.stringValue, "image/png")
     }
 
-    func testDeniedUpstreamToolIsUnknownUnderSandbox() async throws {
+    func testDeniedUpstreamToolIsUnknownUnderObserve() async throws {
         let up = try FakeUpstream(); defer { up.stop() }
-        let s = makeServer(up, profile: .desktop)
+        let s = makeServer(up, profile: .observe)
         let r = await s.handle(try JSONCoding.decoder.decode(JSONRPCRequest.self,
-            from: rpc("tools/call", params: ["name": "browser_run_code_unsafe", "arguments": [:]])))
+            from: rpc("tools/call", params: ["name": "browser_navigate", "arguments": ["url": "https://x"]])))
         XCTAssertEqual(r?.error?.code, JSONRPCError.invalidParams)
         XCTAssertTrue(up.calls.isEmpty, "the denied call never reached the upstream")
     }
@@ -148,9 +160,9 @@ final class UpstreamMCPTests: XCTestCase {
     func testUpstreamDownMeansNoBrowserToolsAndLocalStillWorks() async throws {
         let up = try FakeUpstream()
         up.stop()
-        let s = makeServer(up, profile: .desktop)
+        let s = makeServer(up, profile: .owner)
         let list = await s.handle(try JSONCoding.decoder.decode(JSONRPCRequest.self, from: rpc("tools/list")))
-        XCTAssertEqual(names(list), ["echo", "screenshot"])
+        XCTAssertEqual(names(list), ["echo", "exec", "screenshot"])
         let echo = await s.handle(try JSONCoding.decoder.decode(JSONRPCRequest.self,
             from: rpc("tools/call", params: ["name": "echo", "arguments": ["msg": "ok"]])))
         XCTAssertEqual(echo?.result?["content"]?.arrayValue?.first?["text"]?.stringValue, "ok")
@@ -175,21 +187,5 @@ final class UpstreamMCPTests: XCTestCase {
         let sse = try UpstreamMCP.parseBody(Data("event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n".utf8))
         XCTAssertEqual(sse["id"]?.intValue, 2)
         XCTAssertThrowsError(try UpstreamMCP.parseBody(Data("Access denied".utf8)))
-    }
-}
-
-final class SandboxBrowserAllowlistTests: XCTestCase {
-    func testAllowlistShapesMatchTheThreatModel() {
-        let p = ToolProfile.desktop
-        for ok in ["browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_take_screenshot", "browser_tabs"] {
-            XCTAssertTrue(p.allows(ok), ok)
-        }
-        // browser_evaluate is arbitrary JavaScript in the page, like run_code_unsafe (#45).
-        for no in ["browser_evaluate", "browser_run_code_unsafe", "browser_file_upload", "browser_pdf_save", "browser_network_requests", "browser_mouse_click_xy", "browser_close", "browser_handle_dialog", "browser_something_new"] {
-            XCTAssertFalse(p.allows(no), no)
-        }
-        XCTAssertTrue(p.allows("screenshot"))
-        XCTAssertFalse(p.allows("exec_start"))
-        XCTAssertTrue(ToolProfile.owner.allows("browser_run_code_unsafe"))
     }
 }

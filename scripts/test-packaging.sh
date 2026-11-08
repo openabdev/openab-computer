@@ -55,15 +55,24 @@ if /usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST" | grep -q -- '-
 fi
 echo 'wss://sb.example.invalid/vm/attach' >"$SBC/switchboard.url"
 echo 'not-a-real-secret' >"$SBC/switchboard.secret"
-echo 'desktop' >"$SBC/switchboard.profile"
+echo 'owner' >"$SBC/switchboard.profile"
 ALLOW_UNSIGNED=1 INSTALL_HOME="$HOME1" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 \
   "$ROOT/scripts/install-prebuilt.sh" "$APP" --allow-login test@example.invalid >/dev/null
 SB_ARGS=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST")
 echo "$SB_ARGS" | grep -qx ' *--switchboard'
 echo "$SB_ARGS" | grep -qx ' *wss://sb.example.invalid/vm/attach'
 echo "$SB_ARGS" | grep -qx " *$SBC/switchboard.secret"
-echo "$SB_ARGS" | grep -qx ' *desktop'
+echo "$SB_ARGS" | grep -qx ' *owner'
 if echo "$SB_ARGS" | grep -q 'not-a-real-secret'; then echo "secret leaked into the plist" >&2; exit 1; fi
+# A 0.8.x `desktop` (#59) is written as observe, never owner, with a warning.
+echo 'desktop' >"$SBC/switchboard.profile"
+SB_ERR=$(ALLOW_UNSIGNED=1 INSTALL_HOME="$HOME1" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 \
+  "$ROOT/scripts/install-prebuilt.sh" "$APP" --allow-login test@example.invalid 2>&1 >/dev/null)
+SB_ARGS=$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST")
+echo "$SB_ARGS" | grep -qx ' *observe'
+if echo "$SB_ARGS" | grep -qx ' *desktop\| *owner'; then echo "desktop not mapped to observe" >&2; exit 1; fi
+echo "$SB_ERR" | grep -q "switchboard.profile says 'desktop'"
+[ "$(cat "$SBC/switchboard.profile")" = "desktop" ]
 rm -f "$SBC/switchboard.url" "$SBC/switchboard.secret" "$SBC/switchboard.profile"
 
 # Exercise the real structured Tailscale identity path with an anonymized fixture.

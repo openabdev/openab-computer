@@ -70,12 +70,11 @@ final class ProfileBoundaryTests: XCTestCase {
         XCTAssertTrue(wrong.isEmpty, "observe allows tools that act: \(wrong.sorted())")
     }
 
-    func testDesktopIsDeclaredShellEquivalent() {
-        XCTAssertTrue(ToolProfile.desktop.isShellEquivalent)
-        for tool in ["osascript", "key", "mouse"] {
-            XCTAssertTrue(ToolProfile.desktop.allows(tool), "\(tool) is part of desktop control")
-        }
-        XCTAssertFalse(ToolProfile.desktop.allows("exec"))
+    /// `owner` is everything: every local tool, whatever its class (#59).
+    func testOwnerAllowsEveryLocalTool() {
+        XCTAssertTrue(ToolProfile.owner.isShellEquivalent)
+        let hidden = served.filter { !ToolProfile.owner.allows($0) }
+        XCTAssertTrue(hidden.isEmpty, "owner hides \(hidden.sorted())")
     }
 
     /// `observe` is the one real boundary today: look, never act.
@@ -87,25 +86,27 @@ final class ProfileBoundaryTests: XCTestCase {
         }
     }
 
-    func testNoAllowedBrowserToolRunsArbitraryCode() {
-        for tool in ["browser_evaluate", "browser_run_code_unsafe"] {
-            XCTAssertFalse(ToolProfile.desktopBrowserTools.contains(tool))
-            XCTAssertFalse(ToolProfile.desktop.allows(tool), tool)
+    /// Exactly two profiles (#59). `sandbox` promised a boundary that does not exist
+    /// and is refused; `desktop` is no longer a profile either: as input it resolves
+    /// to `observe`, never to `owner`.
+    func testOnlyOwnerAndObserveExist() throws {
+        XCTAssertEqual(ToolProfile.allCases, [.owner, .observe])
+        XCTAssertEqual(ToolProfile.defaultProfile, .observe)
+        for name in ["desktop", "sandbox", "Desktop", "browser", "Observe", "OWNER", ""] {
+            XCTAssertNil(ToolProfile(rawValue: name), "\(name) must not be a profile")
         }
-    }
-
-    /// `sandbox` promised a boundary that does not exist; it is refused, not aliased.
-    func testTheOldSandboxNameIsRefused() throws {
-        XCTAssertNil(ToolProfile(rawValue: "sandbox"))
-        XCTAssertEqual(ToolProfile(rawValue: "desktop"), .desktop)
-        XCTAssertEqual(ToolProfile(rawValue: "owner"), .owner)
-        XCTAssertEqual(ToolProfile(rawValue: "observe"), .observe)
-        XCTAssertNil(ToolProfile(rawValue: "browser"), "unknown profiles must not widen to anything")
-        XCTAssertNil(ToolProfile(rawValue: "Observe"))
-        XCTAssertEqual(ToolProfile.desktop.rawValue, "desktop")
-        let decoded = try JSONDecoder().decode([ToolProfile].self, from: Data(#"["observe","desktop","owner"]"#.utf8))
-        XCTAssertEqual(decoded, [.observe, .desktop, .owner])
+        XCTAssertThrowsError(try JSONDecoder().decode([ToolProfile].self, from: Data(#"["desktop"]"#.utf8)))
         XCTAssertThrowsError(try JSONDecoder().decode([ToolProfile].self, from: Data(#"["sandbox"]"#.utf8)))
-        XCTAssertEqual(String(decoding: try JSONEncoder().encode(ToolProfile.desktop), as: UTF8.self), #""desktop""#)
+        let decoded = try JSONDecoder().decode([ToolProfile].self, from: Data(#"["observe","owner"]"#.utf8))
+        XCTAssertEqual(decoded, [.observe, .owner])
+
+        let mapped = try XCTUnwrap(ToolProfile.resolve(requested: "desktop"))
+        XCTAssertEqual(mapped.profile, .observe)
+        XCTAssertEqual(mapped.requested, "desktop")
+        XCTAssertEqual(mapped.warning, ToolProfile.retiredWarning)
+        for name in ["sandbox", "Desktop", "browser", "OWNER", " owner", ""] {
+            XCTAssertNil(ToolProfile.resolve(requested: name), "\(name) must be refused")
+        }
+        XCTAssertNil(ToolProfile.resolve(requested: "owner")?.warning)
     }
 }

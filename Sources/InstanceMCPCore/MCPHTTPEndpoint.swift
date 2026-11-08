@@ -112,14 +112,18 @@ extension MCPHTTPEndpoint {
             guard let session = body["session"]?.stringValue else {
                 return .json(400, JSONValue.object(["error": "session is required"]))
             }
-            let profileStr = body["profile"]?.stringValue ?? ToolProfile.desktop.rawValue
-            guard let profile = ToolProfile(rawValue: profileStr) else {
-                return .json(400, JSONValue.object(["error": .string("profile must be one of \(ToolProfile.allCases.map(\.rawValue))")]))
+            // No profile (or a non-string one) ⇒ the fail-closed default. A retired
+            // `desktop` resolves to `observe` with a warning; anything else unknown is
+            // refused (#59).
+            let profileStr = body["profile"]?.stringValue ?? ToolProfile.defaultProfile.rawValue
+            guard let resolved = ToolProfile.resolve(requested: profileStr) else {
+                return .json(400, JSONValue.object(["error": .string(ToolProfile.rejectionMessage)]))
             }
             let ttl = TimeInterval(body["ttl_secs"]?.intValue ?? Int(AttachManager.defaultTTL))
-            let request = AttachManager.Request(runtime: runtime, session: session, profile: profile, ttl: ttl,
+            let request = AttachManager.Request(runtime: runtime, session: session, profile: resolved.profile, ttl: ttl,
                                                 secret: body["secret"]?.stringValue,
-                                                adminCredential: body["admin_credential"]?.stringValue)
+                                                adminCredential: body["admin_credential"]?.stringValue,
+                                                requestedProfile: resolved.requested)
             do {
                 let grant = try await attach.create(request, principal: principal)
                 return .json(202, grant.json)
