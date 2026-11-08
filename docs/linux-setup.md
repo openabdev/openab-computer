@@ -10,11 +10,11 @@ Screens pane, browser tools):
   by the installer (`--headless-seat`).
 
 Read the trust warning at the top of the [README](../README.md) first. On Linux it is stricter,
-not looser: `bash` is offered in **both** the `owner` and `desktop` profiles, so anyone who can
-attach this node with either gets a shell as the user running the daemon. Only `observe` (the
-default for an attach that names no profile) leaves it out. The background-job tools
-(`exec_start` and friends) are `owner` only, like `exec*` on macOS; see
-[Background jobs](#background-jobs).
+not looser: `bash`, `mouse`, `key`, the background-job tools (`exec_start` and friends, see
+[Background jobs](#background-jobs)) and every browser tool are in the `owner` profile, so anyone
+who can attach this node under `owner` gets a shell as the user running the daemon. `observe`
+(the default for an attach that names no profile) serves only `sys_info` and `screenshot`. Those
+are the only two profiles (#59); the retired `desktop` runs as `observe`.
 
 ## What you end up with
 
@@ -262,7 +262,7 @@ sequenceDiagram
     R-->>N: 101 (state: attached)
     A->>R: tools/list via $OPENAB_TOOLS_MCP_URL
     R->>N: tools/list (over the WS)
-    N-->>R: sys_info screenshot bash mouse key + 16 browser_*
+    N-->>R: owner: 9 local tools + 32 browser_* · observe: sys_info screenshot
     A->>R: tools/call screenshot
     R->>N: tools/call screenshot
     N-->>R: image/jpeg
@@ -271,17 +271,22 @@ sequenceDiagram
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $U/attach \
-  -d '{"runtime":"ws://<pod-tailnet-ip>:8090","session":"<name>","profile":"desktop",
+  -d '{"runtime":"ws://<pod-tailnet-ip>:8090","session":"<name>","profile":"owner",
        "ttl_secs":3600,"admin_credential":"<openab-pty admin credential>"}'
-# → 202 {"id":"grant-…","state":"idle",…}; GET $U/attach lists, DELETE $U/attach/<id> revokes
+# → 202 {"id":"grant-…","profile":"owner","requested_profile":"owner","state":"idle",…}
+#   GET $U/attach lists, DELETE $U/attach/<id> revokes
 ```
 
-Always send `profile`. A request without it gets `observe` (`sys_info` and `screenshot` only);
-up to 0.8.2 it got `owner`. See [`tool-profiles.md`](tool-profiles.md).
+`"profile"` is `owner` (full control) or `observe` (look only). A request without it gets
+`observe`; up to 0.8.2 it got `owner`. Any other name is a 400
+`profile must be one of [owner, observe]`. A request for the retired `desktop` gets `observe`,
+and the grant shows `requested_profile: desktop` and a `warning`; a grant stored as `desktop`
+resumes as `observe` the same way. See [`tool-profiles.md`](tool-profiles.md#upgrading-from-08x-59).
 
 OpenAB Connect stores the runtime's admin credential in the macOS Keychain (service
 `dev.openab.connect`, account = pod name). Inside the session, `$OPENAB_TOOLS_MCP_URL` then
-lists `sys_info screenshot bash mouse key` + 16 `browser_*` + the runtime's `instance_status`.
+lists, under `owner`, `sys_info screenshot bash mouse key exec_start exec_poll exec_list
+exec_cancel` + 32 `browser_*` + the runtime's `instance_status`.
 
 ## Operate
 
@@ -306,8 +311,8 @@ Under `owner`, `exec_start` / `exec_poll` / `exec_list` / `exec_cancel` run long
 long call: same arguments and `structuredContent` as on macOS (README Tools table), with
 `bash -c` instead of `zsh -f -c`. On a reverse attach `bash` refuses `timeout_secs` over 100 s
 (the runtime fails a call after 120 s), and both that refusal and the `initialize` instructions
-point the agent here. `desktop` keeps `bash` but not the job tools, as on macOS, and is told to use
-`nohup … &` instead.
+point the agent here. Under `observe` neither `bash` nor the job tools exist, and a long `bash`
+call is an *unknown tool*, not a refusal that names it.
 
 - **Logs**: `$XDG_STATE_HOME/oab-instance-mcp/jobs/<job_id>.out` / `.err` (default
   `~/.local/state/…`; directory mode 700, files 600). The job writes to them directly, so they

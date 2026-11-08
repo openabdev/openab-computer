@@ -18,7 +18,7 @@ Every row must be green on both backends before Phase 3 starts:
 - `conformance/mcp_wire_vectors.json` has an empty `known_drift` list;
 - the reverse-attach negatives pass in both suites;
 - the per-tool table in section 5 has no open row;
-- the profile rows in section 6 are signed off after issue #59 lands.
+- the profile rows in section 6 pass (filled in by #59).
 
 ## 2. Wire layer (JSON-RPC)
 
@@ -103,27 +103,47 @@ real socket so the Rust header parsing is covered too.
 Cells come from the source files on each side. The Swift names are from
 `Sources/InstanceMCPCore/Tools/` and `UpstreamMCP.swift`. The Rust names are
 from `poc/reverse-attach-linux/src/mcp.rs` (`LOCAL_TOOL_NAMES`, and the
-`Upstream` re-serving code with `DESKTOP_BROWSER_TOOLS` and
-`upstream_tool_allowed`) and `src/tools/`. The classification column is owned by #59 (see section 6), so it is
-not filled here.
+`Upstream` re-serving code and `upstream_tool_allowed`) and `src/tools/`. The
+classification column is `ToolProfile.localToolClass` (Swift) and `LOCAL_TOOL_CLASS`
+(Rust), both pinned in `conformance/profile_vectors.json` (`tool_class`). Every
+local tool is served under `owner` only, except `sys_info` and `screenshot`, which
+`observe` also serves (#59).
 
 | Tool | Swift present | Rust present | Classification | Conformance test |
 |------|---------------|--------------|----------------|------------------|
-| `sys_info` | `SysInfoTool` | yes (`tools/sysinfo.rs`) | see #59 | none beyond tools/list shape |
-| `screenshot` | `ScreenshotTool` | yes (`tools/screen.rs`; same `format`/`quality`/`scale`/`region`/`display` arguments and defaults for format and quality, JPEG encoded in-process, #32 item 5) | see #59 | Rust unit tests only (argument parsing, region clip, PPM→JPEG); no shared vectors. Linux default `scale` is 0.5 (Swift 1.0) |
-| shell (`exec` in Swift, `bash` in Rust) | `ExecTool` | yes (`tools/bash.rs`) | see #59 | none. Name differs between backends |
-| `mouse` | `MouseTool` | yes (`tools/input.rs`) | see #59 | none |
-| `key` | `KeyTool` | yes (`tools/input.rs`) | see #59 | none |
-| `osascript` | `OsascriptTool` | no (macOS only) | see #59 | none |
-| `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` | `AsyncExecTools`, `JobRegistry` | yes (`src/jobs/`, #32 item 4): same names, arguments and `structuredContent`; `bash -c` instead of `zsh -f -c`; logs under `$XDG_STATE_HOME/oab-instance-mcp/jobs/`; `shell`-class, `owner` only (Swift classes `exec_start` as `shell`, `exec_poll`/`exec_list` as `observe` and `exec_cancel` as `act`; both expose the four to `owner` only, so the gating is the same) | see #59 | Rust unit tests `jobs::tests` and `smoke.sh` (start, offset polls, survives an attach drop, cancel → `killed`); no shared vectors. Differences: Rust keeps the 10 most recent finished jobs (Swift: finished metadata for ~10 min), pages `exec_poll` at 1 MiB per stream, and refuses a `signal` other than `KILL`/`TERM`. A job stays `running` until its shell has exited and its process group is empty (Swift: until its output pipes close), so a child the shell left behind can still be cancelled or timed out |
-| `browser_*` (upstream Playwright) | `UpstreamMCP` | yes (`mcp.rs` `Upstream`, `MCP_UPSTREAM`); desktop allowlist `DESKTOP_BROWSER_TOOLS` matches Swift `ToolProfile.desktopBrowserTools` | see #59 | none |
+| `sys_info` | `SysInfoTool` | yes (`tools/sysinfo.rs`) | `observe` on both; served by `observe` and `owner` | none beyond tools/list shape |
+| `screenshot` | `ScreenshotTool` | yes (`tools/screen.rs`; same `format`/`quality`/`scale`/`region`/`display` arguments and defaults for format and quality, JPEG encoded in-process, #32 item 5) | `observe` on both; served by `observe` and `owner` | Rust unit tests only (argument parsing, region clip, PPM→JPEG); no shared vectors. Linux default `scale` is 0.5 (Swift 1.0) |
+| shell (`exec` in Swift, `bash` in Rust) | `ExecTool` | yes (`tools/bash.rs`) | `shell` on both; `owner` only | none. Name differs between backends |
+| `mouse` | `MouseTool` | yes (`tools/input.rs`) | `shell` on both; `owner` only | none |
+| `key` | `KeyTool` | yes (`tools/input.rs`) | `shell` on both; `owner` only | none |
+| `osascript` | `OsascriptTool` | no (macOS only) | `shell`; `owner` only | none |
+| `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` | `AsyncExecTools`, `JobRegistry` | yes (`src/jobs/`, #32 item 4): same names, arguments and `structuredContent`; `bash -c` instead of `zsh -f -c`; logs under `$XDG_STATE_HOME/oab-instance-mcp/jobs/`; `shell`-class, `owner` only (Swift classes `exec_start` as `shell`, `exec_poll`/`exec_list` as `observe` and `exec_cancel` as `act`; both expose the four to `owner` only, so the gating is the same) | Swift: `exec_start` `shell`, `exec_poll`/`exec_list` `observe`, `exec_cancel` `act`; Rust: all `shell`. `owner` only on both | Rust unit tests `jobs::tests` and `smoke.sh` (start, offset polls, survives an attach drop, cancel → `killed`); no shared vectors. Differences: Rust keeps the 10 most recent finished jobs (Swift: finished metadata for ~10 min), pages `exec_poll` at 1 MiB per stream, and refuses a `signal` other than `KILL`/`TERM`. A job stays `running` until its shell has exited and its process group is empty (Swift: until its output pipes close), so a child the shell left behind can still be cancelled or timed out |
+| `browser_*` (upstream Playwright) | `UpstreamMCP` | yes (`mcp.rs` `Upstream`, `MCP_UPSTREAM`) | not classified locally; every upstream tool is `owner` only on both, `observe` gets none (#59) | `profile_vectors.json` membership on both; the full 32-tool fixture through a fake upstream: `BrowserProfileTests` (Swift), `profile_conformance::owner_reaches_every_upstream_tool_and_observe_none` (Rust) |
 
 ## 6. Profile rows
 
-Owned by issue #59 (profile collapse). Placeholder only. This PR does not
-change profile semantics or profile tests. The rows to fill in after #59 are:
-per-connection enforcement at dispatch (owner, desktop, observe), sandbox denies
-`exec*`, and the shell-equivalence rule on Linux.
+Filled in by #59 (two profiles, `observe` and `owner`). The shared file is
+`conformance/profile_vectors.json`; the Swift runner is
+`ConformanceVectorTests.testProfileVectors` plus `BrowserProfileTests`, the Rust
+runner is `profile_conformance`.
+
+| Row | Swift | Rust | Status |
+|---|---|---|---|
+| exactly two profiles, `owner` and `observe`; one source constant | `ToolProfile.allCases`, `ProfileBoundaryTests.testOnlyOwnerAndObserveExist` | `mcp::PROFILES`, `profile_tests` | pass (vectors `profiles`) |
+| per-connection enforcement at dispatch: `observe` serves exactly `sys_info` and `screenshot`, `owner` every local tool | `MCPServer.scoped(to:)`, `ProfileBoundaryTests` | `local_tool_allowed` in `tool_list` / `handle_tool_call`, `profile_tests` | pass (vectors `served`, `local_tools`) |
+| every local tool classified; an unclassified tool fails | `testEveryServedToolIsClassified` | `every_served_tool_is_classified_and_the_lists_agree` | pass (vectors `tool_class`) |
+| browser tools: `owner` gets the full upstream set, including tools not in the fixture; `observe` none | `BrowserProfileTests` | `profile_conformance::owner_reaches_every_upstream_tool_and_observe_none` | pass |
+| a hidden tool on `tools/call` is *unknown tool* (local and upstream) | `ToolProfileTests`, `BrowserProfileTests` | `job_tools_are_shell_class_and_owner_only`, `profile_conformance` | pass (#78 + #59) |
+| the long-call guard on a reverse attach does not name a hidden tool | `testLongExecUnderObserveIsAnUnknownTool` | `long_work_advice_follows_the_job_tools` | pass |
+| bare attach (no or non-string `profile`) gets `observe` | `AttachEndpointTests.testCreateListRevoke` | `attach_profile_tests` | pass (vectors `attach_requests`) |
+| requested `desktop` → `observe` with `requested_profile` and the shared `warning`, never `owner` | `testDesktopRequestRunsAsObserveWithAWarning` | `attach_profile_tests`, `smoke.sh` | pass (vectors `attach_requests`) |
+| unknown names (`sandbox`, `Desktop`, `OWNER`, `browser`, empty) → 400 `profile must be one of [owner, observe]` | `testUnknownProfilesGetTheSharedRejection` | `attach_profile_tests`, `smoke.sh` | pass (vectors `attach_requests`) |
+| stored `desktop` grant kept, resumes as `observe`, reported in `GET /attach` and the grants file; a stored row never widens | `GrantPersistenceTests.testAGrantStoredAsDesktopResumesAsObserve` | `store::tests::a_desktop_row_is_kept_as_observe_and_round_trips`, `smoke.sh` | pass (vectors `persisted_grants`) |
+| stored `sandbox` or unknown grant dropped | `testAGrantStoredUnderTheOldSandboxNameIsDropped` | `grants_stored_under_the_old_sandbox_name_are_dropped` | pass (vectors `persisted_grants`) |
+| shell-equivalence: `owner` yes, `observe` no; a profile claiming no shell allows no `shell` tool | `testNoProfileClaimsToBeNarrowerThanItIs` | `no_profile_claims_to_be_narrower_than_it_is` | pass (vectors `served.*.shell_equivalent`) |
+
+Known gap: `OsascriptToolTests` is skipped in CI (#1), so the `osascript` path is
+not tested end to end. Its profile gating is.
 
 ## 7. Open decisions
 
