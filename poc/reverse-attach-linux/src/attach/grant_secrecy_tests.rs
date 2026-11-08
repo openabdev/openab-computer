@@ -15,6 +15,8 @@ fn grant_json_never_carries_the_attach_secret() {
             runtime: "ws://10.0.0.2:8090".to_string(),
             session: "s1".to_string(),
             profile: "owner".to_string(),
+            requested_profile: "owner".to_string(),
+            warning: None,
             principal: "a@b".to_string(),
             state: "attached".to_string(),
             ended,

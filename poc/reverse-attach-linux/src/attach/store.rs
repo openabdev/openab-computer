@@ -4,7 +4,8 @@
 //! `systemctl --user restart`) re-dials every grant whose deadline has not passed,
 //! with its original id — instead of the human having to lend again.
 //!
-//! What is stored: id, runtime, session, profile, principal, absolute expiry and
+//! What is stored: id, runtime, session, profile, requested profile (#59),
+//! principal, absolute expiry and
 //! the attach **secret** the node dials with. The secret is TTL-bounded and sits
 //! at the same trust level as the bearer token file beside it (both 600 in the
 //! daemon user's home). Ended, cancelled and expired grants are never written.
@@ -31,7 +32,11 @@ pub(crate) struct Persisted {
     pub(crate) id: String,
     pub(crate) runtime: String,
     pub(crate) session: String,
+    /// The effective profile, already resolved (never `desktop`).
     pub(crate) profile: String,
+    /// The name the granter asked for (`desktop` for a mapped 0.8.x grant, #59).
+    /// Display only; `resolve_stored_profile` never lets it widen `profile`.
+    pub(crate) requested_profile: String,
     pub(crate) principal: String,
     pub(crate) expires_at_epoch_secs: u64,
     pub(crate) secret: String,
@@ -102,6 +107,7 @@ fn persistable(g: &GrantInfo) -> Option<Persisted> {
         runtime: g.runtime.clone(),
         session: g.session.clone(),
         profile: g.profile.clone(),
+        requested_profile: g.requested_profile.clone(),
         principal: g.principal.clone(),
         expires_at_epoch_secs: g.expires_at_epoch_secs,
         secret: g.secret.clone(),
@@ -131,6 +137,7 @@ impl GrantStore {
                 "runtime": g.runtime,
                 "session": g.session,
                 "profile": g.profile,
+                "requested_profile": g.requested_profile,
                 "principal": g.principal,
                 "expires_at_epoch_secs": g.expires_at_epoch_secs,
                 "secret": g.secret,
@@ -179,7 +186,10 @@ fn tmp_path(path: &Path) -> PathBuf {
 }
 
 /// Parse a grants file, keeping only well-formed grants still inside their
-/// deadline at `now`.
+/// deadline at `now`. A row's profile goes through `resolve_stored_profile`: a
+/// 0.8.x `desktop` row is kept as `observe` with `requested_profile: desktop`;
+/// `sandbox` and other unknown names drop the row (#46, #59). The file `version`
+/// stays 1: `requested_profile` is additive and 0.8.x ignores it.
 pub(crate) fn parse(text: &str, now: u64) -> Result<Vec<Persisted>, String> {
     let doc: Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
     if doc["version"].as_u64() != Some(VERSION) {
@@ -192,11 +202,16 @@ pub(crate) fn parse(text: &str, now: u64) -> Result<Vec<Persisted>, String> {
         .unwrap_or_default()
         .iter()
         .filter_map(|g| {
+            let resolved = crate::mcp::resolve_stored_profile(
+                &s(g, "profile")?,
+                g["requested_profile"].as_str(),
+            )?;
             Some(Persisted {
                 id: s(g, "id")?,
                 runtime: s(g, "runtime")?,
                 session: s(g, "session")?,
-                profile: crate::mcp::normalize_profile(&s(g, "profile")?)?.to_string(),
+                profile: resolved.profile.to_string(),
+                requested_profile: resolved.requested,
                 principal: s(g, "principal")?,
                 expires_at_epoch_secs: g["expires_at_epoch_secs"].as_u64()?,
                 secret: s(g, "secret")?,
@@ -215,7 +230,8 @@ mod tests {
             id: id.into(),
             runtime: "ws://127.0.0.1:1".into(),
             session: "s".into(),
-            profile: "desktop".into(),
+            profile: "owner".into(),
+            requested_profile: "owner".into(),
             principal: "you@example.com".into(),
             expires_at_epoch_secs: expires,
             secret: "sec".into(),
@@ -299,6 +315,40 @@ mod tests {
     fn a_missing_file_is_simply_empty() {
         let store = GrantStore::new(scratch("missing"));
         assert!(store.read().unwrap().is_empty());
+    }
+
+    /// #59: a row written by 0.8.x with `desktop` is kept, resolves to `observe`,
+    /// and is written back with the requested name.
+    #[test]
+    fn a_desktop_row_is_kept_as_observe_and_round_trips() {
+        let now = 1_000;
+        let text = format!(
+            r#"{{"version":1,"grants":[
+            {{"id":"old","runtime":"ws://x","session":"s","profile":"desktop","principal":"p","expires_at_epoch_secs": {},"secret":"k"}},
+            {{"id":"edited","runtime":"ws://x","session":"t","profile":"owner","requested_profile":"desktop","principal":"p","expires_at_epoch_secs": {},"secret":"k"}}
+            ]}}"#,
+            now + 5,
+            now + 5
+        );
+        let grants = parse(&text, now).unwrap();
+        assert_eq!(grants.len(), 2);
+        for g in &grants {
+            assert_eq!(g.profile, "observe", "{} never widens", g.id);
+            assert_eq!(g.requested_profile, "desktop");
+        }
+
+        let path = scratch("desktop");
+        let store = GrantStore::new(path.clone());
+        let later = now_epoch_secs() + 60;
+        let mut g = grants[0].clone();
+        g.expires_at_epoch_secs = later;
+        store.write(&[g.clone()]).unwrap();
+        let on_disk: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk["version"], 1);
+        assert_eq!(on_disk["grants"][0]["profile"], "observe");
+        assert_eq!(on_disk["grants"][0]["requested_profile"], "desktop");
+        assert_eq!(store.read().unwrap(), vec![g]);
+        let _ = fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
     }
 
     #[test]

@@ -154,35 +154,12 @@ impl Upstream {
     }
 }
 
-/// Same list as Swift `ToolProfile.desktopBrowserTools`: navigate / read / interact.
-/// Everything else from the upstream (evaluate / run_code_unsafe = arbitrary JS, upload,
-/// pdf, network, raw mouse-by-coordinate, dialogs, close, and any new tool) is denied
-/// under `desktop`.
-pub(crate) const DESKTOP_BROWSER_TOOLS: &[&str] = &[
-    "browser_click",
-    "browser_console_messages",
-    "browser_fill_form",
-    "browser_find",
-    "browser_hover",
-    "browser_navigate",
-    "browser_navigate_back",
-    "browser_press_key",
-    "browser_resize",
-    "browser_select_option",
-    "browser_snapshot",
-    "browser_tabs",
-    "browser_take_screenshot",
-    "browser_type",
-    "browser_wait_for",
-];
-
-pub(crate) fn upstream_tool_allowed(name: &str, profile: &str) -> bool {
-    match normalize_profile(profile) {
-        Some("owner") => true,
-        Some("desktop") => DESKTOP_BROWSER_TOOLS.contains(&name),
-        // observe: look only; no upstream (browser) tool is an observation of this node.
-        _ => false,
-    }
+/// Whether an upstream tool (every `browser_*` tool and anything else an upstream
+/// serves) is visible/callable under `profile`. The browser uses this node's persistent
+/// profile and network, so it is owner-level (#59): `owner` gets every upstream tool,
+/// `observe` none.
+pub(crate) fn upstream_tool_allowed(_name: &str, profile: &str) -> bool {
+    normalize_profile(profile) == Some("owner")
 }
 
 /// Local tools `observe` may call: look, never act (instance-mcp#45).
@@ -217,10 +194,6 @@ pub(crate) const LOCAL_TOOL_CLASS: &[(&str, ToolClass)] = &[
     ("exec_cancel", ToolClass::Shell),
 ];
 
-/// Shell tools only `owner` gets, like the Swift `exec*` (#32 item 4). `desktop`
-/// keeps `bash` (see `tool_list`), so this narrows the list, not the privilege.
-pub(crate) const OWNER_ONLY_TOOLS: &[&str] = JOB_TOOL_NAMES;
-
 pub(crate) fn local_tool_class(name: &str) -> Option<ToolClass> {
     LOCAL_TOOL_CLASS
         .iter()
@@ -231,14 +204,13 @@ pub(crate) fn local_tool_class(name: &str) -> Option<ToolClass> {
 /// Whether a profile honestly grants the node user's shell (instance-mcp#45).
 #[cfg(test)]
 pub(crate) fn profile_is_shell_equivalent(profile: &str) -> bool {
-    matches!(normalize_profile(profile), Some("owner") | Some("desktop"))
+    normalize_profile(profile) == Some("owner")
 }
 
 /// Whether a local tool is visible/callable under `profile`.
 pub(crate) fn local_tool_allowed(name: &str, profile: &str) -> bool {
     match normalize_profile(profile) {
         Some("owner") => true,
-        Some("desktop") => !OWNER_ONLY_TOOLS.contains(&name),
         // Both: on the allowlist *and* classified as observation. A tool added to the
         // allowlist by mistake is still refused unless it was also classified as
         // changing nothing.
@@ -249,15 +221,84 @@ pub(crate) fn local_tool_allowed(name: &str, profile: &str) -> bool {
     }
 }
 
-/// `owner` | `desktop` | `observe`. The old name `sandbox` is refused like any unknown
-/// profile (instance-mcp#45): it promised a boundary that does not exist.
+/// The two profiles (#59), from widest to narrowest. The single source for tests
+/// and the conformance vectors.
+pub(crate) const PROFILES: &[&str] = &["owner", "observe"];
+
+/// The profile of an attach request that names none. Fails closed.
+pub(crate) const DEFAULT_PROFILE: &str = "observe";
+
+/// The profile name removed in #59. Input only: it resolves to `observe`.
+pub(crate) const RETIRED_DESKTOP: &str = "desktop";
+
+/// The 400 body for an unknown profile. Byte-identical to Swift
+/// `ToolProfile.rejectionMessage`, pinned in `conformance/profile_vectors.json`.
+pub(crate) const PROFILE_REJECTION: &str = "profile must be one of [owner, observe]";
+
+/// Shown to the granter when `desktop` was asked for (or stored) and `observe` is
+/// served. Byte-identical to Swift `ToolProfile.retiredWarning`.
+pub(crate) const DESKTOP_RETIRED_WARNING: &str = "The `desktop` profile was removed \
+    (openab-computer#59). This grant runs as `observe`: sys_info and screenshot only. Grant \
+    `owner` explicitly for shell and browser access.";
+
+/// `owner` | `observe`. Exact, case-sensitive. The retired `desktop` and the old
+/// `sandbox` are not profiles: this returns `None` for both, so no internal check can
+/// widen on them. Input mapping of `desktop` happens only in the `resolve_*` functions.
 pub(crate) fn normalize_profile(profile: &str) -> Option<&'static str> {
-    match profile {
-        "owner" => Some("owner"),
-        "desktop" => Some("desktop"),
-        "observe" => Some("observe"),
-        _ => None,
-    }
+    PROFILES.iter().copied().find(|p| *p == profile)
+}
+
+/// What a profile name resolved to: the profile served, the name asked for, and the
+/// warning the granter must see when they differ.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProfileResolution {
+    pub(crate) profile: &'static str,
+    pub(crate) requested: String,
+    pub(crate) warning: Option<&'static str>,
+}
+
+/// The warning for a requested name, if it was mapped.
+pub(crate) fn profile_warning(requested: &str) -> Option<&'static str> {
+    (requested == RETIRED_DESKTOP).then_some(DESKTOP_RETIRED_WARNING)
+}
+
+/// Resolve a name from an attach request (Swift `ToolProfile.resolve(requested:)`):
+/// `desktop` → `observe` with the warning; any other unknown name → `None` (refuse).
+pub(crate) fn resolve_requested_profile(name: &str) -> Option<ProfileResolution> {
+    let profile = match normalize_profile(name) {
+        Some(p) => p,
+        None if name == RETIRED_DESKTOP => "observe",
+        None => return None,
+    };
+    Some(ProfileResolution {
+        profile,
+        requested: name.to_string(),
+        warning: profile_warning(name),
+    })
+}
+
+/// Resolve a persisted grant row (Swift `ToolProfile.resolve(stored:requested:)`).
+/// `requested` is display-only and never widens: the effective profile is the
+/// narrower of the two. Either name unknown → `None` (drop the row).
+pub(crate) fn resolve_stored_profile(
+    stored: &str,
+    requested: Option<&str>,
+) -> Option<ProfileResolution> {
+    let s = resolve_requested_profile(stored)?;
+    let Some(requested) = requested else {
+        return Some(s);
+    };
+    let r = resolve_requested_profile(requested)?;
+    let profile = if s.profile == "observe" || r.profile == "observe" {
+        "observe"
+    } else {
+        "owner"
+    };
+    Some(ProfileResolution {
+        profile,
+        requested: r.requested,
+        warning: s.warning.or(r.warning),
+    })
 }
 
 pub(crate) static UPSTREAMS: Mutex<Vec<Arc<Upstream>>> = Mutex::new(Vec::new());
@@ -267,12 +308,13 @@ pub(crate) fn upstreams() -> Vec<Arc<Upstream>> {
 }
 
 /// Upstream tools visible to `profile`, excluding names that collide with local tools.
-pub(crate) fn upstream_tools_for(
+pub(crate) fn upstream_tools_for_with(
     profile: &str,
     local_names: &[&str],
+    ups: &[Arc<Upstream>],
 ) -> Vec<(Arc<Upstream>, Value)> {
     let mut out = Vec::new();
-    for up in upstreams() {
+    for up in ups {
         for t in up.tools() {
             let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
                 continue;
@@ -286,15 +328,21 @@ pub(crate) fn upstream_tools_for(
     out
 }
 
-pub(crate) fn upstream_owning(name: &str, profile: &str) -> Option<Arc<Upstream>> {
+pub(crate) fn upstream_owning_with(
+    name: &str,
+    profile: &str,
+    ups: &[Arc<Upstream>],
+) -> Option<Arc<Upstream>> {
     if !upstream_tool_allowed(name, profile) {
         return None;
     }
-    upstreams().into_iter().find(|up| {
-        up.tools()
-            .iter()
-            .any(|t| t.get("name").and_then(|n| n.as_str()) == Some(name))
-    })
+    ups.iter()
+        .find(|up| {
+            up.tools()
+                .iter()
+                .any(|t| t.get("name").and_then(|n| n.as_str()) == Some(name))
+        })
+        .cloned()
 }
 
 // ---------------------------------------------------------------------------
@@ -461,11 +509,6 @@ const LONG_WORK_JOBS_NOTICE: &str = "For long work use `exec_start`, then check 
     `exec_poll` (pass the returned offsets to get only new output); a job keeps running if this \
     attach drops. Never `sleep` inside `bash`.";
 
-/// For profiles with `bash` but no job tools (`desktop`).
-const LONG_WORK_NOTICE: &str = "For long work, start it in the background with `bash` (for \
-    example `nohup cmd > /tmp/job.log 2>&1 &`) and check on it with short `bash` calls; never \
-    `sleep` inside `bash`.";
-
 /// Calls on one attach run concurrently (#70), so parallel input calls can
 /// interleave on the screen.
 const UI_ORDER_NOTICE: &str = "Tool calls run concurrently: issue `mouse` and `key` steps one at \
@@ -474,8 +517,6 @@ const UI_ORDER_NOTICE: &str = "Tool calls run concurrently: issue `mouse` and `k
 pub(crate) fn instructions(profile: &str) -> String {
     if local_tool_allowed("exec_start", profile) {
         format!("{UI_ORDER_NOTICE}\n\n{LONG_CALL_NOTICE} {LONG_WORK_JOBS_NOTICE}")
-    } else if local_tool_allowed("bash", profile) {
-        format!("{UI_ORDER_NOTICE}\n\n{LONG_CALL_NOTICE} {LONG_WORK_NOTICE}")
     } else {
         LONG_CALL_NOTICE.to_string()
     }
@@ -483,9 +524,12 @@ pub(crate) fn instructions(profile: &str) -> String {
 
 /// A `bash` call over `MAX_ATTACHED_BASH_TIMEOUT_SECS` on an attach, refused as
 /// a tool error the model sees rather than clamped, so a long command is not
-/// killed early by surprise.
+/// killed early by surprise. Only when the profile serves `bash`: a hidden `bash`
+/// must answer *unknown tool*, not a message that names it (#59).
 fn refuse_long_bash(params: &Value, profile: &str) -> Option<Value> {
-    if params.get("name").and_then(|n| n.as_str()) != Some("bash") {
+    if params.get("name").and_then(|n| n.as_str()) != Some("bash")
+        || !local_tool_allowed("bash", profile)
+    {
         return None;
     }
     let asked = params
@@ -495,13 +539,8 @@ fn refuse_long_bash(params: &Value, profile: &str) -> Option<Value> {
     if asked <= MAX_ATTACHED_BASH_TIMEOUT_SECS as f64 {
         return None;
     }
-    let how = if local_tool_allowed("exec_start", profile) {
-        "For long work start it in the background with exec_start, then check it with exec_poll; \
-         never sleep inside bash."
-    } else {
-        "For long work start the command in the background (nohup cmd > /tmp/job.log 2>&1 &) and \
-         check on it with short bash calls; never sleep inside bash."
-    };
+    let how = "For long work start it in the background with exec_start, then check it with \
+               exec_poll; never sleep inside bash.";
     let message = format!(
         "bash timeout_secs {asked} is over this attach's limit of {MAX_ATTACHED_BASH_TIMEOUT_SECS} s: \
          the runtime fails any call still running after 120 s. {how}"
@@ -525,6 +564,11 @@ pub(crate) const LOCAL_TOOL_NAMES: &[&str] = &[
 ];
 
 pub(crate) fn tool_list(profile: &str) -> Value {
+    tool_list_with(profile, &upstreams())
+}
+
+/// `tool_list` over an explicit upstream set (tests pass a fake).
+pub(crate) fn tool_list_with(profile: &str, ups: &[Arc<Upstream>]) -> Value {
     let sys_info = json!({
         "name": "sys_info",
         "description": "Report OS, CPU, memory, architecture and hostname of this node.",
@@ -612,17 +656,14 @@ pub(crate) fn tool_list(profile: &str) -> Value {
         }
     });
 
-    // owner and desktop get every local tool but the job tools, `bash` included: `desktop`
-    // is not a boundary on any platform (instance-mcp#45) — mouse and keyboard reach a
-    // terminal, so hiding `bash` would remove a convenience, not a privilege. The job tools
-    // are owner-only like the Swift `exec*` (`OWNER_ONLY_TOOLS`). `observe` is the real
-    // boundary: sys_info + screenshot only.
+    // `owner` gets every local tool and every upstream tool. `observe` is the boundary:
+    // sys_info + screenshot only, no upstream tool (#59).
     let mut tools: Vec<Value> = vec![sys_info, screenshot, bash, mouse, key]
         .into_iter()
         .chain(crate::jobs::tools::tool_specs())
         .filter(|t| local_tool_allowed(t["name"].as_str().unwrap_or_default(), profile))
         .collect();
-    for (_, t) in upstream_tools_for(profile, LOCAL_TOOL_NAMES) {
+    for (_, t) in upstream_tools_for_with(profile, LOCAL_TOOL_NAMES, ups) {
         tools.push(t);
     }
     Value::Array(tools)
@@ -632,6 +673,16 @@ pub(crate) fn handle_tool_call(
     params: &Value,
     profile: &str,
     cancel: Option<&AtomicBool>,
+) -> Result<Value, (i64, String)> {
+    handle_tool_call_with(params, profile, cancel, &upstreams())
+}
+
+/// `handle_tool_call` over an explicit upstream set (tests pass a fake).
+pub(crate) fn handle_tool_call_with(
+    params: &Value,
+    profile: &str,
+    cancel: Option<&AtomicBool>,
+    ups: &[Arc<Upstream>],
 ) -> Result<Value, (i64, String)> {
     let name = params.get("name").and_then(|n| n.as_str()).ok_or_else(|| {
         (
@@ -658,7 +709,7 @@ pub(crate) fn handle_tool_call(
         "key" => tool_key(&arguments),
         // Not tied to `cancel`: a job outlives the attach that started it.
         n if JOB_TOOL_NAMES.contains(&n) => crate::jobs::tools::call(n, &arguments),
-        other => match upstream_owning(other, profile) {
+        other => match upstream_owning_with(other, profile, ups) {
             Some(up) => up
                 .rpc(
                     "tools/call",
@@ -681,25 +732,36 @@ mod profile_tests {
 
     #[test]
     fn unknown_profiles_including_the_old_sandbox_name_do_not_widen() {
+        assert_eq!(PROFILES, ["owner", "observe"]);
         assert_eq!(normalize_profile("owner"), Some("owner"));
-        assert_eq!(normalize_profile("desktop"), Some("desktop"));
-        assert_eq!(normalize_profile("sandbox"), None);
-        assert_eq!(normalize_profile("Sandbox"), None);
         assert_eq!(normalize_profile("observe"), Some("observe"));
-        assert_eq!(normalize_profile("browser"), None);
+        for name in [
+            "desktop", "sandbox", "Sandbox", "Desktop", "browser", "OWNER", "",
+        ] {
+            assert_eq!(normalize_profile(name), None, "{name}");
+            assert!(!local_tool_allowed("sys_info", name), "{name}");
+            assert!(!upstream_tool_allowed("browser_navigate", name), "{name}");
+        }
+        let d = resolve_requested_profile("desktop").unwrap();
+        assert_eq!(d.profile, "observe", "desktop never widens to owner");
+        assert_eq!(d.requested, "desktop");
+        assert_eq!(d.warning, Some(DESKTOP_RETIRED_WARNING));
+        for name in ["sandbox", "Desktop", "OWNER", "browser", " owner", ""] {
+            assert_eq!(resolve_requested_profile(name), None, "{name}");
+        }
     }
 
     #[test]
-    fn desktop_never_gets_arbitrary_javascript() {
-        for tool in ["browser_evaluate", "browser_run_code_unsafe"] {
-            assert!(!upstream_tool_allowed(tool, "desktop"), "{tool}");
-            assert!(
-                !upstream_tool_allowed(tool, "sandbox"),
-                "{tool}: unknown profile gets nothing"
-            );
+    fn owner_gets_every_upstream_tool_and_observe_none() {
+        for tool in [
+            "browser_evaluate",
+            "browser_run_code_unsafe",
+            "browser_navigate",
+            "browser_something_new",
+        ] {
             assert!(upstream_tool_allowed(tool, "owner"), "{tool}");
+            assert!(!upstream_tool_allowed(tool, "observe"), "{tool}");
         }
-        assert!(upstream_tool_allowed("browser_navigate", "desktop"));
     }
 
     /// Local tool names as actually served under `profile` (no upstream in tests).
@@ -741,7 +803,7 @@ mod profile_tests {
 
     #[test]
     fn no_profile_claims_to_be_narrower_than_it_is() {
-        for profile in ["owner", "desktop", "observe"] {
+        for profile in PROFILES.iter().copied() {
             let shell: Vec<String> = served(profile)
                 .into_iter()
                 .filter(|n| local_tool_class(n) == Some(ToolClass::Shell))
@@ -792,7 +854,6 @@ mod profile_tests {
         ] {
             assert!(!upstream_tool_allowed(tool, "observe"), "{tool}");
         }
-        assert!(local_tool_allowed("bash", "desktop"));
         assert!(
             !local_tool_allowed("bash", "nonsense"),
             "unknown profiles get nothing"
@@ -820,14 +881,13 @@ mod profile_tests {
                     "{tool} callable under {profile}"
                 );
             }
-            assert!(!DESKTOP_BROWSER_TOOLS.contains(tool));
             assert!(!OBSERVE_TOOLS.contains(tool));
         }
         assert!(served("owner").iter().any(|n| n == "exec_start"));
     }
 
-    /// With the job tools, a refused long `bash` and `initialize` point at
-    /// `exec_start` + `exec_poll`; `desktop` (bash, no jobs) keeps the `nohup` advice.
+    /// A refused long `bash` and `initialize` point at `exec_start` + `exec_poll`.
+    /// Under `observe` a long `bash` is not refused by name: it is an unknown tool (#59).
     #[test]
     fn long_work_advice_follows_the_job_tools() {
         let call = json!({"name": "bash", "arguments": {"command": "true", "timeout_secs": 101}});
@@ -839,11 +899,18 @@ mod profile_tests {
         };
         assert!(text("owner").contains("exec_start") && text("owner").contains("exec_poll"));
         assert!(!text("owner").contains("nohup"));
-        assert!(text("desktop").contains("nohup") && !text("desktop").contains("exec_start"));
         assert!(instructions("owner").contains("exec_start"));
         assert!(instructions("owner").contains("exec_poll"));
-        assert!(!instructions("desktop").contains("exec_start"));
-        assert!(instructions("desktop").contains("nohup"));
         assert!(!instructions("observe").contains("exec_"));
+        assert!(!instructions("observe").contains("nohup"));
+
+        assert_eq!(refuse_long_bash(&call, "observe"), None);
+        let frame =
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": call}).to_string();
+        let cancel = AtomicBool::new(false);
+        let r: Value =
+            serde_json::from_str(&answer_attached(&frame, "observe", &cancel).unwrap()).unwrap();
+        assert_eq!(r["error"]["code"], INVALID_PARAMS, "{r}");
+        assert_eq!(r["error"]["message"], "Invalid params: unknown tool: bash");
     }
 }
