@@ -37,19 +37,21 @@ enum UITarget {
     }
 
     /// The window roots to walk. Default: focused window, else main window, else the
-    /// first of `AXWindows`.
+    /// first of `AXWindows`. Every AX call runs under `deadline`; if the budget is spent
+    /// before a window is chosen, the app counts as busy.
     static func windows(of app: any UIElement, appName: String, selector: WindowSelector?,
-                        all: Bool) throws -> [any UIElement] {
+                        all: Bool, deadline: UIDeadline) throws -> [any UIElement] {
         let E = UISnapshotTool.Errors.self
-        func check<T>(_ r: Result<T, UIAXError>, fallback: T) throws -> T {
-            switch r {
+        func call<T>(_ e: any UIElement, _ read: () -> Result<T, UIAXError>, fallback: T) throws -> T {
+            guard deadline.arm(e) else { throw ToolError(E.appBusy(appName)) }
+            switch read() {
             case .success(let v): return v
             case .failure(.apiDisabled): throw ToolError(E.notTrusted)
             case .failure(.timeout): throw ToolError(E.appBusy(appName))
             case .failure: return fallback
             }
         }
-        let list = { try check(app.elements(AXAttr.windows), fallback: []) }
+        let list = { try call(app, { app.elements(AXAttr.windows) }, fallback: []) }
 
         if all {
             let ws = try list()
@@ -57,31 +59,30 @@ enum UITarget {
             return ws
         }
         guard let selector else {
-            if let w = try check(app.element(AXAttr.focusedWindow), fallback: nil) { return [w] }
-            if let w = try check(app.element(AXAttr.mainWindow), fallback: nil) { return [w] }
+            if let w = try call(app, { app.element(AXAttr.focusedWindow) }, fallback: nil) { return [w] }
+            if let w = try call(app, { app.element(AXAttr.mainWindow) }, fallback: nil) { return [w] }
             guard let w = try list().first else { throw ToolError(E.noWindows(appName)) }
             return [w]
         }
         let ws = try list()
         guard !ws.isEmpty else { throw ToolError(E.noWindows(appName)) }
-        let titles: [String] = ws.map { w in
-            if case .success(let a) = w.attributes([AXAttr.title]), case .string(let t)? = a[AXAttr.title] { return t }
-            return ""
+        // One title read per window, each under the same deadline.
+        func titles() throws -> [String] {
+            try ws.map { w in
+                let a = try call(w, { w.attributes([AXAttr.title]) }, fallback: [:])
+                if case .string(let t)? = a[AXAttr.title] { return t }
+                return ""
+            }
         }
         switch selector {
-        case .index(let i) where ws.indices.contains(i):
-            return [ws[i]]
+        case .index(let i):
+            if ws.indices.contains(i) { return [ws[i]] }
+            throw ToolError(E.windowNotFound(String(i), app: appName, titles: try titles()))
         case .title(let t):
-            if let i = titles.firstIndex(of: t) { return [ws[i]] }
-            if let i = titles.firstIndex(where: { $0.range(of: t, options: .caseInsensitive) != nil }) { return [ws[i]] }
-        default:
-            break
+            let all = try titles()
+            if let i = all.firstIndex(of: t) { return [ws[i]] }
+            if let i = all.firstIndex(where: { $0.range(of: t, options: .caseInsensitive) != nil }) { return [ws[i]] }
+            throw ToolError(E.windowNotFound(t, app: appName, titles: all))
         }
-        let label: String
-        switch selector {
-        case .index(let i): label = String(i)
-        case .title(let t): label = t
-        }
-        throw ToolError(E.windowNotFound(label, app: appName, titles: titles))
     }
 }

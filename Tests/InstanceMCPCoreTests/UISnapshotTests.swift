@@ -16,9 +16,15 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
     var valueError: UIAXError?
     var childError: UIAXError?
     var elementError: UIAXError?
+    var prefixError: UIAXError?
+    var supportsPrefix = true
     var requested: [String] = []
     var timeouts: [Float] = []
     var onAttributes: (() -> Void)?
+    /// With `clock`, every AX call takes `delay` seconds of fake time, and like the real
+    /// API gives up with `.timeout` once it exceeds the last messaging timeout.
+    var clock: FakeClock?
+    var delay: TimeInterval = 0
 
     init(_ attrs: [String: UIAttrValue] = [:], _ kids: [FakeUIElement] = []) {
         self.attrs = attrs; self.kids = kids
@@ -26,9 +32,19 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
 
     var identity: AnyHashable { AnyHashable(ObjectIdentifier(self)) }
 
+    /// Spend one call's fake time; true when the call ran out of messaging timeout.
+    private func spend() -> Bool {
+        guard let clock else { return false }
+        let limit = TimeInterval(timeouts.last ?? .infinity)
+        if delay > limit { clock.t += limit; return true }
+        clock.t += delay
+        return false
+    }
+
     func attributes(_ names: [String]) -> Result<[String: UIAttrValue], UIAXError> {
         requested += names
         onAttributes?()
+        if spend() { return .failure(.timeout) }
         if names == ["AXValue"], let valueError { return .failure(valueError) }
         if names != ["AXValue"], let attrError { return .failure(attrError) }
         var out: [String: UIAttrValue] = [:]
@@ -37,18 +53,30 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
     }
 
     func element(_ name: String) -> Result<(any UIElement)?, UIAXError> {
+        if spend() { return .failure(.timeout) }
         if let elementError { return .failure(elementError) }
         return .success(named[name])
     }
 
     func elements(_ name: String) -> Result<[any UIElement], UIAXError> {
+        if spend() { return .failure(.timeout) }
         if let elementError { return .failure(elementError) }
         return .success(lists[name] ?? [])
     }
 
     func children(max: Int) -> Result<(elements: [any UIElement], total: Int), UIAXError> {
+        requested.append("AXChildren")
+        if spend() { return .failure(.timeout) }
         if let childError { return .failure(childError) }
         return .success((Array(kids.prefix(Swift.max(max, 0))), kids.count))
+    }
+
+    func stringPrefix(utf16Length: Int) -> Result<String?, UIAXError> {
+        requested.append("AXStringForRange")
+        if spend() { return .failure(.timeout) }
+        if let prefixError { return .failure(prefixError) }
+        guard supportsPrefix, case .string(let s)? = attrs["AXValue"] else { return .success(nil) }
+        return .success(String(decoding: Array(s.utf16.prefix(utf16Length)), as: UTF16.self))
     }
 
     func setMessagingTimeout(_ seconds: Float) { timeouts.append(seconds) }
@@ -72,8 +100,9 @@ private let mainDisplay = UIDisplayMap(displays: [(id: 1, bounds: CGRect(x: 0, y
 private func walk(_ windows: [FakeUIElement], limits: UISnapshotLimits = .init(),
                   displays: UIDisplayMap = mainDisplay, clock: FakeClock = FakeClock(),
                   app: UIRunningApp = UIRunningApp(pid: 123, bundleID: "com.apple.TextEdit", name: "TextEdit")) throws -> UISnapshotResult {
-    try UITreeWalker(limits: limits, now: { clock.t }, newSnapshotID: { "snap-0000beef" })
-        .walk(app: app, windows: windows, displays: displays)
+    try UITreeWalker(limits: limits, newSnapshotID: { "snap-0000beef" })
+        .walk(app: app, windows: windows, displays: displays,
+              deadline: UIDeadline(timeoutMs: limits.timeoutMs, now: { clock.t }))
 }
 
 private func titles(_ nodes: [UINode]) -> [String] {
@@ -159,14 +188,36 @@ final class UISnapshotWalkerTests: XCTestCase {
         let s = r.snapshot
         XCTAssertTrue(s.timedOut)
         XCTAssertFalse(s.truncated)
-        XCTAssertEqual(s.nodeCount, 2, "w (0.08 s) and k0 (to 0.16 s), then the 0.1 s budget is gone")
+        XCTAssertEqual(s.nodeCount, 2, "w (to 0.08 s) and k0's base read (to 0.12 s), then the 0.1 s budget is gone")
         XCTAssertEqual(s.windows[0].children.count + s.windows[0].childrenOmitted, 4)
         XCTAssertEqual(s.omittedCount, 3)
-        // Messaging timeout: min(0.5, remaining), floored at 0.05.
-        XCTAssertEqual(Double(w.timeouts.first ?? 0), 0.1, accuracy: 1e-6)
-        XCTAssertEqual(Double(kids[0].timeouts.first ?? 0), 0.05, accuracy: 1e-6)
+        // Re-armed before every call: min(0.5, remaining), floored at 0.05.
+        XCTAssertEqual(w.timeouts.map { Double($0) }, [0.1, 0.06, 0.05].map { Double(Float($0)) })
+        XCTAssertEqual(kids[0].timeouts, [0.05])
+        XCTAssertFalse(kids[0].requested.contains("AXValue"), "no call starts after the budget is spent")
         XCTAssertTrue(kids[1].timeouts.isEmpty, "never touched once the budget ran out")
-        XCTAssertTrue(s.renderText().hasSuffix("timed_out: walk stopped after 160 ms; the app may be busy — raise timeout_ms up to 10000 or retry"))
+        XCTAssertEqual(s.unresponsiveCount, 0)
+        XCTAssertTrue(s.renderText().hasSuffix("timed_out: the 100 ms budget ran out after 120 ms; raise timeout_ms up to 10000 or retry"))
+    }
+
+    /// Several slow calls per node must not each get the whole remainder: the budget
+    /// bounds base + value + children reads together.
+    func testBudgetBoundsEveryCallOfANode() throws {
+        let clock = FakeClock()
+        let kids = (0..<3).map { el("AXButton", "k\($0)") }
+        let w = el("AXWindow", "w")
+        w.kids = kids
+        for e in [w] + kids { e.clock = clock; e.delay = 0.3 }
+        let r = try walk([w], limits: .init(timeoutMs: 1000), clock: clock)
+        let s = r.snapshot
+        XCTAssertTrue(s.timedOut)
+        XCTAssertEqual(s.unresponsiveCount, 0, "a call cut by the budget is a timeout, not an unresponsive app")
+        XCTAssertEqual(w.timeouts.map { Double($0) }, [0.5, 0.5, 0.4].map { Double(Float($0)) })
+        XCTAssertEqual(kids[0].timeouts.map { Double($0) }, [Double(Float(0.1))])
+        XCTAssertEqual(s.elapsedMs, 1000)
+        XCTAssertEqual(s.nodeCount, 2)
+        XCTAssertEqual(s.omittedCount, 2)
+        XCTAssertTrue(kids[1].requested.isEmpty)
     }
 
     func testMessagingTimeoutIsSetOnEveryElement() throws {
@@ -175,7 +226,7 @@ final class UISnapshotWalkerTests: XCTestCase {
         w.kids = kids
         _ = try walk([w])
         for e in [w] + kids {
-            XCTAssertEqual(e.timeouts, [0.5])
+            XCTAssertEqual(e.timeouts, [0.5, 0.5, 0.5], "armed before the base, value and children reads")
         }
     }
 
@@ -184,11 +235,19 @@ final class UISnapshotWalkerTests: XCTestCase {
         hung.attrError = .timeout
         let r = try walk([el("AXWindow", "w", hung, el("AXButton", "ok"))])
         let s = r.snapshot
-        XCTAssertTrue(s.timedOut)
+        XCTAssertFalse(s.timedOut, "budget left: one slow element is not a spent budget")
+        XCTAssertEqual(s.unresponsiveCount, 1)
         XCTAssertEqual(s.nodeCount, 3)
         XCTAssertNil(s.windows[0].children[0].role)
+        XCTAssertTrue(s.windows[0].children[0].unresponsive)
         XCTAssertTrue(s.windows[0].children[0].children.isEmpty)
         XCTAssertEqual(s.windows[0].children[1].title, "ok")
+        XCTAssertEqual(s.windows[0].children[0].json["unresponsive"], true)
+        XCTAssertEqual(s.json["unresponsive_count"], 1)
+        XCTAssertEqual(s.json["timed_out"], false)
+        let text = s.renderText()
+        XCTAssertTrue(text.contains("[e2] ? unresponsive"), text)
+        XCTAssertTrue(text.hasSuffix("unresponsive: 1 elements did not answer within 500 ms and were not descended; the app may be busy — retry"), text)
     }
 
     func testVanishedNodeIsDropped() throws {
@@ -239,6 +298,53 @@ final class UISnapshotWalkerTests: XCTestCase {
         XCTAssertEqual(text.components(separatedBy: "‹masked›").count - 1, 3)
         XCTAssertEqual(kids[0].json["masked"], true)
         XCTAssertNil(kids[0].json["value"])
+    }
+
+    func testSecureFieldsAreNotDescended() throws {
+        let inner = el("AXStaticText", extra: ["AXValue": .string("hunter2")])
+        let secure = el("AXSecureTextField", nil, inner)
+        let r = try walk([el("AXWindow", "w", secure)])
+        XCTAssertTrue(r.snapshot.windows[0].children[0].children.isEmpty)
+        XCTAssertFalse(secure.requested.contains("AXChildren"))
+        XCTAssertTrue(inner.requested.isEmpty)
+    }
+
+    /// Masking fails closed: without a role the node could be a secure field, so its
+    /// value is never requested.
+    func testUnknownRoleValueIsNotRead() throws {
+        let noRole = FakeUIElement(["AXValue": .string("hunter2")])
+        let failed = el("AXSecureTextField", extra: ["AXValue": .string("hunter2")])
+        failed.attrError = .other(-25200)
+        let r = try walk([el("AXWindow", "w", noRole, failed)])
+        for e in [noRole, failed] {
+            XCTAssertFalse(e.requested.contains("AXValue"))
+            XCTAssertFalse(e.requested.contains("AXStringForRange"))
+        }
+        XCTAssertFalse(encode(r.snapshot.json).contains("hunter2"))
+        XCTAssertEqual(r.snapshot.nodeCount, 3)
+    }
+
+    /// A long text is read as a prefix, not copied whole; without prefix support the
+    /// walker falls back to AXValue.
+    func testLongTextIsReadAsAPrefix() throws {
+        let long = String(repeating: "y", count: 5000)
+        let attrs: [String: UIAttrValue] = ["AXValue": .string(long), "AXNumberOfCharacters": .number(5000)]
+        let area = el("AXTextArea", extra: attrs)
+        let old = el("AXTextArea", extra: attrs)
+        old.supportsPrefix = false
+        let short = el("AXTextField", extra: ["AXValue": .string("hi"), "AXNumberOfCharacters": .number(2)])
+        let r = try walk([el("AXWindow", "w", area, old, short)])
+        let k = r.snapshot.windows[0].children
+        XCTAssertTrue(area.requested.contains("AXStringForRange"))
+        XCTAssertFalse(area.requested.contains("AXValue"))
+        XCTAssertTrue(old.requested.contains("AXValue"))
+        XCTAssertFalse(short.requested.contains("AXStringForRange"))
+        for n in k[0...1] {
+            XCTAssertEqual(n.valueTruncated, true)
+            if case .string(let v)? = n.value { XCTAssertEqual(v, String(repeating: "y", count: 200) + "…") } else { XCTFail() }
+        }
+        XCTAssertEqual(k[2].value, .string("hi"))
+        XCTAssertFalse(k[2].valueTruncated)
     }
 
     func testStringsAreCapped() throws {
@@ -318,11 +424,13 @@ final class UISnapshotWalkerTests: XCTestCase {
         s.nodeLimitHit = true
         s.omittedCount = 12
         s.timedOut = true
+        s.unresponsiveCount = 2
         XCTAssertEqual(s.renderText(), """
             ui_snapshot snap-1 · pid 7 · 0 nodes · 41 ms
             (no elements)
             truncated: node limit 300 reached (max_nodes up to 2000); 12 elements not walked
-            timed_out: walk stopped after 41 ms; the app may be busy — raise timeout_ms up to 10000 or retry
+            unresponsive: 2 elements did not answer within 500 ms and were not descended; the app may be busy — retry
+            timed_out: the 3000 ms budget ran out after 41 ms; raise timeout_ms up to 10000 or retry
             """)
         XCTAssertEqual(s.json["omitted_count"], 12)
     }
@@ -336,6 +444,11 @@ final class UISnapshotTargetTests: XCTestCase {
                                         (id: 9, bounds: CGRect(x: 200, y: 0, width: 100, height: 100)),
                                         (id: 2, bounds: CGRect(x: 100, y: 0, width: 100, height: 100))], mainID: 5)
         XCTAssertEqual(m.ordered.map(\.id), [5, 2, 9])
+        // One main and three others: the same helper numbers screenshot, mouse and ui_snapshot.
+        XCTAssertEqual(DisplayOrder.sorted([9, 2, 7, 5] as [UInt32], mainID: 7) { $0 }, [7, 2, 5, 9])
+        let four = UIDisplayMap(displays: [9, 2, 7, 5].map { (id: UInt32($0), bounds: CGRect(x: Double($0) * 100, y: 0, width: 100, height: 100)) },
+                                mainID: 7)
+        XCTAssertEqual(four.ordered.map(\.id), DisplayOrder.sorted([9, 2, 7, 5] as [UInt32], mainID: 7) { $0 })
         // Center inside display 1 (id 2).
         XCTAssertEqual(m.locate(CGRect(x: 110, y: 10, width: 20, height: 20))?.display, 1)
         XCTAssertEqual(m.locate(CGRect(x: 110, y: 10, width: 20, height: 20))?.frame, CGRect(x: 10, y: 10, width: 20, height: 20))
@@ -400,7 +513,8 @@ final class UISnapshotTargetTests: XCTestCase {
     }
 
     private func pick(_ app: FakeUIElement, _ sel: UITarget.WindowSelector? = nil, all: Bool = false) throws -> [FakeUIElement] {
-        try UITarget.windows(of: app, appName: "TextEdit", selector: sel, all: all).map { $0 as! FakeUIElement }
+        try UITarget.windows(of: app, appName: "TextEdit", selector: sel, all: all,
+                             deadline: UIDeadline(timeoutMs: 3000, now: { 0 })).map { $0 as! FakeUIElement }
     }
 
     private func same(_ a: [FakeUIElement], _ b: [FakeUIElement]) -> Bool {
@@ -444,6 +558,26 @@ final class UISnapshotTargetTests: XCTestCase {
             XCTAssertEqual((e as? ToolError)?.description, UISnapshotTool.Errors.notTrusted)
         }
     }
+
+    /// Title reads run under the call's deadline, each with a bounded messaging timeout.
+    func testTitleSelectionRunsUnderTheDeadline() {
+        let clock = FakeClock()
+        let ws = ["a", "b", "c"].map { el("AXWindow", $0) }
+        for w in ws { w.clock = clock; w.delay = 0.3 }
+        let app = appElement(windows: ws)
+        XCTAssertThrowsError(try UITarget.windows(of: app, appName: "TextEdit", selector: .title("c"), all: false,
+                                                  deadline: UIDeadline(timeoutMs: 500, now: { clock.t }))) { e in
+            XCTAssertEqual((e as? ToolError)?.description, UISnapshotTool.Errors.appBusy("TextEdit"))
+        }
+        XCTAssertEqual(clock.t, 0.5, accuracy: 1e-6, "stopped at the budget")
+        XCTAssertEqual(ws[0].timeouts, [0.5])
+        XCTAssertEqual(Double(ws[1].timeouts.first ?? 0), 0.2, accuracy: 1e-6)
+        XCTAssertTrue(ws[2].requested.isEmpty)
+        // With budget for every read the same selection succeeds.
+        clock.t = 0
+        XCTAssertTrue(try UITarget.windows(of: app, appName: "TextEdit", selector: .title("c"), all: false,
+                                           deadline: UIDeadline(timeoutMs: 1000, now: { clock.t })).first === ws[2])
+    }
 }
 
 // MARK: - the tool
@@ -464,7 +598,7 @@ final class UISnapshotToolTests: XCTestCase {
         app.lists["AXWindows"] = [w]
         let running = [UIRunningApp(pid: 20, bundleID: "com.apple.TextEdit", name: "TextEdit")]
         return UISnapshotTool.Environment(
-            isTrusted: { trusted }, selfPid: 99, runningApps: { running }, frontmostPid: { 20 },
+            isTrusted: { trusted }, selfPid: 99, runningApps: { running }, frontmostPid: { _ in 20 },
             appElement: { _ in app }, displays: { mainDisplay }, now: { 0 }, newSnapshotID: { "snap-0000beef" })
     }
 

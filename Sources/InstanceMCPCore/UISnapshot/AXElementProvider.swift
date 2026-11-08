@@ -133,6 +133,20 @@ final class AXLiveElement: UIElement {
         return .success((arr.compactMap { Self.asElement($0 as CFTypeRef) }, count))
     }
 
+    func stringPrefix(utf16Length: Int) -> Result<String?, UIAXError> {
+        var range = CFRange(location: 0, length: utf16Length)
+        guard let param = AXValueCreate(.cfRange, &range) else { return .success(nil) }
+        var v: CFTypeRef?
+        let err = AXUIElementCopyParameterizedAttributeValue(
+            ax, kAXStringForRangeParameterizedAttribute as CFString, param, &v)
+        if err != .success {
+            let unsupported = Self.isAbsent(err) || err == .parameterizedAttributeUnsupported || err == .illegalArgument
+            return unsupported ? .success(nil) : .failure(Self.map(err))
+        }
+        guard let v, CFGetTypeID(v) == CFStringGetTypeID() else { return .success(nil) }
+        return .success(unsafeBitCast(v, to: CFString.self) as String)
+    }
+
     func setMessagingTimeout(_ seconds: Float) {
         AXUIElementSetMessagingTimeout(ax, seconds)
     }
@@ -147,9 +161,13 @@ enum AXLive {
     }
 
     /// The app owning keyboard focus, from the system-wide element; NSWorkspace as fallback.
-    static func frontmostPid() -> Int32? {
+    ///
+    /// Setting the messaging timeout on the system-wide element sets the process-global
+    /// AX timeout. That is intended: no other tool makes AX messaging calls, and every
+    /// element `ui_snapshot` touches gets its own timeout through `UIDeadline.arm`.
+    static func frontmostPid(timeout: Float) -> Int32? {
         let sys = AXUIElementCreateSystemWide()
-        AXUIElementSetMessagingTimeout(sys, Float(UISnapshotLimits.messagingTimeout))
+        AXUIElementSetMessagingTimeout(sys, timeout)
         var v: CFTypeRef?
         if AXUIElementCopyAttributeValue(sys, kAXFocusedApplicationAttribute as CFString, &v) == .success,
            let v, CFGetTypeID(v) == AXUIElementGetTypeID() {
@@ -167,10 +185,7 @@ enum AXLive {
     }
 
     static func displays() -> UIDisplayMap {
-        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
-        var count: UInt32 = 0
-        CGGetActiveDisplayList(16, &ids, &count)
-        let list = ids.prefix(Int(count)).map { (id: UInt32($0), bounds: CGDisplayBounds($0)) }
-        return UIDisplayMap(displays: Array(list), mainID: CGMainDisplayID())
+        let list = DisplayOrder.activeDisplayIDs().map { (id: UInt32($0), bounds: CGDisplayBounds($0)) }
+        return UIDisplayMap(displays: list, mainID: CGMainDisplayID())
     }
 }

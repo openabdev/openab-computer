@@ -5,9 +5,8 @@ import CoreGraphics
 /// points that `screenshot` and `mouse` use.
 ///
 /// `AXPosition`/`AXSize` are global CG coordinates (origin at the main display's
-/// top-left, y down), the same space as `CGDisplayBounds`. `screenshot` numbers
-/// displays by sorting on display id and then putting the main display first, so
-/// the order key here is `(isMain ? 0 : 1, id)`.
+/// top-left, y down), the same space as `CGDisplayBounds`. Display indices come from
+/// `DisplayOrder`, the numbering `screenshot` and `mouse` also use.
 public struct UIDisplayMap: Equatable, Sendable {
     public struct Display: Equatable, Sendable {
         public let id: UInt32
@@ -18,12 +17,7 @@ public struct UIDisplayMap: Equatable, Sendable {
     public let ordered: [Display]
 
     public init(displays: [(id: UInt32, bounds: CGRect)], mainID: UInt32) {
-        ordered = displays
-            .map { Display(id: $0.id, bounds: $0.bounds) }
-            .sorted { a, b in
-                let ka = a.id == mainID ? 0 : 1, kb = b.id == mainID ? 0 : 1
-                return ka != kb ? ka < kb : a.id < b.id
-            }
+        ordered = DisplayOrder.sorted(displays.map { Display(id: $0.id, bounds: $0.bounds) }, mainID: mainID) { $0.id }
     }
 
     /// The display a global rect belongs to and the rect relative to that display's

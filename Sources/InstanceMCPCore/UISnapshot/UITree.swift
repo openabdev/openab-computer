@@ -73,6 +73,9 @@ public struct UINode: Equatable, Sendable {
     public var frame: CGRect?
     public var display: Int?
     public var offscreen = false
+    /// The app did not answer a read of this element within the messaging timeout;
+    /// the node has what was read and was not descended.
+    public var unresponsive = false
     /// Children that exist but were not walked (depth, node or time limit).
     public var childrenOmitted = 0
     public var children: [UINode] = []
@@ -113,6 +116,7 @@ public struct UINode: Equatable, Sendable {
         }
         if let display { o["display"] = .number(Double(display)) }
         if offscreen { o["offscreen"] = true }
+        if unresponsive { o["unresponsive"] = true }
         if childrenOmitted > 0 { o["children_omitted"] = .number(Double(childrenOmitted)) }
         if !children.isEmpty { o["children"] = .array(children.map(\.json)) }
         return .object(o)
@@ -130,7 +134,11 @@ public struct UISnapshot: Equatable, Sendable {
     /// Elements that exist but were not walked, summed over the tree (and over
     /// windows that did not fit the node budget).
     public var omittedCount = 0
+    /// The `timeout_ms` budget ran out before the walk finished.
     public var timedOut = false
+    /// Elements that did not answer within the per-call messaging timeout while
+    /// budget remained (each is flagged `unresponsive`).
+    public var unresponsiveCount = 0
     public var elapsedMs: Int
     public var limits: UISnapshotLimits
     public var displays: UIDisplayMap
@@ -160,6 +168,7 @@ public struct UISnapshot: Equatable, Sendable {
             o["truncated_by"] = .array(by)
         }
         if omittedCount > 0 { o["omitted_count"] = .number(Double(omittedCount)) }
+        if unresponsiveCount > 0 { o["unresponsive_count"] = .number(Double(unresponsiveCount)) }
         return .object(o)
     }
 
@@ -182,8 +191,11 @@ public struct UISnapshot: Equatable, Sendable {
             if depthLimitHit { why.append("depth limit \(limits.maxDepth) reached (max_depth up to \(UISnapshotLimits.maxDepthCap))") }
             lines.append("truncated: " + why.joined(separator: "; ") + "; \(omittedCount) elements not walked")
         }
+        if unresponsiveCount > 0 {
+            lines.append("unresponsive: \(unresponsiveCount) elements did not answer within \(Int(UISnapshotLimits.messagingTimeout * 1000)) ms and were not descended; the app may be busy — retry")
+        }
         if timedOut {
-            lines.append("timed_out: walk stopped after \(elapsedMs) ms; the app may be busy — raise timeout_ms up to \(UISnapshotLimits.maxTimeoutMs) or retry")
+            lines.append("timed_out: the \(limits.timeoutMs) ms budget ran out after \(elapsedMs) ms; raise timeout_ms up to \(UISnapshotLimits.maxTimeoutMs) or retry")
         }
         return lines.joined(separator: "\n")
     }
@@ -208,6 +220,7 @@ public struct UISnapshot: Equatable, Sendable {
             s += " (\(prefix)\(int(f.origin.x)),\(int(f.origin.y)) \(int(f.width))×\(int(f.height)))"
         }
         if n.offscreen { s += " offscreen" }
+        if n.unresponsive { s += " unresponsive" }
         if !n.enabled { s += " disabled" }
         if n.focused { s += " focused" }
         if n.selected { s += " selected" }

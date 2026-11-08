@@ -18,7 +18,7 @@ public struct UISnapshotTool: Tool {
         "properties": [
             "app": ["type": "string", "description": "Bundle id (com.apple.TextEdit) or app name (TextEdit). Default: frontmost app."],
             "pid": ["type": "integer", "description": "Process id. Use instead of app when several apps match."],
-            "window": ["oneOf": [["type": "string"], ["type": "integer", "minimum": 0]],
+            "window": ["anyOf": [["type": "string"], ["type": "integer", "minimum": 0]],
                        "description": "Window title (exact, else case-insensitive substring) or index into the app's window list. Default: focused window."],
             "all_windows": ["type": "boolean", "description": "Walk every window of the app.", "default": false],
             "max_depth": ["type": "integer", "description": "Levels below the window.",
@@ -29,7 +29,7 @@ public struct UISnapshotTool: Tool {
                           "default": .number(Double(UISnapshotLimits.defaultNodes)),
                           "minimum": .number(Double(UISnapshotLimits.minNodes)),
                           "maximum": .number(Double(UISnapshotLimits.maxNodesCap))],
-            "timeout_ms": ["type": "integer", "description": "Total time budget; partial results are flagged timed_out.",
+            "timeout_ms": ["type": "integer", "description": "Total time budget for the whole call (app lookup, window selection and walk); partial results are flagged timed_out.",
                            "default": .number(Double(UISnapshotLimits.defaultTimeoutMs)),
                            "minimum": .number(Double(UISnapshotLimits.minTimeoutMs)),
                            "maximum": .number(Double(UISnapshotLimits.maxTimeoutMs))],
@@ -55,7 +55,7 @@ public struct UISnapshotTool: Tool {
                 titles.enumerated().map { "[\($0.offset)] \"\($0.element)\"" }.joined(separator: ", ")
         }
         public static func appBusy(_ app: String) -> String {
-            "\(app) did not answer the Accessibility request in time (it may be busy or hung); retry"
+            "\(app) did not answer the Accessibility request in time (it may be busy or hung); retry, or raise timeout_ms"
         }
     }
 
@@ -64,7 +64,8 @@ public struct UISnapshotTool: Tool {
         var isTrusted: @Sendable () -> Bool
         var selfPid: Int32
         var runningApps: @Sendable () -> [UIRunningApp]
-        var frontmostPid: @Sendable () -> Int32?
+        /// The argument is the messaging timeout for the lookup, from the call's deadline.
+        var frontmostPid: @Sendable (Float) -> Int32?
         var appElement: @Sendable (Int32) -> any UIElement
         var displays: @Sendable () -> UIDisplayMap
         var now: @Sendable () -> TimeInterval
@@ -74,7 +75,7 @@ public struct UISnapshotTool: Tool {
             isTrusted: { AXLive.isTrusted() },
             selfPid: ProcessInfo.processInfo.processIdentifier,
             runningApps: { AXLive.runningApps() },
-            frontmostPid: { AXLive.frontmostPid() },
+            frontmostPid: { AXLive.frontmostPid(timeout: $0) },
             appElement: { AXLive.appElement($0) },
             displays: { AXLive.displays() },
             now: { ProcessInfo.processInfo.systemUptime },
@@ -144,16 +145,18 @@ public struct UISnapshotTool: Tool {
     }
 
     static func run(_ req: Request, env: Environment) throws -> UISnapshotResult {
+        // One budget for the whole call: frontmost lookup, window selection and walk.
+        let deadline = UIDeadline(timeoutMs: req.limits.timeoutMs, now: env.now)
         let needsList = req.pid != nil || req.app != nil
         let running = env.runningApps()
-        let app = try UITarget.resolveApp(app: req.app, pid: req.pid,
-                                          frontmostPid: needsList ? nil : env.frontmostPid(),
+        let front = needsList ? nil
+            : env.frontmostPid(deadline.callTimeout() ?? Float(UISnapshotLimits.messagingTimeoutFloor))
+        let app = try UITarget.resolveApp(app: req.app, pid: req.pid, frontmostPid: front,
                                           running: running, selfPid: env.selfPid).get()
         let root = env.appElement(app.pid)
-        root.setMessagingTimeout(Float(UISnapshotLimits.messagingTimeout))
         let windows = try UITarget.windows(of: root, appName: app.displayName, selector: req.window,
-                                           all: req.allWindows)
-        let walker = UITreeWalker(limits: req.limits, now: env.now, newSnapshotID: env.newSnapshotID)
-        return try walker.walk(app: app, windows: windows, displays: env.displays())
+                                           all: req.allWindows, deadline: deadline)
+        let walker = UITreeWalker(limits: req.limits, newSnapshotID: env.newSnapshotID)
+        return try walker.walk(app: app, windows: windows, displays: env.displays(), deadline: deadline)
     }
 }

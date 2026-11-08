@@ -25,10 +25,7 @@ enum Input {
     /// Display-point → global CG point. `display` indexes the same ordering `screenshot`
     /// uses (main display first). Coordinates are relative to that display's top-left.
     static func globalPoint(x: Double, y: Double, display: Int) throws -> CGPoint {
-        var ids = [CGDirectDisplayID](repeating: 0, count: 16); var count: UInt32 = 0
-        CGGetActiveDisplayList(16, &ids, &count)
-        var list = Array(ids.prefix(Int(count)))
-        list.sort { a, b in (a == CGMainDisplayID() ? 0 : 1) < (b == CGMainDisplayID() ? 0 : 1) }
+        let list = DisplayOrder.activeDisplayIDs()
         guard display >= 0, display < list.count else {
             throw ToolError("display \(display) out of range; \(list.count) display(s)")
         }

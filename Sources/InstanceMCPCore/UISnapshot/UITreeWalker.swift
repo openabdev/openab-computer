@@ -8,6 +8,42 @@ struct UISnapshotResult {
     let elements: [String: any UIElement]
 }
 
+/// One time budget for a whole `ui_snapshot` call: frontmost-app lookup, window
+/// selection and the walk. Every synchronous AX call is armed through `arm` first,
+/// so no call starts after the budget is spent, and each call's messaging timeout is
+/// at most what is left. The overrun is bounded by one call of at most
+/// `messagingTimeoutFloor` (0 would mean "system default", about 6 s).
+struct UIDeadline {
+    let start: TimeInterval
+    let end: TimeInterval
+    let now: () -> TimeInterval
+
+    init(timeoutMs: Int, now: @escaping () -> TimeInterval) {
+        self.now = now
+        start = now()
+        end = start + Double(timeoutMs) / 1000
+    }
+
+    var expired: Bool { now() >= end }
+
+    /// The messaging timeout for the next AX call: min(0.5 s, remaining), floored at
+    /// 0.05 s. nil once the budget is spent.
+    func callTimeout() -> Float? {
+        let remaining = end - now()
+        guard remaining > 0 else { return nil }
+        return Float(min(UISnapshotLimits.messagingTimeout, max(UISnapshotLimits.messagingTimeoutFloor, remaining)))
+    }
+
+    /// Bound the next call to `e`. false: the budget is spent, do not make the call.
+    func arm(_ e: any UIElement) -> Bool {
+        guard let t = callTimeout() else { return false }
+        e.setMessagingTimeout(t)
+        return true
+    }
+
+    var elapsedMs: Int { max(0, Int(((now() - start) * 1000).rounded())) }
+}
+
 /// Walks accessibility elements into a `UISnapshot`. Pure over `UIElement`, so the
 /// fake provider exercises every limit and error path without a GUI.
 ///
@@ -16,7 +52,6 @@ struct UISnapshotResult {
 /// (`e1`, `e2`, … across windows in window order).
 struct UITreeWalker {
     let limits: UISnapshotLimits
-    let now: () -> TimeInterval
     let newSnapshotID: () -> String
 
     /// The tree while it is being built; converted to `UINode` at the end.
@@ -33,9 +68,8 @@ struct UITreeWalker {
         let parent: Building?
     }
 
-    func walk(app: UIRunningApp, windows: [any UIElement], displays: UIDisplayMap) throws -> UISnapshotResult {
-        let start = now()
-        let deadline = start + Double(limits.timeoutMs) / 1000
+    func walk(app: UIRunningApp, windows: [any UIElement], displays: UIDisplayMap,
+              deadline: UIDeadline) throws -> UISnapshotResult {
         var snap = UISnapshot(snapshotID: newSnapshotID(), app: app, windows: [], nodeCount: 0,
                               elapsedMs: 0, limits: limits, displays: displays)
         var roots: [Building] = []
@@ -54,8 +88,7 @@ struct UITreeWalker {
         while i < queue.count {
             let item = queue[i]
             i += 1
-            let remaining = deadline - now()
-            if remaining <= 0 {
+            if deadline.expired {
                 snap.timedOut = true
                 // Everything still queued was never read.
                 for rest in queue[(i - 1)...] { rest.parent?.node.childrenOmitted += 1 }
@@ -63,7 +96,7 @@ struct UITreeWalker {
                 break
             }
             let pendingAfter = queue.count - i
-            guard let built = try visit(item, remaining: remaining, displays: displays,
+            guard let built = try visit(item, deadline: deadline, displays: displays,
                                         budget: limits.maxNodes - snap.nodeCount - 1 - pendingAfter,
                                         snap: &snap, seen: &seen, queue: &queue) else { continue }
             snap.nodeCount += 1
@@ -81,48 +114,70 @@ struct UITreeWalker {
             return n
         }
         snap.windows = roots.map(finish)
-        snap.elapsedMs = max(0, Int(((now() - start) * 1000).rounded()))
+        snap.elapsedMs = deadline.elapsedMs
         return UISnapshotResult(snapshot: snap, elements: elements)
     }
 
     /// Read one element. nil means drop it (it vanished). `budget` is how many more
-    /// children may be queued under the node limit.
-    private func visit(_ item: Pending, remaining: TimeInterval, displays: UIDisplayMap, budget: Int,
+    /// children may be queued under the node limit. A node whose read stopped early
+    /// (budget spent, or the app did not answer) is kept with what was read and not
+    /// descended.
+    private func visit(_ item: Pending, deadline: UIDeadline, displays: UIDisplayMap, budget: Int,
                        snap: inout UISnapshot, seen: inout Set<AnyHashable>,
                        queue: inout [Pending]) throws -> Building? {
         let e = item.element
-        e.setMessagingTimeout(Float(min(UISnapshotLimits.messagingTimeout,
-                                        max(UISnapshotLimits.messagingTimeoutFloor, remaining))))
         let b = Building(e)
 
+        /// Arm the next call; false (and `timed_out`) once the budget is spent.
+        func armed() -> Bool {
+            if deadline.arm(e) { return true }
+            snap.timedOut = true
+            return false
+        }
+        /// A call that did not complete: the budget ran out under it, or the app is slow.
+        func noAnswer() {
+            if deadline.expired {
+                snap.timedOut = true
+            } else {
+                b.node.unresponsive = true
+                snap.unresponsiveCount += 1
+            }
+        }
+
+        guard armed() else { return b }
         let attrs: [String: UIAttrValue]
         switch e.attributes(AXAttr.base) {
         case .success(let a): attrs = a
         case .failure(.apiDisabled): throw ToolError(UISnapshotTool.Errors.notTrusted)
         case .failure(.invalidElement): return nil
         case .failure(.timeout):
-            snap.timedOut = true
+            noAnswer()
             return b
         case .failure(.other): attrs = [:]
         }
         fill(&b.node, attrs, displays: displays)
 
         if UINode.isSecure(role: b.node.role, subrole: b.node.subrole) {
-            // Never ask for the value of a secure field, even if the system would mask it.
+            // Never ask for the value of a secure field, even if the system would mask
+            // it, and do not walk into one.
             b.node.masked = true
-        } else {
-            switch e.attributes([AXAttr.value]) {
-            case .success(let a): setValue(&b.node, a[AXAttr.value])
-            case .failure(.apiDisabled): throw ToolError(UISnapshotTool.Errors.notTrusted)
-            case .failure(.invalidElement): return nil
-            case .failure(.timeout):
-                snap.timedOut = true
+            return b
+        }
+        // An unknown role cannot be ruled out as a secure field: fail closed and leave
+        // the value unread.
+        if b.node.role != nil {
+            switch try readValue(e, attrs: attrs, into: &b.node, armed: armed) {
+            case .done: break
+            case .stop: return b
+            case .noAnswer:
+                noAnswer()
                 return b
-            case .failure(.other): break
+            case .vanished: return nil
             }
         }
 
         let atDepthLimit = item.depth >= limits.maxDepth
+        guard armed() else { return b }
         switch e.children(max: atDepthLimit ? 0 : max(budget, 0)) {
         case .success(let c):
             let omitted = max(0, c.total - c.elements.count)
@@ -136,10 +191,44 @@ struct UITreeWalker {
                 queue.append(Pending(element: child, depth: item.depth + 1, parent: b))
             }
         case .failure(.apiDisabled): throw ToolError(UISnapshotTool.Errors.notTrusted)
-        case .failure(.timeout): snap.timedOut = true
+        case .failure(.timeout): noAnswer()
         case .failure(.invalidElement), .failure(.other): break
         }
         return b
+    }
+
+    private enum ValueRead { case done, stop, noAnswer, vanished }
+
+    /// The value of a non-secure node. A text longer than the cap (Terminal scrollback,
+    /// a large document) is read as a prefix through `AXStringForRange`, so it is not
+    /// copied whole over IPC; elements without that support fall back to `AXValue`.
+    private func readValue(_ e: any UIElement, attrs: [String: UIAttrValue], into n: inout UINode,
+                           armed: () -> Bool) throws -> ValueRead {
+        if case .number(let count)? = attrs[AXAttr.numberOfCharacters], count > Double(UISnapshotLimits.stringCap) {
+            guard armed() else { return .stop }
+            switch e.stringPrefix(utf16Length: UISnapshotLimits.stringCap) {
+            case .success(let s?):
+                var text = s
+                // A cut through a surrogate pair decodes as U+FFFD; drop it.
+                if text.hasSuffix("\u{FFFD}") { text.removeLast() }
+                n.value = .string(text + "…")
+                n.valueTruncated = true
+                return .done
+            case .success(nil), .failure(.other): break
+            case .failure(.apiDisabled): throw ToolError(UISnapshotTool.Errors.notTrusted)
+            case .failure(.invalidElement): return .vanished
+            case .failure(.timeout): return .noAnswer
+            }
+        }
+        guard armed() else { return .stop }
+        switch e.attributes([AXAttr.value]) {
+        case .success(let a): setValue(&n, a[AXAttr.value])
+        case .failure(.apiDisabled): throw ToolError(UISnapshotTool.Errors.notTrusted)
+        case .failure(.invalidElement): return .vanished
+        case .failure(.timeout): return .noAnswer
+        case .failure(.other): break
+        }
+        return .done
     }
 
     private func fill(_ n: inout UINode, _ a: [String: UIAttrValue], displays: UIDisplayMap) {

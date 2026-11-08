@@ -39,6 +39,9 @@ public protocol UIElement: AnyObject {
     /// At most `max` children plus the total child count, so a 10 000-row table is
     /// never copied whole. `max == 0` only counts.
     func children(max: Int) -> Result<(elements: [any UIElement], total: Int), UIAXError>
+    /// The first `utf16Length` UTF-16 units of the element's text (`AXStringForRange`),
+    /// so a long value is not copied whole. nil when the element does not support it.
+    func stringPrefix(utf16Length: Int) -> Result<String?, UIAXError>
     /// Bound every later IPC to this element's app (`AXUIElementSetMessagingTimeout`).
     func setMessagingTimeout(_ seconds: Float)
 }
@@ -61,9 +64,11 @@ enum AXAttr {
     static let windows = "AXWindows"
     static let focusedWindow = "AXFocusedWindow"
     static let mainWindow = "AXMainWindow"
+    /// Text length in UTF-16 units; decides whether the value is read as a prefix.
+    static let numberOfCharacters = "AXNumberOfCharacters"
 
     /// Everything read for a node in one batch. `AXValue` is deliberately not here:
     /// it is read in a second call, and only when the node is not secure.
     static let base = [role, subrole, roleDescription, title, description, help, identifier,
-                       enabled, focused, selected, position, size]
+                       enabled, focused, selected, position, size, numberOfCharacters]
 }
