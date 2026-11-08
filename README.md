@@ -136,7 +136,8 @@ Which tool reads the screen: `browser_snapshot` for web pages, `ui_snapshot` for
 (exact roles, titles and frames, cheaper than reading an image), and `screenshot` + `mouse` for
 custom-drawn or canvas content that has no accessibility tree. A `ui_snapshot` contains field
 values and on-screen text (secure text fields are masked, other fields are not), so a caller
-that stores snapshots must mask them first.
+that stores snapshots must mask them first. An element whose role cannot be read is kept as a
+leaf with no value and no children, since it cannot be ruled out as a secure field.
 
 The loop the tools are designed for: `screenshot` → decide → `mouse`/`key`/`osascript` → `screenshot` to confirm.
 Verified 2026-09-22 from the laptop: open TextEdit, type a line, read it back, close via the save

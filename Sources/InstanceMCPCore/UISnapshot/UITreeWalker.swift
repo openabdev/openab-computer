@@ -183,17 +183,17 @@ struct UITreeWalker {
             b.node.masked = true
             return b
         }
-        // An unknown role cannot be ruled out as a secure field: fail closed and leave
-        // the value unread.
-        if b.node.role != nil {
-            switch try readValue(e, attrs: attrs, into: &b.node, armed: armed) {
-            case .done: break
-            case .stop: return b
-            case .noAnswer:
-                noAnswer()
-                return b
-            case .vanished: return nil
-            }
+        // A missing or unreadable role (including a batch rejected because its role or
+        // subrole failed) cannot be ruled out as a secure field: fail closed and keep
+        // the node as an opaque leaf, with neither its value nor its children read.
+        guard b.node.role != nil else { return b }
+        switch try readValue(e, attrs: attrs, into: &b.node, armed: armed) {
+        case .done: break
+        case .stop: return b
+        case .noAnswer:
+            noAnswer()
+            return b
+        case .vanished: return nil
         }
 
         let atDepthLimit = item.depth >= limits.maxDepth

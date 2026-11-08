@@ -349,6 +349,31 @@ final class UISnapshotWalkerTests: XCTestCase {
         XCTAssertEqual(r.snapshot.nodeCount, 3)
     }
 
+    /// A node whose role is missing or unreadable is an opaque leaf: a custom secure
+    /// control could expose its text through children, so they are never read.
+    func testUnknownRoleIsNotDescended() throws {
+        func secretChild() -> FakeUIElement { el("AXStaticText", extra: ["AXValue": .string("hunter2")]) }
+        let noRole = FakeUIElement(["AXTitle": .string("custom")], [secretChild()])
+        let batchFailed = el("AXGroup", extra: ["AXSubrole": .string("AXSecureTextField")], secretChild())
+        batchFailed.attrError = .other(-25200)
+        let partial = el("AXGroup", extra: ["AXSubrole": .string("AXSecureTextField")], secretChild())
+        partial.entryErrors = ["AXRole": .failure]
+        let parents = [noRole, batchFailed, partial]
+        let r = try walk([el("AXWindow", "w", noRole, batchFailed, partial)])
+        for p in parents {
+            for name in ["AXValue", "AXStringForRange", "AXChildren", "AXChildren.copy"] {
+                XCTAssertFalse(p.requested.contains(name), "\(name) requested from a node without a readable role")
+            }
+            XCTAssertTrue(p.kids[0].requested.isEmpty, "child of a node without a readable role was read")
+        }
+        let kids = r.snapshot.windows[0].children
+        XCTAssertEqual(kids.count, 3)
+        XCTAssertTrue(kids.allSatisfy { $0.children.isEmpty && $0.value == nil })
+        XCTAssertEqual(r.snapshot.nodeCount, 4)
+        XCTAssertFalse(encode(r.snapshot.json).contains("hunter2"))
+        XCTAssertFalse(r.snapshot.renderText().contains("hunter2"))
+    }
+
     /// A partial batch (role readable, subrole not) must not pass as a known
     /// non-secure node: the value is never requested.
     func testPartialBatchErrorOnSubroleNeverReadsTheValue() throws {
