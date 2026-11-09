@@ -177,6 +177,42 @@ final class AXLiveElement: UIElement {
     func setMessagingTimeout(_ seconds: Float) {
         AXUIElementSetMessagingTimeout(ax, seconds)
     }
+
+    var pid: Int32? {
+        var p: pid_t = 0
+        return AXUIElementGetPid(ax, &p) == .success && p > 0 ? p : nil
+    }
+
+    func actionNames() -> Result<[String], UIAXError> {
+        var out: CFArray?
+        let err = AXUIElementCopyActionNames(ax, &out)
+        if err != .success { return Self.isAbsent(err) ? .success([]) : .failure(Self.map(err)) }
+        return .success(((out as NSArray?) as? [String]) ?? [])
+    }
+
+    func isSettable(_ name: String) -> Result<Bool, UIAXError> {
+        var settable: DarwinBoolean = false
+        let err = AXUIElementIsAttributeSettable(ax, name as CFString, &settable)
+        if err != .success { return Self.isAbsent(err) ? .success(false) : .failure(Self.map(err)) }
+        return .success(settable.boolValue)
+    }
+
+    func perform(_ action: String) -> Result<Void, UIAXError> {
+        let err = AXUIElementPerformAction(ax, action as CFString)
+        return err == .success ? .success(()) : .failure(Self.map(err))
+    }
+
+    func setValue(_ name: String, _ value: UIAttrValue) -> Result<Void, UIAXError> {
+        let cf: CFTypeRef
+        switch value {
+        case .string(let s): cf = s as CFString
+        case .number(let d): cf = NSNumber(value: d)
+        case .bool(let b): cf = b ? kCFBooleanTrue : kCFBooleanFalse
+        case .point, .size: return .failure(.other(AXError.illegalArgument.rawValue))
+        }
+        let err = AXUIElementSetAttributeValue(ax, name as CFString, cf)
+        return err == .success ? .success(()) : .failure(Self.map(err))
+    }
 }
 
 /// The live sources `UISnapshotTool` reads from. All non-prompting.
@@ -216,5 +252,23 @@ enum AXLive {
     static func displays() -> UIDisplayMap {
         let list = DisplayOrder.activeDisplayIDs().map { (id: UInt32($0), bounds: CGDisplayBounds($0)) }
         return UIDisplayMap(displays: list, mainID: CGMainDisplayID())
+    }
+
+    /// `ui_action` with `activate: true` only: bring the app frontmost, then wait (20 ms
+    /// polls, at most 0.5 s and never past the call's deadline) until it is. false when
+    /// the app is gone or did not become active in time.
+    static func activate(pid: Int32, deadline: UIDeadline) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return false }
+        func active() -> Bool {
+            app.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        }
+        if active() { return true }
+        guard app.activate() else { return false }
+        let stop = min(deadline.now() + 0.5, deadline.end)
+        while deadline.now() < stop {
+            if active() { return true }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        return active()
     }
 }

@@ -31,7 +31,7 @@ struct Options {
 
 func usage() -> Never {
     print("""
-    oab-instance-mcp \(version) — MCP server exposing this Mac (exec / screenshot / ui_snapshot / mouse / key / osascript / sys_info)
+    oab-instance-mcp \(version) — MCP server exposing this Mac (exec / screenshot / ui_snapshot / ui_action / mouse / key / osascript / sys_info)
 
     USAGE: oab-instance-mcp [--host 127.0.0.1] [--port 8795] [--path /mcp]
                         [--allow-login <email>]... [--token <str> | --token-file <path>]
@@ -183,7 +183,10 @@ let server = MCPServer(
         Call `sys_info` when unsure which permissions or displays exist. If `ui_snapshot` is available, \
         use it for native apps: it returns the window's accessibility tree (roles, titles, values, frames \
         in the same display points `mouse` takes), cheaper and more exact than reading a screenshot; fall \
-        back to `screenshot` for custom-drawn content.\(opts.upstreams.isEmpty ? "" : """
+        back to `screenshot` for custom-drawn content. To act on a node, call `ui_action` with its \
+        `snapshot_id`, `ref` and `action` (press, set_value, focus, …): no pointer movement, no focus \
+        stealing; then take a new `ui_snapshot` to confirm. Use `mouse` for drags and custom-drawn \
+        content.\(opts.upstreams.isEmpty ? "" : """
          A browser is available through the `browser_*` tools (Playwright, a real window on this Mac's \
         desktop): prefer `browser_navigate` + `browser_snapshot` (accessibility tree as text) to read a \
         page, and `browser_click` / `browser_type` / `browser_fill_form` to act — they are exact and need \

@@ -29,6 +29,22 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
     /// API gives up with `.timeout` once it exceeds the last messaging timeout.
     var clock: FakeClock?
     var delay: TimeInterval = 0
+    // ui_action (#67 phase 2).
+    var pidValue: Int32? = 123
+    var actions: [String] = []
+    var settable: Set<String> = []
+    var actionNamesError: UIAXError?
+    var settableError: UIAXError?
+    var performError: UIAXError?
+    var setError: UIAXError?
+    /// Actions performed and attributes set, in order.
+    var performed: [String] = []
+    var sets: [(String, UIAttrValue)] = []
+    /// Element-valued attributes asked for (`element`/`elements`).
+    var elementRequests: [String] = []
+    /// Every IPC in order, with the messaging timeout it ran under.
+    var calls: [(String, Float?)] = []
+    var onPerform: (() -> Void)?
 
     init(_ attrs: [String: UIAttrValue] = [:], _ kids: [FakeUIElement] = []) {
         self.attrs = attrs; self.kids = kids
@@ -59,12 +75,14 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
     }
 
     func element(_ name: String) -> Result<(any UIElement)?, UIAXError> {
+        elementRequests.append(name)
         if spend() { return .failure(.timeout) }
         if let elementError { return .failure(elementError) }
         return .success(named[name])
     }
 
     func elements(_ name: String) -> Result<[any UIElement], UIAXError> {
+        elementRequests.append(name)
         if spend() { return .failure(.timeout) }
         if let elementError { return .failure(elementError) }
         return .success(lists[name] ?? [])
@@ -92,6 +110,41 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
     }
 
     func setMessagingTimeout(_ seconds: Float) { timeouts.append(seconds) }
+
+    var pid: Int32? { pidValue }
+
+    func actionNames() -> Result<[String], UIAXError> {
+        calls.append(("actionNames", timeouts.last))
+        if spend() { return .failure(.timeout) }
+        if let actionNamesError { return .failure(actionNamesError) }
+        return .success(actions)
+    }
+
+    func isSettable(_ name: String) -> Result<Bool, UIAXError> {
+        calls.append(("isSettable " + name, timeouts.last))
+        if spend() { return .failure(.timeout) }
+        if let settableError { return .failure(settableError) }
+        return .success(settable.contains(name))
+    }
+
+    func perform(_ action: String) -> Result<Void, UIAXError> {
+        calls.append(("perform " + action, timeouts.last))
+        if spend() { return .failure(.timeout) }
+        if let performError { return .failure(performError) }
+        performed.append(action)
+        onPerform?()
+        return .success(())
+    }
+
+    func setValue(_ name: String, _ value: UIAttrValue) -> Result<Void, UIAXError> {
+        calls.append(("set " + name, timeouts.last))
+        if spend() { return .failure(.timeout) }
+        if let setError { return .failure(setError) }
+        sets.append((name, value))
+        attrs[name] = value
+        onPerform?()
+        return .success(())
+    }
 }
 
 final class FakeClock: @unchecked Sendable {

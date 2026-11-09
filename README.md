@@ -29,7 +29,7 @@ flowchart LR
             s8443[":8443 → 127.0.0.1:8794"]
         end
         subgraph gui["Aqua session · LaunchAgents in gui/501"]
-            mcp["<b>oab-instance-mcp</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · mouse · key · osascript"]
+            mcp["<b>oab-instance-mcp</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · ui_action · mouse · key · osascript"]
             pw["@playwright/mcp<br/>headed Chromium, persistent profile"]
         end
         subgraph hands["What the daemon touches — nothing a logged-in user could not"]
@@ -127,7 +127,8 @@ same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-instance-mcp
 | `exec_list` | all running jobs + the 10 most recently finished | recover a forgotten `job_id` or see what is running; each entry has state, pid, exit_code, command, cwd, timestamps, stdout/stderr byte sizes |
 | `exec_cancel` | stop a running job (or drop a finished one) | `job_id`, `signal` `KILL` (default) / `TERM` — signals the whole process group; poll once more for final output. Finished jobs are dropped from the registry (log files stay on disk) |
 | `screenshot` | ScreenCaptureKit → JPEG/PNG as MCP `image` content | `display`, `scale` (px per point, default 1.0), `region` {x,y,w,h} crop in points, `format`, `quality`. Needs Screen Recording TCC. Read small UI text with `region` + `scale: 2` |
-| `ui_snapshot` | Accessibility tree of a native app's window (AXUIElement), read-only | `owner` only. Default: the frontmost app's focused window; `app` (bundle id or name) or `pid`, `window` (title or index) or `all_windows`. Per node: role, subrole, title, value (secure fields always masked), state, frame in display points (the `screenshot`/`mouse` space, with display index) and a `ref` valid within the `snapshot_id`. `max_depth` 20 (≤50), `max_nodes` 300 (≤2000), `timeout_ms` 3000 (≤10000) bounds the whole call, every AX call included; partial results are flagged `truncated` / `timed_out`, and elements that do not answer within 0.5 s are flagged `unresponsive`. Long text values are read as a 200-character prefix. Needs Accessibility TCC. macOS only |
+| `ui_snapshot` | Accessibility tree of a native app's window (AXUIElement), read-only | `owner` only. Default: the frontmost app's focused window; `app` (bundle id or name) or `pid`, `window` (title or index) or `all_windows`; `include_menu_bar` also walks the app's menu bar so menu items get refs. Per node: role, subrole, title, value (secure fields always masked), state, frame in display points (the `screenshot`/`mouse` space, with display index) and a `ref` valid within the `snapshot_id`. `max_depth` 20 (≤50), `max_nodes` 300 (≤2000), `timeout_ms` 3000 (≤10000) bounds the whole call, every AX call included; partial results are flagged `truncated` / `timed_out`, and elements that do not answer within 0.5 s are flagged `unresponsive`. Long text values are read as a 200-character prefix. Needs Accessibility TCC. macOS only |
+| `ui_action` | Act on a `ui_snapshot` node by ref through the Accessibility API, without moving the pointer | `owner` only (`shell`-class, like `mouse`/`key`). `snapshot_id` + `ref` + `action`: `press` (AXPress), `set_value` (AXValue, with `value`: string, number or bool; replaces the whole value), `focus` (AXFocused; on a window, AXRaise), `show_menu`, `confirm`, `cancel`, `increment`, `decrement`. The last 4 snapshots are kept for 5 minutes; a ref from one that is gone, or an element that vanished, changed role/subrole, moved to another process or left its window, is refused as `stale ref` — take a new `ui_snapshot`, the tool never guesses a replacement. An action the element does not support is refused before anything is done, listing the ones it does support. Does **not** activate or raise the app unless `activate: true` (fails, doing nothing, if the app does not come to the front); `show_menu`, menu-bar items of a background app and `focus` before `key` typing commonly need it. Secure fields can be set; their value is never logged or returned, and `value` is never logged for any target. `timeout_ms` 2000 (≤10000) bounds the whole call: checks get at most 0.5 s each, the action gets the rest, and an action the app does not confirm in time is reported as *unconfirmed* (it may have happened — re-snapshot, do not repeat blindly). `structuredContent` has the target, `activated` and, budget permitting, `post_state` (focused, value for non-secure fields). Needs Accessibility TCC. macOS only |
 | `mouse` | CGEvent: `move` `click` `double_click` `right_click` `drag` `scroll` | coordinates in display points = screenshot pixels at scale 1. `modifiers`. Needs Accessibility TCC |
 | `key` | CGEvent: `type` (unicode, layout-independent) / `press` combos (`cmd+shift+4`) | Needs Accessibility TCC |
 | `osascript` | AppleScript / JXA via `/usr/bin/osascript` in the GUI session | `timeout_secs` (default 15). First script against an app raises an Automation consent dialog on the Mac — screenshot, then `mouse` click Allow |
@@ -138,6 +139,11 @@ custom-drawn or canvas content that has no accessibility tree. A `ui_snapshot` c
 values and on-screen text (secure text fields are masked, other fields are not), so a caller
 that stores snapshots must mask them first. An element whose role cannot be read is kept as a
 leaf with no value and no children, since it cannot be ruled out as a secure field.
+
+To act on a native app without taking the pointer: `ui_snapshot` → `ui_action {snapshot_id, ref,
+action}` → `ui_snapshot` again to confirm. `set_value` replaces the whole value, and some apps
+commit a field only on `confirm` or when focus moves. Drags, gestures and custom-drawn content
+that has no accessibility node stay on `screenshot` + `mouse`.
 
 The loop the tools are designed for: `screenshot` → decide → `mouse`/`key`/`osascript` → `screenshot` to confirm.
 Verified 2026-09-22 from the laptop: open TextEdit, type a line, read it back, close via the save

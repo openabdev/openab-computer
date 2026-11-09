@@ -42,7 +42,7 @@ final class ProfileBoundaryTests: XCTestCase {
 
     func testEveryDeclaredToolIsInTheCatalog() throws {
         let declared = try declaredToolNames()
-        XCTAssertTrue(declared.isSuperset(of: ["exec", "osascript", "key", "mouse", "screenshot", "sys_info", "ui_snapshot"]),
+        XCTAssertTrue(declared.isSuperset(of: ["exec", "osascript", "key", "mouse", "screenshot", "sys_info", "ui_snapshot", "ui_action"]),
                       "source scan broke: \(declared.sorted())")
         let outside = declared.subtracting(served)
         XCTAssertTrue(outside.isEmpty, "declared but not in ToolCatalog.local: \(outside.sorted())")
@@ -94,6 +94,18 @@ final class ProfileBoundaryTests: XCTestCase {
         XCTAssertFalse(ToolProfile.observeTools.contains("ui_snapshot"))
         XCTAssertFalse(ToolProfile.observe.allows("ui_snapshot"))
         XCTAssertTrue(ToolProfile.owner.allows("ui_snapshot"))
+    }
+
+    /// #67 phase 2: `ui_action` presses buttons and sets values in other apps, so it is
+    /// input-class like `mouse` and `key`: it can type into a terminal or press a button
+    /// that runs something. Owner only.
+    func testUIActionIsOwnerOnlyShellClass() {
+        XCTAssertTrue(served.contains("ui_action"))
+        XCTAssertEqual(ToolProfile.localToolClass["ui_action"], .shell)
+        XCTAssertTrue(ToolProfile.shellCapableTools.contains("ui_action"))
+        XCTAssertFalse(ToolProfile.observeTools.contains("ui_action"))
+        XCTAssertFalse(ToolProfile.observe.allows("ui_action"))
+        XCTAssertTrue(ToolProfile.owner.allows("ui_action"))
     }
 
     /// Exactly two profiles (#59). `sandbox` promised a boundary that does not exist

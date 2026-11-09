@@ -109,6 +109,7 @@ public enum ToolProfile: String, Codable, Sendable, CaseIterable {
         "osascript": .shell,       // `do shell script`, JXA, NSTask
         "key": .shell,             // can type into a terminal
         "mouse": .shell,           // can open one
+        "ui_action": .shell,       // acts on other apps' UI: can set a terminal's text or press buttons that run things (#67 phase 2); owner only
     ]
 
     /// Local tools that reach a shell as the desktop user. Any profile with
