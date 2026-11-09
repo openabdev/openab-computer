@@ -15,8 +15,9 @@ public struct UIActionTool: Tool {
         background, and for focus before typing with `key`. A ref from a snapshot that is gone (the last \
         4 are kept for 5 minutes) or an element that changed is refused as stale: take a new \
         ui_snapshot. Take a new ui_snapshot after acting to confirm the result. Secure fields can be \
-        set; this daemon never logs or returns their value (a switchboard in front may audit call \
-        arguments). Drags, gestures and custom-drawn content stay on `screenshot` + `mouse`. Needs the \
+        set; this daemon never logs or returns their value. Through an OpenAB Switchboard, set_value on a \
+        secure field is refused unless the operator opted in, because the switchboard audits call \
+        arguments. Drags, gestures and custom-drawn content stay on `screenshot` + `mouse`. Needs the \
         Accessibility permission.
         """
     public let inputSchema: JSONValue = [
@@ -75,6 +76,10 @@ public struct UIActionTool: Tool {
         public static func unconfirmed(action: String, ref: String, app: String) -> String {
             "ui_action \(action) [\(ref)]: \(app) did not confirm in time. The action may have happened (a press that opens a dialog or menu often answers late); take a new ui_snapshot to check, and do not repeat it blindly"
         }
+        /// `set_value` on a secure field through a switchboard that has not opted in.
+        /// Points at a direct connection or at turning argument auditing off, never at
+        /// `key` typing: its `text` is audited the same way.
+        public static let secureOverSwitchboard = "set_value on a secure field is refused through the OpenAB Switchboard: the switchboard writes tool-call arguments to its audit log (redaction is pending in openabdev/openab-sb#16), so the value would be stored there. Nothing was done. Use a direct connection to this computer's /mcp, or have the operator set audit_args = false on the switchboard and start this agent with --switchboard-allow-secure-set-value"
         public static func failed(action: String, ref: String, code: Int32) -> String {
             "ui_action \(action) [\(ref)] failed (AX error \(code)); take a new ui_snapshot"
         }
@@ -91,6 +96,9 @@ public struct UIActionTool: Tool {
         /// One action at a time: they change UI state, and a messaging timeout is set
         /// on the shared cached element.
         var gate: UIAXGate
+        /// false on a switchboard socket unless the operator opted in: `set_value` on a
+        /// secure field is then refused before anything is done.
+        var allowSecureSetValue = true
 
         static let live = Environment(
             isTrusted: { AXLive.isTrusted() },
@@ -106,6 +114,13 @@ public struct UIActionTool: Tool {
 
     public init() { environment = .live }
     init(environment: Environment) { self.environment = environment }
+
+    /// This tool with secure `set_value` allowed or refused; everything else unchanged.
+    public func allowingSecureSetValue(_ allowed: Bool) -> UIActionTool {
+        var env = environment
+        env.allowSecureSetValue = allowed
+        return UIActionTool(environment: env)
+    }
 
     struct Request {
         var snapshotID = ""

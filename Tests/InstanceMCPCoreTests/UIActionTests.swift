@@ -467,6 +467,67 @@ final class UIActionToolTests: XCTestCase {
         }
     }
 
+    /// Through the switchboard (which audits call arguments, openab-sb#16), secure
+    /// set_value is refused unless the operator opted in. Non-secure fields and other
+    /// actions are unaffected, and the value is never in the reply or the log.
+    func testSecureSetValueThroughTheSwitchboard() async throws {
+        for subroleCase in [false, true] {
+            for allowed in [false, true] {
+                let f = Fixture()
+                if subroleCase {
+                    f.secure.attrs["AXRole"] = .string("AXTextField")
+                    f.secure.attrs["AXSubrole"] = .string("AXSecureTextField")
+                }
+                let id = await f.snapshot()
+                let secret = "canary-" + UUID().uuidString
+                let box = LogBox()
+                let cfg = ReverseAttachClient.Config.switchboard(url: URL(string: "wss://sb.example.invalid/vm/attach")!,
+                                                                 secret: "x", profile: .owner)
+                let served = allowed ? Switchboard.server(f.server, profile: .owner, allowSecureSetValue: true)
+                                     : Switchboard.server(f.server, profile: .owner)
+                let client = ReverseAttachClient(config: cfg, server: served, log: { box.add($0) })
+                func call(_ ref: String, _ action: String, _ value: JSONValue?) async throws -> JSONValue {
+                    var a: [String: JSONValue] = ["snapshot_id": .string(id), "ref": .string(ref), "action": .string(action)]
+                    if let value { a["value"] = value }
+                    let answered = await client.answer(String(decoding: rpc("tools/call", id: 7, params:
+                        ["name": "ui_action", "arguments": .object(a)]), as: UTF8.self))
+                    let reply = try XCTUnwrap(answered)
+                    XCTAssertFalse(reply.contains(secret), reply)
+                    return decodeJSON(Data(reply.utf8))["result"] ?? .null
+                }
+                let r = try await call("e4", "set_value", .string(secret))
+                let text = r["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+                if allowed {
+                    XCTAssertNil(r["isError"], text)
+                    XCTAssertEqual(f.secure.sets.map(\.0), ["AXValue"])
+                } else {
+                    XCTAssertEqual(r["isError"], true)
+                    XCTAssertEqual(text, UIActionTool.Errors.secureOverSwitchboard)
+                    XCTAssertTrue(f.secure.sets.isEmpty, "nothing was done")
+                    XCTAssertFalse(text.contains("`key`"), "key type is audited the same way")
+                    XCTAssertTrue(text.contains("/mcp") && text.contains("audit_args = false"), text)
+                }
+                // Focus on the secure field, and set_value on a plain field, still work.
+                let focus = try await call("e4", "focus", nil)
+                XCTAssertNil(focus["isError"])
+                let plain = try await call("e2", "set_value", "plain text")
+                XCTAssertNil(plain["isError"])
+                XCTAssertEqual(f.textArea.sets.first?.1, .string("plain text"))
+                for l in box.all { XCTAssertFalse(l.contains(secret), l) }
+                XCTAssertEqual(box.all.count, 3)
+            }
+        }
+        // A direct connection (/mcp, openab-pty attach) is not affected: the default is allowed.
+        XCTAssertTrue(UIActionTool().environment.allowSecureSetValue)
+        let full = MCPServer(name: "t", version: "0", tools: ToolCatalog.local(agentVersion: "t"))
+        let sbTool = Switchboard.server(full, profile: .owner).allTools.compactMap { $0 as? UIActionTool }
+        XCTAssertEqual(sbTool.map(\.environment.allowSecureSetValue), [false])
+        XCTAssertEqual(Switchboard.server(full, profile: .owner).toolNames, full.scoped(to: .owner).toolNames)
+        XCTAssertEqual(Switchboard.server(full, profile: .owner, allowSecureSetValue: true).allTools
+            .compactMap { ($0 as? UIActionTool)?.environment.allowSecureSetValue }, [true])
+        XCTAssertEqual(Switchboard.server(full, profile: .observe).toolNames, ["sys_info", "screenshot"])
+    }
+
     func testValueIsNeverInLogsOrErrorsForAnyTarget() async {
         let secret = "canary-" + UUID().uuidString
         let f = Fixture()

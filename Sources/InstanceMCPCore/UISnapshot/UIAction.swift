@@ -101,6 +101,9 @@ struct UIActionEngine {
             }
         }
         let secure = rec.masked || UINode.isSecure(role: nowRole, subrole: nowSubrole)
+        if secure, req.action == .setValue, !env.allowSecureSetValue {
+            throw ToolError(E.secureOverSwitchboard)
+        }
 
         // 2. Supported here, before anything is done.
         func names() throws -> [String] {

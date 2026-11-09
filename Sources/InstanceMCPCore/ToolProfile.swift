@@ -146,4 +146,16 @@ extension MCPServer {
             upstreamFilter: profile
         )
     }
+
+    /// The same server with each local tool passed through `transform` (order kept).
+    public func mappingTools(_ transform: (any Tool) -> any Tool) -> MCPServer {
+        MCPServer(
+            name: serverName,
+            version: serverVersion,
+            instructions: instructions,
+            tools: allTools.map(transform),
+            upstreams: upstreams,
+            upstreamFilter: upstreamFilter
+        )
+    }
 }

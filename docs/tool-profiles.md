@@ -97,7 +97,9 @@ but are not in `observe`. `ui_snapshot` changes nothing, but it is `owner`-only 
 that a screenshot does not show (scrolled-out rows, collapsed content, other windows with
 `all_windows`), so moving it into `observe` is a separate decision. `ui_action` (#67 phase 2)
 presses buttons and sets values in other apps, so it is `shell`-class like `mouse` and `key` and
-`owner` only. A screenshot still discloses whatever is on screen, but the agent cannot change
+`owner` only. Through `--switchboard` it also refuses `set_value` on secure fields unless the
+operator passes `--switchboard-allow-secure-set-value`, because openab-sb audits call arguments
+(redaction pending in openabdev/openab-sb#16). A screenshot still discloses whatever is on screen, but the agent cannot change
 anything.
 
 **`observe` protects the computer, not the agent.** Every screenshot goes into the agent's
