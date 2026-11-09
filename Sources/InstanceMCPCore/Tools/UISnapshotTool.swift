@@ -87,7 +87,7 @@ public struct UISnapshotTool: Tool {
             frontmostGate: .systemWide,
             appElement: { AXLive.appElement($0) },
             displays: { AXLive.displays() },
-            now: { ProcessInfo.processInfo.systemUptime },
+            now: { UIClock.now() },
             newSnapshotID: { "snap-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased() }
         )
     }

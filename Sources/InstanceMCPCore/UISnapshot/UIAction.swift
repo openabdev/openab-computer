@@ -12,7 +12,7 @@ enum UIActionKind: String, CaseIterable, Sendable {
     case decrement
 
     /// The AX action performed, for the actions that are one. `set_value` and `focus`
-    /// set an attribute instead (`focus` on a window raises it, see `UIActionEngine`).
+    /// set an attribute instead (`AXValue`, `AXFocused`).
     var axAction: String? {
         switch self {
         case .press: return AXAction.press
@@ -89,16 +89,18 @@ struct UIActionEngine {
                 // Its window, or a sheet inside it, must be one it was walked under.
                 guard rec.path.contains(w.identity) else { throw stale("has left its window") }
             case .success(nil):
-                // Menu items have no AXWindow: the root they came from must still be there.
+                // Only menu items have no AXWindow: an element walked under a window that
+                // no longer names one has left it.
+                guard rec.rootRole == "AXMenuBar" else { throw stale("has left its window") }
+                // The menu bar it came from must still be there.
                 if case .failure(.invalidElement) = try read(rec.root, { rec.root.attributes([AXAttr.role]) }) {
-                    throw stale("its window or menu bar is gone")
+                    throw stale("its menu bar is gone")
                 }
             case .failure(.invalidElement): throw stale("no longer exists")
             case .failure: throw stale("could not be re-read")
             }
         }
         let secure = rec.masked || UINode.isSecure(role: nowRole, subrole: nowSubrole)
-        let isWindow = role == "AXWindow"
 
         // 2. Supported here, before anything is done.
         func names() throws -> [String] {
@@ -118,7 +120,7 @@ struct UIActionEngine {
         func supports(_ kind: UIActionKind, names: () throws -> [String]) throws -> Bool {
             switch kind {
             case .setValue: return try settable(AXAttr.value)
-            case .focus: return isWindow ? try names().contains(AXAction.raise) : try settable(AXAttr.focused)
+            case .focus: return try settable(AXAttr.focused)
             default: return try names().contains(kind.axAction!)
             }
         }
@@ -132,11 +134,13 @@ struct UIActionEngine {
             }
             return try UIActionKind.allCases.filter { try supports($0, names: lazyNames) }.map(\.rawValue)
         }
-        func unsupported() -> ToolError {
+        /// Building the list can itself find the element stale or the budget spent;
+        /// those errors win over a misleading "nothing is supported".
+        func unsupported() throws -> ToolError {
             ToolError(E.unsupported(action: req.action.rawValue, ref: req.ref, role: role,
-                                    supported: (try? supportedList()) ?? []))
+                                    supported: try supportedList()))
         }
-        guard try supports(req.action, names: names) else { throw unsupported() }
+        guard try supports(req.action, names: names) else { throw try unsupported() }
 
         // 3. Activate only when asked; fail closed if the app did not come to the front.
         var activated = false
@@ -160,7 +164,7 @@ struct UIActionEngine {
             guard let v = req.value else { throw ToolError(E.unsupported(action: req.action.rawValue, ref: req.ref, role: role, supported: [])) }
             done = e.setValue(AXAttr.value, v)
         case .focus:
-            done = isWindow ? e.perform(AXAction.raise) : e.setValue(AXAttr.focused, .bool(true))
+            done = e.setValue(AXAttr.focused, .bool(true))
         default:
             done = e.perform(req.action.axAction!)
         }
@@ -169,7 +173,7 @@ struct UIActionEngine {
         case .failure(.timeout): throw ToolError(E.unconfirmed(action: req.action.rawValue, ref: req.ref, app: appName))
         case .failure(.invalidElement): throw stale("vanished before the action ran")
         case .failure(.apiDisabled): throw ToolError(E.notTrusted)
-        case .failure(let err) where err.isUnsupported: throw unsupported()
+        case .failure(let err) where err.isUnsupported: throw try unsupported()
         case .failure(.other(let code)): throw ToolError(E.failed(action: req.action.rawValue, ref: req.ref, code: code))
         }
 

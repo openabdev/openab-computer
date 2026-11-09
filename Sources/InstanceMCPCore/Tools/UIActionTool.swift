@@ -15,14 +15,15 @@ public struct UIActionTool: Tool {
         background, and for focus before typing with `key`. A ref from a snapshot that is gone (the last \
         4 are kept for 5 minutes) or an element that changed is refused as stale: take a new \
         ui_snapshot. Take a new ui_snapshot after acting to confirm the result. Secure fields can be \
-        set; their value is never logged or returned. Drags, gestures and custom-drawn content stay on \
-        `screenshot` + `mouse`. Needs the Accessibility permission.
+        set; this daemon never logs or returns their value (a switchboard in front may audit call \
+        arguments). Drags, gestures and custom-drawn content stay on `screenshot` + `mouse`. Needs the \
+        Accessibility permission.
         """
     public let inputSchema: JSONValue = [
         "type": "object",
         "properties": [
             "snapshot_id": ["type": "string", "description": "The snapshot_id of the ui_snapshot the ref came from."],
-            "ref": ["type": "string", "pattern": "^e[1-9][0-9]*$", "description": "A node ref from that snapshot (e1, e2, …)."],
+            "ref": ["type": "string", "pattern": .string(UIActionTool.refPattern), "description": "A node ref from that snapshot (e1, e2, …)."],
             "action": ["type": "string", "enum": .array(UIActionKind.allCases.map { .string($0.rawValue) })],
             "value": ["anyOf": [["type": "string", "maxLength": .number(Double(UIActionTool.maxValueLength))],
                                 ["type": "number"], ["type": "boolean"]],
@@ -40,6 +41,8 @@ public struct UIActionTool: Tool {
     public static let defaultTimeoutMs = 2000, minTimeoutMs = 100, maxTimeoutMs = 10_000
     public static let maxValueLength = 65_536
     public static let maxSnapshotIDLength = 64
+    /// One pattern for the schema and the parser.
+    public static let refPattern = "^e[1-9][0-9]{0,8}$"
 
     /// Error texts, pinned by tests. None of them ever contains the input `value`.
     public enum Errors {
@@ -93,7 +96,7 @@ public struct UIActionTool: Tool {
             isTrusted: { AXLive.isTrusted() },
             selfPid: ProcessInfo.processInfo.processIdentifier,
             cache: .shared,
-            now: { ProcessInfo.processInfo.systemUptime },
+            now: { UIClock.now() },
             activateApp: { AXLive.activate(pid: $0, deadline: $1) },
             gate: UIAXGate()
         )
@@ -123,7 +126,7 @@ public struct UIActionTool: Tool {
             throw JSONRPCError.invalidParams("snapshot_id must be at most \(maxSnapshotIDLength) characters")
         }
         r.snapshotID = id
-        guard let ref = a["ref"]?.stringValue, ref.range(of: "^e[1-9][0-9]{0,8}$", options: .regularExpression) != nil else {
+        guard let ref = a["ref"]?.stringValue, ref.range(of: refPattern, options: .regularExpression) != nil else {
             throw JSONRPCError.invalidParams("ref must look like e1, e2, …")
         }
         r.ref = ref

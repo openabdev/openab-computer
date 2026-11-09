@@ -8,6 +8,15 @@ struct UISnapshotResult {
     var elements: [String: any UIElement] { records.mapValues(\.element) }
 }
 
+/// The clock `ui_snapshot` and `ui_action` run on: monotonic, and still advancing while
+/// the Mac sleeps (`CLOCK_MONOTONIC_RAW` on Darwin; `systemUptime` stops), so a
+/// snapshot's 5-minute TTL means 5 minutes of wall time.
+enum UIClock {
+    static func now() -> TimeInterval {
+        Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1_000_000_000
+    }
+}
+
 /// One time budget for a whole `ui_snapshot` call: frontmost-app lookup, window
 /// selection and the walk. Every synchronous AX IPC is armed through `arm` first
 /// (including the second IPC of a children read), so no IPC starts after the budget

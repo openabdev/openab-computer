@@ -103,6 +103,8 @@ enum AXAttr {
     /// The window an element is in (absent for menu items and for the window itself).
     static let window = "AXWindow"
     static let menuBar = "AXMenuBar"
+    /// On the application element: set to true to bring the app to the front.
+    static let frontmost = "AXFrontmost"
     /// Text length in UTF-16 units; decides whether the value is read as a prefix.
     static let numberOfCharacters = "AXNumberOfCharacters"
 

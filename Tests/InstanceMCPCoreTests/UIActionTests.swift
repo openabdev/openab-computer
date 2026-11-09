@@ -262,13 +262,38 @@ final class UIActionToolTests: XCTestCase {
         let id = await f.snapshot(menuBar: true)
         f.menuBar.attrError = .invalidElement
         let r = await f.act(["snapshot_id": .string(id), "ref": "e9", "action": "press"])
-        XCTAssertEqual(r.text, UIActionTool.Errors.stale("e9", "its window or menu bar is gone"))
+        XCTAssertEqual(r.text, UIActionTool.Errors.stale("e9", "its menu bar is gone"))
         // A text area whose AXWindow went away and whose window is gone too.
         f.textArea.named["AXWindow"] = nil
         f.window.attrError = .invalidElement
         let r2 = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "focus"])
-        XCTAssertEqual(r2.text, UIActionTool.Errors.stale("e2", "its window or menu bar is gone"))
+        XCTAssertEqual(r2.text, UIActionTool.Errors.stale("e2", "has left its window"))
         assertNothingDone(f)
+    }
+
+    func testWindowDescendantWithNoWindowIsStaleEvenIfTheWindowLives() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.window.requested = []
+        // The recorded window still answers, but the field no longer names any window:
+        // only menu-bar refs may lack an AXWindow.
+        f.textArea.named["AXWindow"] = nil
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "x"])
+        XCTAssertEqual(r.text, UIActionTool.Errors.stale("e2", "has left its window"))
+        f.ok.named["AXWindow"] = nil
+        let r2 = await f.act(["snapshot_id": .string(id), "ref": "e3", "action": "press"])
+        XCTAssertEqual(r2.text, UIActionTool.Errors.stale("e3", "has left its window"))
+        XCTAssertTrue(f.window.requested.isEmpty, "no fallback to probing the old window")
+        assertNothingDone(f)
+    }
+
+    func testMenuItemWithNoWindowStillWorks() async {
+        let f = Fixture()
+        f.close.actions = ["AXPress"]
+        let id = await f.snapshot(menuBar: true)
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e9", "action": "press"])
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(f.close.performed, ["AXPress"])
     }
 
     func testUnreadableRoleRefIsRefused() async {
@@ -333,12 +358,42 @@ final class UIActionToolTests: XCTestCase {
         XCTAssertEqual(f.textArea.sets.map(\.0), ["AXFocused", "AXValue", "AXValue", "AXValue"])
         XCTAssertEqual(f.textArea.sets.map(\.1), [.bool(true), .string("text"), .number(3.5), .bool(true)])
 
-        // focus on a window raises it within its app (no activation).
+        // focus is AXFocused only: a window that offers AXRaise but no settable
+        // AXFocused is refused, never raised without activate.
         f.window.actions = ["AXRaise"]
         let w = await f.act(["snapshot_id": .string(id), "ref": "e1", "action": "focus"])
-        XCTAssertFalse(w.isToolError, w.text)
-        XCTAssertEqual(f.window.performed, ["AXRaise"])
+        XCTAssertEqual(w.text, UIActionTool.Errors.unsupported(action: "focus", ref: "e1", role: "AXWindow", supported: []))
+        XCTAssertTrue(f.window.performed.isEmpty, "not raised")
+        f.window.settable = ["AXFocused"]
+        let w2 = await f.act(["snapshot_id": .string(id), "ref": "e1", "action": "focus"])
+        XCTAssertFalse(w2.isToolError, w2.text)
+        XCTAssertEqual(f.window.sets.map(\.0), ["AXFocused"])
+        XCTAssertTrue(f.window.performed.isEmpty, "still not raised")
         XCTAssertTrue(f.events.all.isEmpty, "never activated")
+    }
+
+    func testUnsupportedReportsStaleFoundWhileListing() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        // set_value passes the settable check, the app rejects it as unsupported, and the
+        // element vanishes while the supported list is built: stale wins.
+        f.textArea.setError = .other(-25205)
+        f.textArea.actionNamesError = .invalidElement
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "x"])
+        XCTAssertEqual(r.text, UIActionTool.Errors.stale("e2", "no longer exists"))
+    }
+
+    func testSchemaAndParserShareTheRefPattern() {
+        XCTAssertEqual(UIActionTool().inputSchema["properties"]?["ref"]?["pattern"], .string(UIActionTool.refPattern))
+        XCTAssertThrowsError(try UIActionTool.parse(["snapshot_id": "s", "ref": "e1234567890", "action": "press"]))
+        XCTAssertNoThrow(try UIActionTool.parse(["snapshot_id": "s", "ref": "e123456789", "action": "press"]))
+    }
+
+    func testClockAdvancesMonotonically() {
+        let a = UIClock.now()
+        let b = UIClock.now()
+        XCTAssertGreaterThan(a, 0)
+        XCTAssertGreaterThanOrEqual(b, a)
     }
 
     func testSuccessResponse() async {
@@ -692,7 +747,7 @@ final class UIActionToolTests: XCTestCase {
     func testDescriptorSteersCallers() {
         let t = UIActionTool()
         XCTAssertEqual(t.name, "ui_action")
-        for s in ["ui_snapshot", "snapshot_id", "activate: true", "mouse", "Accessibility", "never logged"] {
+        for s in ["ui_snapshot", "snapshot_id", "activate: true", "mouse", "Accessibility", "never logs or returns their value", "switchboard"] {
             XCTAssertTrue(t.description.contains(s), s)
         }
         XCTAssertEqual(t.inputSchema["required"], ["snapshot_id", "ref", "action"])

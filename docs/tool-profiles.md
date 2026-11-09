@@ -41,12 +41,12 @@ They are named after the one boundary that is real: shell-equivalent or not.
 
 | Profile | Shell-equivalent? | Tools on macOS | Tools on Linux | Purpose |
 |---|---|---|---|---|
-| `owner` | **yes** | 43 | 41 | Full control: every local tool and every browser tool |
+| `owner` | **yes** | 44 | 41 | Full control: every local tool and every browser tool |
 | `observe` | **no** | 2 | 2 | Look, never act: system info and screenshots. The default |
 
 The counts include the 32 browser tools (`browser_*`), which exist only when the computer is
 configured with the Playwright upstream (`--upstream browser=…` on macOS, `MCP_UPSTREAM` on
-Linux). Without it, `owner` has 11 tools on macOS and 9 on Linux, and `observe` is unchanged.
+Linux). Without it, `owner` has 12 tools on macOS and 9 on Linux, and `observe` is unchanged.
 
 ## 2. Complete tool lists per profile
 

@@ -257,13 +257,22 @@ enum AXLive {
     /// `ui_action` with `activate: true` only: bring the app frontmost, then wait (20 ms
     /// polls, at most 0.5 s and never past the call's deadline) until it is. false when
     /// the app is gone or did not become active in time.
+    ///
+    /// Through AX first (`AXFrontmost = true` on the app element): macOS 14+ activation
+    /// is cooperative and may decline `NSRunningApplication.activate()` from a process
+    /// that is not itself active, as this agent never is, while a trusted AX client can
+    /// still set the attribute. `activate()` is the fallback when the AX write fails.
     static func activate(pid: Int32, deadline: UIDeadline) -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return false }
         func active() -> Bool {
             app.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
         }
         if active() { return true }
-        guard app.activate() else { return false }
+        let element = AXLiveElement(AXUIElementCreateApplication(pid))
+        guard deadline.arm(element) else { return false }
+        if case .failure = element.setValue(AXAttr.frontmost, .bool(true)) {
+            guard app.activate() else { return false }
+        }
         let stop = min(deadline.now() + 0.5, deadline.end)
         while deadline.now() < stop {
             if active() { return true }
