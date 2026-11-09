@@ -262,13 +262,21 @@ enum AXLive {
     /// is cooperative and may decline `NSRunningApplication.activate()` from a process
     /// that is not itself active, as this agent never is, while a trusted AX client can
     /// still set the attribute. `activate()` is the fallback when the AX write fails.
+    ///
+    /// Success is read back from the app's own `AXFrontmost` as well as from AppKit:
+    /// `isActive` and `frontmostApplication` are updated by notifications on this
+    /// process's main run loop, so a busy main thread could make a real activation
+    /// look failed.
     static func activate(pid: Int32, deadline: UIDeadline) -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return false }
+        let element = AXLiveElement(AXUIElementCreateApplication(pid))
         func active() -> Bool {
-            app.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+            if app.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return true }
+            guard deadline.arm(element),
+                  case .success(let attrs) = element.attributes([AXAttr.frontmost]) else { return false }
+            return attrs[AXAttr.frontmost] == .bool(true)
         }
         if active() { return true }
-        let element = AXLiveElement(AXUIElementCreateApplication(pid))
         guard deadline.arm(element) else { return false }
         if case .failure = element.setValue(AXAttr.frontmost, .bool(true)) {
             guard app.activate() else { return false }
