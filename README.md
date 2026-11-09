@@ -347,8 +347,8 @@ given Apple Development identity (any cert of yours; TCC grants are keyed on ide
 and runs `tailscale serve --bg --https=8444 http://127.0.0.1:8795`.
 
 Then, once, on the Mac's own screen, System Settings → Privacy & Security:
-- Screen & System Audio Recording → enable **OpenAB Computer**
-- Accessibility → enable **OpenAB Computer**
+- Screen & System Audio Recording → enable **OpenAB Computer** (older builds: `oab-instance-mcp`)
+- Accessibility → enable **OpenAB Computer** (older builds: `oab-instance-mcp`)
 
 From 0.9.0 the app shows as **OpenAB Computer** in System Settings, Finder and the menu bar. Older
 docs and earlier builds call it **oab-instance-mcp**; it is the same app (bundle id
