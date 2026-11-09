@@ -97,9 +97,15 @@ but are not in `observe`. `ui_snapshot` changes nothing, but it is `owner`-only 
 that a screenshot does not show (scrolled-out rows, collapsed content, other windows with
 `all_windows`), so moving it into `observe` is a separate decision. `ui_action` (#67 phase 2)
 presses buttons and sets values in other apps, so it is `shell`-class like `mouse` and `key` and
-`owner` only. Through `--switchboard` it also refuses `set_value` on secure fields unless the
-operator passes `--switchboard-allow-secure-set-value`, because openab-sb audits call arguments
-(redaction pending in openabdev/openab-sb#16). A screenshot still discloses whatever is on screen, but the agent cannot change
+`owner` only. Through a switchboard, `ui_action` arguments, including `set_value` values, are
+written to the switchboard's audit log unless the switchboard runs an openab-sb release that
+includes openabdev/openab-sb#16 (argument redaction, not merged yet). Do not send secrets through
+`set_value` over a switchboard until then; `key` typing has the same exposure, as it did before.
+Through `--switchboard` this daemon also refuses `set_value` on secure fields, doing nothing,
+unless the operator passes `--switchboard-allow-secure-set-value`. That stops the secret from
+being typed into the app, but the switchboard has already logged the call when it arrives.
+
+In `observe`, a screenshot still discloses whatever is on screen, but the agent cannot change
 anything.
 
 **`observe` protects the computer, not the agent.** Every screenshot goes into the agent's
