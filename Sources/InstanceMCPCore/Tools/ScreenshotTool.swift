@@ -45,11 +45,8 @@ public struct ScreenshotTool: Tool {
             throw ToolError("ScreenCaptureKit unavailable: \(error.localizedDescription). " +
                             "Grant Screen Recording to oab-instance-mcp in System Settings → Privacy & Security, then restart the agent.")
         }
-        let displays = content.displays.sorted { $0.displayID < $1.displayID }
-        // Put the main display first so index 0 is predictable.
-        let ordered = displays.sorted { a, b in
-            (a.displayID == CGMainDisplayID() ? 0 : 1) < (b.displayID == CGMainDisplayID() ? 0 : 1)
-        }
+        // Main display first so index 0 is predictable; shared with mouse and ui_snapshot.
+        let ordered = DisplayOrder.sorted(content.displays, mainID: CGMainDisplayID()) { $0.displayID }
         guard index >= 0, index < ordered.count else {
             throw ToolError("display \(index) out of range; \(ordered.count) display(s) available")
         }

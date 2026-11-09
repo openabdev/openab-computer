@@ -267,6 +267,29 @@ fn listed(v: &Value) -> Vec<String> {
         .collect()
 }
 
+/// macOS-only local tools (`osascript`, `exec`, `ui_snapshot`, #67) are in the shared
+/// vectors under `macos` only; the Linux port must neither list nor serve them.
+#[test]
+fn macos_only_tools_are_not_served_on_linux() {
+    let d = doc();
+    let linux = set(strings(&d["local_tools"]["linux"]));
+    let only: Vec<String> = strings(&d["local_tools"]["macos"])
+        .into_iter()
+        .filter(|t| !linux.contains(t))
+        .collect();
+    assert!(only.iter().any(|t| t == "ui_snapshot"), "{only:?}");
+    let owner = listed(&tool_list_with("owner", &[]));
+    for t in &only {
+        assert!(!owner.contains(t), "linux lists macOS-only {t}");
+        let err = handle_tool_call_with(&json!({"name": t, "arguments": {}}), "owner", None, &[])
+            .unwrap_err();
+        assert_eq!(
+            err,
+            (INVALID_PARAMS, format!("Invalid params: unknown tool: {t}"))
+        );
+    }
+}
+
 #[test]
 fn owner_reaches_every_upstream_tool_and_observe_none() {
     let d = doc();
