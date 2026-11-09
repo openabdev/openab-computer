@@ -15,8 +15,9 @@ struct UIRefRecord {
     /// The root it was walked from: a window, or the menu bar.
     let root: any UIElement
     let rootRole: String?
-    /// Identities from the root down to the element itself. The element's `AXWindow`
-    /// must be one of these (a window, or a sheet inside it), else it left its window.
+    /// Identities from the root down to the element itself. The element's `AXWindow`,
+    /// or else its nearest window, sheet, drawer or popover, must be one of these, else
+    /// it left its window.
     let path: [AnyHashable]
 }
 
