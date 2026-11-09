@@ -755,3 +755,86 @@ final class UIActionToolTests: XCTestCase {
         XCTAssertEqual(t.inputSchema["properties"]?["action"]?["enum"]?.arrayValue?.count, 8)
     }
 }
+
+/// `AXLive.activate` without a live app: the AX write, the AppKit fallback and the
+/// `AXFrontmost` read-back, each armed by the call's deadline.
+final class UIActivateTests: XCTestCase {
+    private func run(_ app: FakeUIElement, clock: FakeClock, timeoutMs: Int = 2000,
+                     appKitActive: @escaping () -> Bool = { false },
+                     fallback: @escaping () -> Bool = { false }, fallbacks: inout Int) -> Bool {
+        var n = 0
+        let ok = AXLive.activate(appElement: app, appKitActive: appKitActive,
+                                 fallbackActivate: { n += 1; return fallback() },
+                                 deadline: UIDeadline(timeoutMs: timeoutMs, now: { clock.t }),
+                                 sleep: { clock.t += $0 })
+        fallbacks = n
+        return ok
+    }
+
+    func testAlreadyFrontmostPerAXDoesNothing() {
+        let app = FakeUIElement(["AXFrontmost": .bool(true)]), clock = FakeClock()
+        var fallbacks = 0
+        XCTAssertTrue(run(app, clock: clock, fallbacks: &fallbacks))
+        XCTAssertTrue(app.sets.isEmpty)
+        XCTAssertEqual(fallbacks, 0)
+        XCTAssertEqual(app.requested, ["AXFrontmost"])
+        XCTAssertEqual(app.timeouts, [0.5], "the read-back is armed")
+    }
+
+    func testAXWriteIsReadBackWithoutAppKit() {
+        // AppKit never notices (a busy main run loop); the app's own AXFrontmost does.
+        let app = FakeUIElement(["AXFrontmost": .bool(false)]), clock = FakeClock()
+        var fallbacks = 0
+        XCTAssertTrue(run(app, clock: clock, fallbacks: &fallbacks))
+        XCTAssertEqual(app.sets.map(\.0), ["AXFrontmost"])
+        XCTAssertEqual(app.sets.first?.1, .bool(true))
+        XCTAssertEqual(fallbacks, 0)
+        XCTAssertFalse(app.timeouts.isEmpty)
+        XCTAssertTrue(app.timeouts.allSatisfy { $0 <= 0.5 })
+    }
+
+    func testFailedAXWriteFallsBackToAppKit() {
+        let app = FakeUIElement(["AXFrontmost": .bool(false)]), clock = FakeClock()
+        app.setError = .other(-25205)
+        var activated = false, fallbacks = 0
+        XCTAssertTrue(run(app, clock: clock, appKitActive: { activated }, fallback: { activated = true; return true },
+                          fallbacks: &fallbacks))
+        XCTAssertEqual(fallbacks, 1)
+    }
+
+    func testDeclinedFallbackFailsClosed() {
+        let app = FakeUIElement(["AXFrontmost": .bool(false)]), clock = FakeClock()
+        app.setError = .other(-25205)
+        var fallbacks = 0
+        XCTAssertFalse(run(app, clock: clock, fallbacks: &fallbacks))
+        XCTAssertEqual(fallbacks, 1)
+        XCTAssertEqual(clock.t, 0, "no wait after a declined activation")
+    }
+
+    func testFailedReadBackCountsAsNotActiveAndThePollIsBounded() {
+        // The write "succeeds" but the app never reports frontmost and reads fail.
+        let app = FakeUIElement(), clock = FakeClock()
+        app.attrError = .other(-25205)
+        var fallbacks = 0
+        XCTAssertFalse(run(app, clock: clock, fallbacks: &fallbacks))
+        XCTAssertGreaterThanOrEqual(clock.t, 0.5)
+        XCTAssertLessThan(clock.t, 0.6, "the poll stops after 0.5 s")
+    }
+
+    func testPollNeverRunsPastTheDeadline() {
+        let app = FakeUIElement(["AXFrontmost": .bool(false)]), clock = FakeClock()
+        app.onPerform = { app.attrs["AXFrontmost"] = .bool(false) }   // the app refuses
+        var fallbacks = 0
+        XCTAssertFalse(run(app, clock: clock, timeoutMs: 100, fallbacks: &fallbacks))
+        XCTAssertLessThan(clock.t, 0.15)
+    }
+
+    func testSpentBudgetMakesNoAXCall() {
+        let app = FakeUIElement(["AXFrontmost": .bool(false)]), clock = FakeClock()
+        var fallbacks = 0
+        XCTAssertFalse(run(app, clock: clock, timeoutMs: 0, fallbacks: &fallbacks))
+        XCTAssertTrue(app.requested.isEmpty)
+        XCTAssertTrue(app.sets.isEmpty)
+        XCTAssertEqual(fallbacks, 0)
+    }
+}

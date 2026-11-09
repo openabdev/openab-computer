@@ -269,9 +269,22 @@ enum AXLive {
     /// look failed.
     static func activate(pid: Int32, deadline: UIDeadline) -> Bool {
         guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return false }
-        let element = AXLiveElement(AXUIElementCreateApplication(pid))
+        return activate(
+            appElement: AXLiveElement(AXUIElementCreateApplication(pid)),
+            appKitActive: { app.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid },
+            fallbackActivate: { app.activate() },
+            deadline: deadline,
+            sleep: { Thread.sleep(forTimeInterval: $0) })
+    }
+
+    /// The provider-independent part of `activate(pid:deadline:)`, so the AX write, the
+    /// fallback, the `AXFrontmost` read-back and their deadline arming can be tested
+    /// against a fake element. Every AX call is armed; a failed read counts as not active.
+    static func activate(appElement element: any UIElement, appKitActive: () -> Bool,
+                         fallbackActivate: () -> Bool, deadline: UIDeadline,
+                         sleep: (TimeInterval) -> Void) -> Bool {
         func active() -> Bool {
-            if app.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return true }
+            if appKitActive() { return true }
             guard deadline.arm(element),
                   case .success(let attrs) = element.attributes([AXAttr.frontmost]) else { return false }
             return attrs[AXAttr.frontmost] == .bool(true)
@@ -279,12 +292,12 @@ enum AXLive {
         if active() { return true }
         guard deadline.arm(element) else { return false }
         if case .failure = element.setValue(AXAttr.frontmost, .bool(true)) {
-            guard app.activate() else { return false }
+            guard fallbackActivate() else { return false }
         }
         let stop = min(deadline.now() + 0.5, deadline.end)
         while deadline.now() < stop {
             if active() { return true }
-            Thread.sleep(forTimeInterval: 0.02)
+            sleep(0.02)
         }
         return active()
     }
