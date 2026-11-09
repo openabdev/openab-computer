@@ -58,13 +58,27 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cp "$SCRIPT_DIR/install-prebuilt.sh" "$APP/Contents/Resources/install-prebuilt.sh"
 chmod 755 "$APP/Contents/Resources/install-prebuilt.sh"
 
+# User-visible name. The bundle id, executable and .app file name stay
+# oab-instance-mcp (TCC grants and installed paths depend on them, see #63).
+# macOS shows a name other than the file name only when the bundle localizes
+# it AND the file name equals the base CFBundleDisplayName, so the base names
+# stay oab-instance-mcp and en.lproj carries "OpenAB Computer".
+DISPLAY_NAME="OpenAB Computer"
+mkdir -p "$APP/Contents/Resources/en.lproj"
+cat >"$APP/Contents/Resources/en.lproj/InfoPlist.strings" <<EOF
+"CFBundleDisplayName" = "$DISPLAY_NAME";
+"CFBundleName" = "$DISPLAY_NAME";
+EOF
+
 cat >"$APP/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleName</key><string>oab-instance-mcp</string>
-  <key>CFBundleDisplayName</key><string>OpenAB Instance MCP</string>
+  <key>CFBundleDisplayName</key><string>oab-instance-mcp</string>
+  <key>LSHasLocalizedDisplayName</key><true/>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>oab-instance-mcp</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
@@ -82,6 +96,7 @@ cat >"$APP/Contents/Info.plist" <<EOF
 EOF
 
 /usr/bin/plutil -lint "$APP/Contents/Info.plist" >/dev/null
+/usr/bin/plutil -lint "$APP/Contents/Resources/en.lproj/InfoPlist.strings" >/dev/null
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = "$BUNDLE_ID" ]
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION" ]
 

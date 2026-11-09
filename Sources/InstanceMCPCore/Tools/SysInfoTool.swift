@@ -85,9 +85,9 @@ public struct SysInfoTool: Tool {
         }.joined(separator: ", "))
         lines.append("tailscale: \(tail.isEmpty ? "none" : tail.joined(separator: ", "))")
         lines.append("permissions: screen_recording=\(screenRecording) accessibility=\(accessibility) full_disk_access=\(fullDiskAccessState)")
-        if !screenRecording { lines.append("→ screenshot will fail until Screen Recording is granted to oab-instance-mcp") }
-        if !accessibility { lines.append("→ mouse/key/ui_snapshot will fail until Accessibility is granted to oab-instance-mcp") }
-        if !fullDiskAccess { lines.append("→ protected Mail/Messages/Safari files will fail until Full Disk Access is granted to oab-instance-mcp") }
+        if !screenRecording { lines.append("→ screenshot will fail until Screen Recording is granted to OpenAB Computer (oab-instance-mcp)") }
+        if !accessibility { lines.append("→ mouse/key/ui_snapshot will fail until Accessibility is granted to OpenAB Computer (oab-instance-mcp)") }
+        if !fullDiskAccess { lines.append("→ protected Mail/Messages/Safari files will fail until Full Disk Access is granted to OpenAB Computer (oab-instance-mcp)") }
         lines.append("agent \(agentVersion)")
         return ToolResult(content: [.text(lines.joined(separator: "\n"))], structured: structured)
     }

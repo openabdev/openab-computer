@@ -30,8 +30,9 @@ LaunchAgent or config is written to root's home.
 
 ## One-time TCC grant
 
-After the first Developer-ID release install, enable **oab-instance-mcp** once under System Settings →
-Privacy & Security:
+After the first Developer-ID release install, enable **OpenAB Computer** once under System Settings →
+Privacy & Security (older docs and builds before 0.9.0 list it as **oab-instance-mcp**; the bundle id
+`dev.openab.instance-mcp` is unchanged, so it is the same entry):
 
 - Full Disk Access
 - Screen & System Audio Recording
