@@ -19,6 +19,25 @@ mkdir -p "$HOME1"
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = dev.openab.instance-mcp ]
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION" ]
 [ "$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' "$APP/Contents/Info.plist")" = true ]
+# Display name only: identity, executable and file name must not move (#63).
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" = oab-instance-mcp ]
+[ "$(basename "$APP")" = oab-instance-mcp.app ]
+# The localized name applies only while the base name equals the file name.
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP/Contents/Info.plist")" = oab-instance-mcp ]
+[ "$(/usr/libexec/PlistBuddy -c 'Print :LSHasLocalizedDisplayName' "$APP/Contents/Info.plist")" = true ]
+STRINGS="$APP/Contents/Resources/en.lproj/InfoPlist.strings"
+[ "$(/usr/bin/plutil -extract CFBundleDisplayName raw -o - "$STRINGS")" = "OpenAB Computer" ]
+[ "$(/usr/bin/plutil -extract CFBundleName raw -o - "$STRINGS")" = "OpenAB Computer" ]
+# Ask Foundation for the name Finder shows; it applies the localized-name rule.
+display_name() {
+  /usr/bin/osascript -l JavaScript \
+    -e 'function run(argv) { ObjC.import("Foundation"); return $.NSFileManager.defaultManager.displayNameAtPath(argv[0]).js }' \
+    "$1"
+}
+[ "$(display_name "$APP")" = "OpenAB Computer" ] || {
+  echo "packaging test: macOS shows '$(display_name "$APP")', expected 'OpenAB Computer'" >&2
+  exit 1
+}
 
 # The production installer must reject an unsigned app. Its test seams exercise
 # everything after that gate without changing the live user or launchd namespace.
@@ -35,6 +54,8 @@ PLIST="$HOME1/Library/LaunchAgents/dev.openab.instance-mcp.plist"
 TOKEN="$HOME1/.config/oab-instance-mcp/token"
 [ -d "$INSTALLED" ] && [ -f "$PLIST" ] && [ -s "$TOKEN" ]
 cmp "$APP/Contents/MacOS/oab-instance-mcp" "$INSTALLED/Contents/MacOS/oab-instance-mcp"
+[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INSTALLED/Contents/Info.plist")" = dev.openab.instance-mcp ]
+[ "$(display_name "$INSTALLED")" = "OpenAB Computer" ]
 [ "$(stat -f '%Lp' "$TOKEN")" = 600 ]
 [ "$(wc -c <"$TOKEN" | tr -d ' ')" = 65 ] # 64 hex + newline
 /usr/bin/plutil -lint "$PLIST" >/dev/null
@@ -116,6 +137,8 @@ grep -q 'Tailscale self UserID is empty or missing' "$TMP/bad-ts.out"
 ALLOW_UNSIGNED=1 "$ROOT/scripts/package-pkg.sh" "$APP" "$PKG" "$VERSION" >/dev/null
 /usr/sbin/pkgutil --payload-files "$PKG" | grep -q \
   '^\./Library/Application Support/OpenAB/instance-mcp/oab-instance-mcp.app/Contents/MacOS/oab-instance-mcp$'
+/usr/sbin/pkgutil --payload-files "$PKG" | grep -q \
+  '^\./Library/Application Support/OpenAB/instance-mcp/oab-instance-mcp.app/Contents/Resources/en.lproj/InfoPlist.strings$'
 EXPANDED="$TMP/expanded"
 /usr/sbin/pkgutil --expand "$PKG" "$EXPANDED"
 [ -x "$EXPANDED/Scripts/postinstall" ]

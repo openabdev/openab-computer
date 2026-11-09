@@ -36,7 +36,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         super.init()
         item.button?.image = Self.icon(active: false)
         item.button?.image?.isTemplate = true
-        item.button?.toolTip = "oab-instance-mcp \(version)"
+        item.button?.toolTip = "OpenAB Computer \(version)"
         menu.delegate = self
         item.menu = menu
     }
@@ -69,7 +69,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private static func icon(active: Bool) -> NSImage? {
         let name = active ? "desktopcomputer.and.arrow.down.fill" : "desktopcomputer.and.arrow.down"
         let cfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
-        return NSImage(systemSymbolName: name, accessibilityDescription: "oab-instance-mcp")?.withSymbolConfiguration(cfg)
+        return NSImage(systemSymbolName: name, accessibilityDescription: "OpenAB Computer")?.withSymbolConfiguration(cfg)
     }
 
     /// Fed every server log line; cheap string matching keeps the coupling to one closure.
@@ -103,7 +103,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         let permissions = PermissionProbe.current()
 
-        menu.addItem(label("oab-instance-mcp \(version)"))
+        menu.addItem(label("OpenAB Computer \(version)"))
         menu.addItem(label(url, action: #selector(copyURL), tip: "Click to copy"))
         if let token, !token.isEmpty {
             menu.addItem(label("Token: \(Self.mask(token))", action: #selector(copyToken), tip: "Click to copy the bearer token"))

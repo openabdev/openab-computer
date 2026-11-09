@@ -347,8 +347,12 @@ given Apple Development identity (any cert of yours; TCC grants are keyed on ide
 and runs `tailscale serve --bg --https=8444 http://127.0.0.1:8795`.
 
 Then, once, on the Mac's own screen, System Settings → Privacy & Security:
-- Screen & System Audio Recording → enable **oab-instance-mcp**
-- Accessibility → enable **oab-instance-mcp**
+- Screen & System Audio Recording → enable **OpenAB Computer**
+- Accessibility → enable **OpenAB Computer**
+
+From 0.9.0 the app shows as **OpenAB Computer** in System Settings, Finder and the menu bar. Older
+docs and earlier builds call it **oab-instance-mcp**; it is the same app (bundle id
+`dev.openab.instance-mcp`), so grants made under the old name carry over.
 
 then `launchctl kickstart -k gui/501/dev.openab.instance-mcp`. `sys_info` reports both as `true` when
 done. Grants survive re-signing with the same identity + bundle id (verified across 0.1.0→0.2.0).
@@ -367,7 +371,7 @@ kiro-cli mcp add --name macmini-mcp --url https://<host>.<tailnet>.ts.net:8444/m
 
 ## Menu bar
 
-With `--menu-bar` (deploy.sh sets it) the agent shows a status item: version, the public MCP URL
+With `--menu-bar` (deploy.sh sets it) the agent shows a status item: the name "OpenAB Computer" and version, the public MCP URL
 (click to copy), a masked bearer token line (click to copy the full token), live ✓/✗/? rows for
 Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window
 that auto-shows once on first launch when anything is missing), session / call counters with the

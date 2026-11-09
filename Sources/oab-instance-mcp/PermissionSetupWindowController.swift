@@ -97,7 +97,7 @@ final class PermissionSetupWindowController: NSWindowController, NSWindowDelegat
         title.font = .systemFont(ofSize: 20, weight: .semibold)
         stack.addArrangedSubview(title)
 
-        let intro = wrappingLabel("oab-instance-mcp runs in your logged-in desktop session. macOS requires you to approve each sensitive capability in System Settings. The app cannot approve them for you, and it never bypasses TCC.")
+        let intro = wrappingLabel("OpenAB Computer runs in your logged-in desktop session. macOS requires you to approve each sensitive capability in System Settings. The app cannot approve them for you, and it never bypasses TCC.")
         stack.addArrangedSubview(intro)
 
         summaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
