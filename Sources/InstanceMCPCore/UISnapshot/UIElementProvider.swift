@@ -100,8 +100,12 @@ enum AXAttr {
     static let windows = "AXWindows"
     static let focusedWindow = "AXFocusedWindow"
     static let mainWindow = "AXMainWindow"
-    /// The window an element is in (absent for menu items and for the window itself).
+    /// The window an element is in (absent for menu items, for the window itself and,
+    /// in some apps, for controls inside a sheet: #98).
     static let window = "AXWindow"
+    /// The window or sheet an element is in, where the app reports one (often absent).
+    static let topLevelUIElement = "AXTopLevelUIElement"
+    static let parent = "AXParent"
     static let menuBar = "AXMenuBar"
     /// On the application element: set to true to bring the app to the front.
     static let frontmost = "AXFrontmost"

@@ -83,19 +83,60 @@ struct UIActionEngine {
             func kind(_ r: String?, _ s: String?) -> String { (r ?? "unreadable") + (s.map { "/\($0)" } ?? "") }
             throw stale("is now \(kind(nowRole, nowSubrole)), not the \(kind(role, rec.subrole)) it was")
         }
+
+        /// Whether the element's container is one it was walked under: its
+        /// `AXTopLevelUIElement`, or else the nearest window, sheet, drawer or popover up
+        /// its `AXParent` chain, must be a recorded ancestor. The chain is bounded and every
+        /// read is armed. A container that is not recorded, or no container at all, is
+        /// false: nothing is searched for beyond the nearest one.
+        func inRecordedContainer() throws -> Bool {
+            let ancestors = Set(rec.path.dropLast())
+            switch try read(e, { e.element(AXAttr.topLevelUIElement) }) {
+            case .success(let t?) where ancestors.contains(t.identity): return true
+            case .success: break
+            case .failure(.invalidElement): throw stale("no longer exists")
+            case .failure: throw stale("could not be re-read")
+            }
+            var seen: Set<AnyHashable> = [e.identity]
+            var current: any UIElement = e
+            for _ in 0..<UISnapshotLimits.maxDepthCap {
+                let parent: any UIElement
+                switch try read(current, { current.element(AXAttr.parent) }) {
+                case .success(let p?): parent = p
+                case .success(nil): return false
+                case .failure(.invalidElement):
+                    if current.identity == e.identity { throw stale("no longer exists") }
+                    return false
+                case .failure: throw stale("could not be re-read")
+                }
+                guard seen.insert(parent.identity).inserted else { return false }
+                switch try read(parent, { parent.attributes([AXAttr.role]) }) {
+                case .success(let a):
+                    if let r = Self.str(a[AXAttr.role]), Self.containerRoles.contains(r) {
+                        return ancestors.contains(parent.identity)
+                    }
+                case .failure(.invalidElement): return false
+                case .failure: throw stale("could not be re-read")
+                }
+                current = parent
+            }
+            return false
+        }
         if e.identity != rec.root.identity {
             switch try read(e, { e.element(AXAttr.window) }) {
-            case .success(let w?):
-                // Its window, or a sheet inside it, must be one it was walked under.
-                guard rec.path.contains(w.identity) else { throw stale("has left its window") }
-            case .success(nil):
-                // Only menu items have no AXWindow: an element walked under a window that
-                // no longer names one has left it.
-                guard rec.rootRole == "AXMenuBar" else { throw stale("has left its window") }
-                // The menu bar it came from must still be there.
+            case .success(let w?) where rec.path.contains(w.identity):
+                // Its window, or a sheet inside it, is one it was walked under.
+                break
+            case .success(nil) where rec.rootRole == "AXMenuBar":
+                // Menu items have no AXWindow. The menu bar it came from must still be there.
                 if case .failure(.invalidElement) = try read(rec.root, { rec.root.attributes([AXAttr.role]) }) {
                     throw stale("its menu bar is gone")
                 }
+            case .success:
+                // No AXWindow, or one it was not walked under. Controls inside a sheet
+                // report no AXWindow at all (#98), so look for the container it is in now;
+                // it must be one recorded on its path.
+                guard try inRecordedContainer() else { throw stale("has left its window") }
             case .failure(.invalidElement): throw stale("no longer exists")
             case .failure: throw stale("could not be re-read")
             }
@@ -266,6 +307,11 @@ struct UIActionEngine {
         case .failure: return nil
         }
     }
+
+    /// The roles an element can sit in that `AXWindow` may not name for it (#98): a
+    /// window (any subrole, so also a floating panel or system dialog), a sheet, a
+    /// drawer, a popover.
+    static let containerRoles: Set<String> = ["AXWindow", "AXSheet", "AXDrawer", "AXPopover"]
 
     static func str(_ v: UIAttrValue?) -> String? {
         guard case .string(let s)? = v, !s.isEmpty else { return nil }

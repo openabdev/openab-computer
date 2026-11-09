@@ -817,6 +817,155 @@ final class UIActionToolTests: XCTestCase {
     }
 }
 
+/// Elements that report no `AXWindow` (#98): controls of a save sheet, as TextEdit's do,
+/// and of popovers and drawers. They are found through `AXTopLevelUIElement` or the
+/// nearest container up their `AXParent` chain, which must be one they were walked under.
+final class UIActionContainerTests: XCTestCase {
+    /// The fixture's window (e1, children e2–e5) plus a save sheet (e6) holding a
+    /// group (e7) with a Delete button (e8). Like TextEdit's: the sheet names the window
+    /// as its `AXWindow`, the button names none.
+    private final class Sheet {
+        let f = Fixture()
+        let sheet = node("AXSheet", "save")
+        let group = node("AXGroup")
+        let delete = node("AXButton", "Delete")
+        init(role: String = "AXSheet") {
+            sheet.attrs["AXRole"] = .string(role)
+            group.kids = [delete]
+            sheet.kids = [group]
+            f.window.kids.append(sheet)
+            sheet.named = ["AXWindow": f.window, "AXParent": f.window]
+            group.named = ["AXParent": sheet]
+            delete.named = ["AXParent": group]
+            delete.actions = ["AXPress"]
+        }
+        func press() async -> JSONRPCResponse {
+            let id = await f.snapshot()
+            return await f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        }
+    }
+
+    func testSheetControlWithNoWindowIsFoundThroughItsParents() async {
+        let s = Sheet()
+        let r = await s.press()
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(s.delete.performed, ["AXPress"])
+        XCTAssertEqual(s.delete.elementRequests, ["AXWindow", "AXTopLevelUIElement", "AXParent"])
+        XCTAssertEqual(s.group.elementRequests, ["AXParent"], "a group is not a container: keep going")
+        XCTAssertTrue(s.sheet.elementRequests.isEmpty, "the nearest container (the sheet) decides")
+    }
+
+    func testPopoverAndDrawerControlsToo() async {
+        for role in ["AXPopover", "AXDrawer"] {
+            let s = Sheet(role: role)
+            let r = await s.press()
+            XCTAssertFalse(r.isToolError, "\(role): \(r.text)")
+            XCTAssertEqual(s.delete.performed, ["AXPress"], role)
+        }
+    }
+
+    func testWindowControlWithNoWindowButAWindowParent() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.named = ["AXParent": f.window]
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "focus"])
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(f.textArea.sets.map(\.0), ["AXFocused"])
+    }
+
+    func testRecordedTopLevelElementIsEnough() async {
+        let s = Sheet()
+        s.delete.named = ["AXTopLevelUIElement": s.f.window]
+        let r = await s.press()
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(s.delete.elementRequests, ["AXWindow", "AXTopLevelUIElement"])
+    }
+
+    func testChainToAnUnrecordedContainerIsStale() async {
+        // Moved into another window's sheet: the nearest container was never walked.
+        let s = Sheet()
+        let id = await s.f.snapshot()
+        let otherWindow = node("AXWindow", "Other"), otherSheet = node("AXSheet")
+        otherSheet.named = ["AXParent": otherWindow]
+        s.delete.named = ["AXParent": otherSheet]
+        let r = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        XCTAssertEqual(r.text, UIActionTool.Errors.stale("e8", "has left its window"))
+
+        // The nearest container decides, even with a recorded window above it.
+        otherSheet.named = ["AXParent": s.f.window]
+        let r2 = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        XCTAssertEqual(r2.text, UIActionTool.Errors.stale("e8", "has left its window"))
+
+        // A window it was not walked under, by AXWindow and by AXTopLevelUIElement.
+        s.delete.named = ["AXWindow": otherWindow, "AXTopLevelUIElement": otherWindow, "AXParent": otherWindow]
+        let r3 = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        XCTAssertEqual(r3.text, UIActionTool.Errors.stale("e8", "has left its window"))
+
+        // No container at all, or a vanished ancestor.
+        s.delete.named = ["AXParent": s.group]
+        s.group.named = [:]
+        let r4 = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        XCTAssertEqual(r4.text, UIActionTool.Errors.stale("e8", "has left its window"))
+        s.group.attrError = .invalidElement
+        s.group.named = ["AXParent": s.sheet]
+        let r5 = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        XCTAssertEqual(r5.text, UIActionTool.Errors.stale("e8", "has left its window"))
+        XCTAssertTrue(s.delete.performed.isEmpty)
+    }
+
+    func testSheetControlFromAnotherPidOrRoleIsStale() async {
+        let s = Sheet()
+        let id = await s.f.snapshot()
+        s.delete.pidValue = 4242
+        let r = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        XCTAssertEqual(r.text, UIActionTool.Errors.stale("e8", "no longer belongs to TextEdit"))
+        s.delete.pidValue = 20
+        s.delete.attrs["AXRole"] = .string("AXCheckBox")
+        let r2 = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        XCTAssertEqual(r2.text, UIActionTool.Errors.stale("e8", "is now AXCheckBox, not the AXButton it was"))
+        XCTAssertTrue(s.delete.performed.isEmpty)
+        XCTAssertTrue(s.delete.elementRequests.isEmpty, "rejected before any container lookup")
+    }
+
+    func testParentChainIsBounded() async {
+        // A cycle ends the walk.
+        let s = Sheet()
+        let id = await s.f.snapshot()
+        let a = node("AXGroup"), b = node("AXGroup")
+        a.named = ["AXParent": b]
+        b.named = ["AXParent": a]
+        s.delete.named = ["AXParent": a]
+        let r = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press"])
+        XCTAssertEqual(r.text, UIActionTool.Errors.stale("e8", "has left its window"))
+
+        // So does the depth cap, before a recorded container far above.
+        var top: FakeUIElement = s.sheet
+        var chain: [FakeUIElement] = []
+        for _ in 0..<UISnapshotLimits.maxDepthCap {
+            let g = node("AXGroup")
+            g.named = ["AXParent": top]
+            chain.append(g)
+            top = g
+        }
+        s.delete.named = ["AXParent": top]
+        let r2 = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press", "timeout_ms": 10_000])
+        XCTAssertEqual(r2.text, UIActionTool.Errors.stale("e8", "has left its window"))
+        XCTAssertTrue(chain[0].elementRequests.isEmpty, "the last group before the sheet is never reached")
+        XCTAssertTrue(s.delete.performed.isEmpty)
+    }
+
+    func testParentReadsAreArmed() async {
+        let s = Sheet()
+        let id = await s.f.snapshot()
+        s.group.clock = s.f.clock
+        s.group.delay = 0.6
+        let r = await s.f.act(["snapshot_id": .string(id), "ref": "e8", "action": "press", "timeout_ms": 1000])
+        XCTAssertEqual(r.text, UIActionTool.Errors.appBusy("TextEdit"))
+        XCTAssertEqual(s.group.timeouts.last, 0.5, "a check gets at most 0.5 s")
+        XCTAssertTrue(s.delete.performed.isEmpty)
+    }
+}
+
 /// `AXLive.activate` without a live app: the AX write, the AppKit fallback and the
 /// `AXFrontmost` read-back, each armed by the call's deadline.
 final class UIActivateTests: XCTestCase {

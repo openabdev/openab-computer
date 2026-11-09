@@ -144,9 +144,11 @@ To act on a native app without taking the pointer: `ui_snapshot` → `ui_action 
 action}` → `ui_snapshot` again to confirm. `set_value` replaces the whole value, and some apps
 commit a field only on `confirm` or when focus moves. Drags, gestures and custom-drawn content
 that has no accessibility node stay on `screenshot` + `mouse`. A ref under a window is accepted
-only while the element still names a window it was walked under (`AXWindow`); controls from
-toolkits that never report `AXWindow` are therefore always refused as `stale ref … has left its
-window`, and also stay on `screenshot` + `mouse`.
+only while the element is still in a window it was walked under: its `AXWindow`, or, for
+controls that report none (a save or confirm sheet's buttons), its `AXTopLevelUIElement` or the
+nearest window, sheet, drawer or popover up its `AXParent` chain, must be one recorded on the
+ref's path. An element whose nearest container was never walked is refused as `stale ref … has
+left its window`.
 
 The loop the tools are designed for: `screenshot` → decide → `mouse`/`key`/`osascript` → `screenshot` to confirm.
 Verified 2026-09-22 from the laptop: open TextEdit, type a line, read it back, close via the save
