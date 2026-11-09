@@ -202,6 +202,18 @@ if [ -s "$SB_DIR/switchboard.url" ] && [ -s "$SB_DIR/switchboard.secret" ]; then
     fi
     ARGS+=(--switchboard-profile "$SB_PROFILE")
   fi
+  # ui_action set_value on secure fields is refused through the switchboard unless
+  # switchboard.secure-set-value says `allow`: openab-sb audits call arguments
+  # (redaction pending in openab-sb#16). Write `allow` only for a switchboard with
+  # audit_args = false.
+  if [ -s "$SB_DIR/switchboard.secure-set-value" ]; then
+    SB_SECURE=$(/usr/bin/head -n 1 "$SB_DIR/switchboard.secure-set-value" | /usr/bin/tr -d '[:space:]')
+    if [ "$SB_SECURE" = "allow" ]; then
+      ARGS+=(--switchboard-allow-secure-set-value)
+    else
+      echo "installer: warning: $SB_DIR/switchboard.secure-set-value says '$SB_SECURE', not 'allow'; secure set_value stays refused through the switchboard." >&2
+    fi
+  fi
 fi
 for i in "${!ARGS[@]}"; do "$PB" -c "Add :ProgramArguments:$i string ${ARGS[$i]}" "$PLIST"; done
 "$PB" -c 'Add :RunAtLoad bool true' "$PLIST"

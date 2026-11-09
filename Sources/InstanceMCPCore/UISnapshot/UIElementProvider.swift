@@ -46,6 +46,40 @@ public protocol UIElement: AnyObject {
     func stringPrefix(utf16Length: Int) -> Result<String?, UIAXError>
     /// Bound every later IPC to this element's app (`AXUIElementSetMessagingTimeout`).
     func setMessagingTimeout(_ seconds: Float)
+
+    // `ui_action` (#67 phase 2). Each of these is one IPC, except `pid`.
+
+    /// The pid of the app owning the element (`AXUIElementGetPid`, no IPC); nil if unknown.
+    var pid: Int32? { get }
+    /// The AX actions the element supports (`AXUIElementCopyActionNames`).
+    func actionNames() -> Result<[String], UIAXError>
+    /// Whether an attribute can be set (`AXUIElementIsAttributeSettable`).
+    func isSettable(_ name: String) -> Result<Bool, UIAXError>
+    /// Perform an AX action (`AXUIElementPerformAction`).
+    func perform(_ action: String) -> Result<Void, UIAXError>
+    /// Set a string, number or bool attribute (`AXUIElementSetAttributeValue`).
+    func setValue(_ name: String, _ value: UIAttrValue) -> Result<Void, UIAXError>
+}
+
+extension UIAXError {
+    /// The element does not support the attribute or action asked for (or rejects the
+    /// argument): attributeUnsupported, actionUnsupported, notImplemented, illegalArgument.
+    var isUnsupported: Bool {
+        if case .other(let code) = self { return [-25205, -25206, -25208, -25201].contains(code) }
+        return false
+    }
+}
+
+/// Action names, as the AX API spells them (kAX…Action).
+enum AXAction {
+    static let press = "AXPress"
+    static let showMenu = "AXShowMenu"
+    static let confirm = "AXConfirm"
+    static let cancel = "AXCancel"
+    static let increment = "AXIncrement"
+    static let decrement = "AXDecrement"
+    /// Brings a window to the front of its app without activating the app.
+    static let raise = "AXRaise"
 }
 
 /// Attribute names, as the AX API spells them (kAX…Attribute).
@@ -66,6 +100,11 @@ enum AXAttr {
     static let windows = "AXWindows"
     static let focusedWindow = "AXFocusedWindow"
     static let mainWindow = "AXMainWindow"
+    /// The window an element is in (absent for menu items and for the window itself).
+    static let window = "AXWindow"
+    static let menuBar = "AXMenuBar"
+    /// On the application element: set to true to bring the app to the front.
+    static let frontmost = "AXFrontmost"
     /// Text length in UTF-16 units; decides whether the value is read as a prefix.
     static let numberOfCharacters = "AXNumberOfCharacters"
 

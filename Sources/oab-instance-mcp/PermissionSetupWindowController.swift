@@ -222,7 +222,7 @@ private extension PermissionKind {
     var detail: String {
         switch self {
         case .screenRecording: return "Lets screenshot and OpenAB Connect's Screens pane see this desktop."
-        case .accessibility: return "Lets mouse and key control the pointer and keyboard, and ui_snapshot read app windows."
+        case .accessibility: return "Lets mouse and key control the pointer and keyboard, and ui_snapshot / ui_action read and operate app windows."
         case .fullDiskAccess: return "Lets exec/osascript open protected Mail, Messages, Safari, and other user data."
         }
     }

@@ -59,13 +59,26 @@ public enum Switchboard {
         }
     }
 
+    /// The server served on the switchboard socket: `server` scoped to `profile`,
+    /// with `ui_action` refusing `set_value` on secure fields unless
+    /// `allowSecureSetValue`. openab-sb writes call arguments to its audit log before
+    /// forwarding (redaction pending in openab-sb#16), so the refusal cannot keep one
+    /// attempted value out of that log; it stops secure input through an audited path
+    /// from succeeding by default.
+    public static func server(_ server: MCPServer, profile: ToolProfile, allowSecureSetValue: Bool = false) -> MCPServer {
+        server.scoped(to: profile, instructions: instructions(profile: profile, base: server.instructions))
+            .mappingTools { tool in
+                (tool as? UIActionTool)?.allowingSecureSetValue(allowSecureSetValue) ?? tool
+            }
+    }
+
     /// A client that dials `url` with the secret in `secretFile` (re-read on
     /// every dial) and serves `server` scoped to `profile`.
     public static func client(url: URL, secretFile: URL, secret: String, profile: ToolProfile,
-                              server: MCPServer,
+                              server: MCPServer, allowSecureSetValue: Bool = false,
                               onStateChange: @escaping @Sendable (ReverseAttachClient.State) -> Void = { _ in },
                               log: @escaping @Sendable (String) -> Void = { _ in }) -> ReverseAttachClient {
-        let scoped = server.scoped(to: profile, instructions: instructions(profile: profile, base: server.instructions))
+        let scoped = Self.server(server, profile: profile, allowSecureSetValue: allowSecureSetValue)
         let config = ReverseAttachClient.Config.switchboard(url: url, secret: secret, secretFile: secretFile,
                                                             profile: profile)
         return ReverseAttachClient(config: config, server: scoped, onStateChange: onStateChange, log: log)

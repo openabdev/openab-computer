@@ -10,7 +10,9 @@ public struct UISnapshotTool: Tool {
         state and frames. Default target: the frontmost app's focused window; pass `app` (bundle id or \
         name) or `pid`, and `window` (title or index) or `all_windows`. Frames are display POINTS relative \
         to `display`, the same space `screenshot` and `mouse` use. Each node has a `ref` valid only within \
-        this `snapshot_id`. Secure text fields are always masked. Prefer `browser_snapshot` for web pages; \
+        this `snapshot_id`; `ui_action` acts on a node by `{snapshot_id, ref}` (the last 4 snapshots stay \
+        usable for 5 minutes). Pass `include_menu_bar` to also walk the app's menu bar. Secure text fields \
+        are always masked. Prefer `browser_snapshot` for web pages; \
         use `screenshot` + `mouse` for custom-drawn content. Needs the Accessibility permission.
         """
     public let inputSchema: JSONValue = [
@@ -21,6 +23,7 @@ public struct UISnapshotTool: Tool {
             "window": ["anyOf": [["type": "string"], ["type": "integer", "minimum": 0]],
                        "description": "Window title (exact, else case-insensitive substring) or index into the app's window list. Default: focused window."],
             "all_windows": ["type": "boolean", "description": "Walk every window of the app.", "default": false],
+            "include_menu_bar": ["type": "boolean", "description": "Also walk the app's menu bar, after the windows (it shares max_nodes), so menu items get refs for ui_action.", "default": false],
             "max_depth": ["type": "integer", "description": "Levels below the window.",
                           "default": .number(Double(UISnapshotLimits.defaultDepth)),
                           "minimum": .number(Double(UISnapshotLimits.minDepth)),
@@ -73,6 +76,8 @@ public struct UISnapshotTool: Tool {
         var displays: @Sendable () -> UIDisplayMap
         var now: @Sendable () -> TimeInterval
         var newSnapshotID: @Sendable () -> String
+        /// Where refs are kept for `ui_action`.
+        var cache: UISnapshotCache = .shared
 
         static let live = Environment(
             isTrusted: { AXLive.isTrusted() },
@@ -82,7 +87,7 @@ public struct UISnapshotTool: Tool {
             frontmostGate: .systemWide,
             appElement: { AXLive.appElement($0) },
             displays: { AXLive.displays() },
-            now: { ProcessInfo.processInfo.systemUptime },
+            now: { UIClock.now() },
             newSnapshotID: { "snap-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased() }
         )
     }
@@ -97,6 +102,7 @@ public struct UISnapshotTool: Tool {
         var pid: Int32?
         var window: UITarget.WindowSelector?
         var allWindows = false
+        var includeMenuBar = false
         var limits = UISnapshotLimits()
     }
 
@@ -128,6 +134,10 @@ public struct UISnapshotTool: Tool {
             guard let b = v.boolValue else { throw JSONRPCError.invalidParams("all_windows must be a boolean") }
             r.allWindows = b
         }
+        if let v = a["include_menu_bar"], !v.isNull {
+            guard let b = v.boolValue else { throw JSONRPCError.invalidParams("include_menu_bar must be a boolean") }
+            r.includeMenuBar = b
+        }
         if r.app != nil, r.pid != nil { throw JSONRPCError.invalidParams("pass app or pid, not both") }
         if r.window != nil, r.allWindows { throw JSONRPCError.invalidParams("pass window or all_windows, not both") }
         r.limits = UISnapshotLimits(maxDepth: try int("max_depth"), maxNodes: try int("max_nodes"),
@@ -140,11 +150,14 @@ public struct UISnapshotTool: Tool {
         let env = environment
         guard env.isTrusted() else { throw ToolError(Errors.notTrusted) }
         // AX calls are synchronous IPC into another app: keep them off the cooperative pool.
-        let snapshot: UISnapshot = try await withCheckedThrowingContinuation { cont in
+        let result: UISnapshotResult = try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
-                cont.resume(with: Result { try Self.run(req, env: env).snapshot })
+                cont.resume(with: Result { try Self.run(req, env: env) })
             }
         }
+        // Partial (timed_out / truncated) snapshots are kept too: their refs are real.
+        env.cache.store(result, at: env.now())
+        let snapshot = result.snapshot
         return ToolResult(content: [.text(snapshot.renderText())], structured: snapshot.json)
     }
 
@@ -163,8 +176,18 @@ public struct UISnapshotTool: Tool {
         let app = try UITarget.resolveApp(app: req.app, pid: req.pid, frontmostPid: front,
                                           running: running, selfPid: env.selfPid).get()
         let root = env.appElement(app.pid)
-        let windows = try UITarget.windows(of: root, appName: app.displayName, selector: req.window,
+        var windows = try UITarget.windows(of: root, appName: app.displayName, selector: req.window,
                                            all: req.allWindows, deadline: deadline)
+        if req.includeMenuBar {
+            guard deadline.arm(root) else { throw ToolError(Errors.appBusy(app.displayName)) }
+            switch root.element(AXAttr.menuBar) {
+            case .success(let bar?): windows.append(bar)
+            case .success(nil): break
+            case .failure(.apiDisabled): throw ToolError(Errors.notTrusted)
+            case .failure(.timeout): throw ToolError(Errors.appBusy(app.displayName))
+            case .failure: break
+            }
+        }
         let walker = UITreeWalker(limits: req.limits, newSnapshotID: env.newSnapshotID)
         return try walker.walk(app: app, windows: windows, displays: env.displays(), deadline: deadline)
     }

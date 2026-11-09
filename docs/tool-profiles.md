@@ -41,24 +41,24 @@ They are named after the one boundary that is real: shell-equivalent or not.
 
 | Profile | Shell-equivalent? | Tools on macOS | Tools on Linux | Purpose |
 |---|---|---|---|---|
-| `owner` | **yes** | 43 | 41 | Full control: every local tool and every browser tool |
+| `owner` | **yes** | 44 | 41 | Full control: every local tool and every browser tool |
 | `observe` | **no** | 2 | 2 | Look, never act: system info and screenshots. The default |
 
 The counts include the 32 browser tools (`browser_*`), which exist only when the computer is
 configured with the Playwright upstream (`--upstream browser=…` on macOS, `MCP_UPSTREAM` on
-Linux). Without it, `owner` has 11 tools on macOS and 9 on Linux, and `observe` is unchanged.
+Linux). Without it, `owner` has 12 tools on macOS and 9 on Linux, and `observe` is unchanged.
 
 ## 2. Complete tool lists per profile
 
 ### `owner`
 
-#### macOS — 43 tools
+#### macOS — 44 tools
 
 | Category | Tools |
 |---|---|
 | System | `sys_info` |
 | Shell | `exec`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel` |
-| Screen / input | `screenshot`, `ui_snapshot`, `mouse`, `key`, `osascript` |
+| Screen / input | `screenshot`, `ui_snapshot`, `ui_action`, `mouse`, `key`, `osascript` |
 | Browser (32) | `browser_navigate`, `browser_navigate_back`, `browser_snapshot`, `browser_find`, `browser_click`, `browser_type`, `browser_fill_form`, `browser_press_key`, `browser_hover`, `browser_select_option`, `browser_wait_for`, `browser_tabs`, `browser_take_screenshot`, `browser_console_messages`, `browser_resize`, `browser_evaluate`, `browser_run_code_unsafe`, `browser_file_upload`, `browser_drop`, `browser_pdf_save`, `browser_network_requests`, `browser_network_request`, `browser_handle_dialog`, `browser_emulate_media`, `browser_close`, `browser_drag`, `browser_mouse_move_xy`, `browser_mouse_click_xy`, `browser_mouse_drag_xy`, `browser_mouse_down`, `browser_mouse_up`, `browser_mouse_wheel` |
 
 #### Linux — 41 tools
@@ -70,7 +70,7 @@ Linux). Without it, `owner` has 11 tools on macOS and 9 on Linux, and `observe` 
 | Screen / input | `screenshot`, `mouse`, `key` |
 | Browser (32) | the same 32 as on macOS |
 
-Linux has no `osascript`, and no `ui_snapshot` yet (an AT-SPI version is planned,
+Linux has no `osascript`, and no `ui_snapshot` or `ui_action` yet (AT-SPI versions are planned,
 [#67](https://github.com/openabdev/openab-computer/issues/67)). `bash` is the counterpart of macOS `exec`; the four job tools have
 the same names and contract on both (#32 item 4).
 
@@ -95,7 +95,18 @@ classified `observe`. `exec_poll`, `exec_list` and `ui_snapshot` are `observe`-c
 but are not in `observe`. `ui_snapshot` changes nothing, but it is `owner`-only in phase 1
 ([#67](https://github.com/openabdev/openab-computer/issues/67)): it reads field values and text
 that a screenshot does not show (scrolled-out rows, collapsed content, other windows with
-`all_windows`), so moving it into `observe` is a separate decision. A screenshot still discloses whatever is on screen, but the agent cannot change
+`all_windows`), so moving it into `observe` is a separate decision. `ui_action` (#67 phase 2)
+presses buttons and sets values in other apps, so it is `shell`-class like `mouse` and `key` and
+`owner` only. Through a switchboard older than openab-sb 0.2.2, `ui_action` arguments, including
+`set_value` values, are written to the switchboard's audit log. openab-sb 0.2.2 includes
+openabdev/openab-sb#16 (argument redaction) and records `value` and `key` `text` only as a
+redacted length. Do not send secrets through `set_value` over an older switchboard; `key` typing
+has the same exposure there, as it did before.
+Through `--switchboard` this daemon also refuses `set_value` on secure fields, doing nothing,
+unless the operator passes `--switchboard-allow-secure-set-value`. That stops the secret from
+being typed into the app, but the switchboard has already logged the call when it arrives.
+
+In `observe`, a screenshot still discloses whatever is on screen, but the agent cannot change
 anything.
 
 **`observe` protects the computer, not the agent.** Every screenshot goes into the agent's
@@ -110,9 +121,9 @@ allowlist (model API, git remotes, package registries).
 
 | | macOS | Linux |
 |---|---|---|
-| Local tools removed | `exec`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel`, `osascript`, `ui_snapshot`, `mouse`, `key` (9) | `bash`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel`, `mouse`, `key` (7) |
+| Local tools removed | `exec`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel`, `osascript`, `ui_snapshot`, `ui_action`, `mouse`, `key` (10) | `bash`, `exec_start`, `exec_poll`, `exec_list`, `exec_cancel`, `mouse`, `key` (7) |
 | Browser tools removed | all 32, and any added later | all 32, and any added later |
-| Total | 43 → 2 | 41 → 2 |
+| Total | 44 → 2 | 41 → 2 |
 | **Less privilege?** | **Yes**: no tool can type, run or change state | **Yes** |
 
 On a reverse attach, a long `exec`, `osascript` or `bash` call (`timeout_secs` over 100) is

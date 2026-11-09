@@ -1,11 +1,20 @@
 import Foundation
 import CoreGraphics
 
-/// A snapshot plus the element behind every ref. Phase 1 discards `elements`;
-/// phase 2 (`ui_action`) keeps it so a `{snapshot_id, ref}` pair can be acted on.
+/// A snapshot plus what `ui_action` needs to act on each ref later.
 struct UISnapshotResult {
     let snapshot: UISnapshot
-    let elements: [String: any UIElement]
+    let records: [String: UIRefRecord]
+    var elements: [String: any UIElement] { records.mapValues(\.element) }
+}
+
+/// The clock `ui_snapshot` and `ui_action` run on: monotonic, and still advancing while
+/// the Mac sleeps (`CLOCK_MONOTONIC_RAW` on Darwin; `systemUptime` stops), so a
+/// snapshot's 5-minute TTL means 5 minutes of wall time.
+enum UIClock {
+    static func now() -> TimeInterval {
+        Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1_000_000_000
+    }
 }
 
 /// One time budget for a whole `ui_snapshot` call: frontmost-app lookup, window
@@ -39,6 +48,16 @@ struct UIDeadline {
     func arm(_ e: any UIElement) -> Bool {
         guard let t = callTimeout() else { return false }
         e.setMessagingTimeout(t)
+        return true
+    }
+
+    /// Bound the next call to `e` by everything left of the budget (floored at
+    /// 0.05 s), not by the 0.5 s per-read ceiling: `ui_action` uses it for the action
+    /// itself, which an app answers only after handling it. false once spent.
+    func armAll(_ e: any UIElement) -> Bool {
+        let remaining = end - now()
+        guard remaining > 0 else { return false }
+        e.setMessagingTimeout(Float(max(UISnapshotLimits.messagingTimeoutFloor, remaining)))
         return true
     }
 
@@ -123,19 +142,22 @@ struct UITreeWalker {
             if let parent = item.parent { parent.children.append(built) } else { roots.append(built) }
         }
 
-        var elements: [String: any UIElement] = [:]
+        var records: [String: UIRefRecord] = [:]
         var counter = 0
-        func finish(_ b: Building) -> UINode {
+        func finish(_ b: Building, root: Building, ancestors: [AnyHashable]) -> UINode {
             counter += 1
             var n = b.node
             n.ref = "e\(counter)"
-            elements[n.ref] = b.element
-            n.children = b.children.map(finish)
+            let path = ancestors + [b.element.identity]
+            records[n.ref] = UIRefRecord(element: b.element, role: n.role, subrole: n.subrole, title: n.title,
+                                         masked: n.masked, root: root.element, rootRole: root.node.role,
+                                         path: path)
+            n.children = b.children.map { finish($0, root: root, ancestors: path) }
             return n
         }
-        snap.windows = roots.map(finish)
+        snap.windows = roots.map { finish($0, root: $0, ancestors: []) }
         snap.elapsedMs = deadline.elapsedMs
-        return UISnapshotResult(snapshot: snap, elements: elements)
+        return UISnapshotResult(snapshot: snap, records: records)
     }
 
     /// Read one element. nil means drop it (it vanished). `budget` is how many more

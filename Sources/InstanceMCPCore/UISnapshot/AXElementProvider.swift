@@ -177,6 +177,42 @@ final class AXLiveElement: UIElement {
     func setMessagingTimeout(_ seconds: Float) {
         AXUIElementSetMessagingTimeout(ax, seconds)
     }
+
+    var pid: Int32? {
+        var p: pid_t = 0
+        return AXUIElementGetPid(ax, &p) == .success && p > 0 ? p : nil
+    }
+
+    func actionNames() -> Result<[String], UIAXError> {
+        var out: CFArray?
+        let err = AXUIElementCopyActionNames(ax, &out)
+        if err != .success { return Self.isAbsent(err) ? .success([]) : .failure(Self.map(err)) }
+        return .success(((out as NSArray?) as? [String]) ?? [])
+    }
+
+    func isSettable(_ name: String) -> Result<Bool, UIAXError> {
+        var settable: DarwinBoolean = false
+        let err = AXUIElementIsAttributeSettable(ax, name as CFString, &settable)
+        if err != .success { return Self.isAbsent(err) ? .success(false) : .failure(Self.map(err)) }
+        return .success(settable.boolValue)
+    }
+
+    func perform(_ action: String) -> Result<Void, UIAXError> {
+        let err = AXUIElementPerformAction(ax, action as CFString)
+        return err == .success ? .success(()) : .failure(Self.map(err))
+    }
+
+    func setValue(_ name: String, _ value: UIAttrValue) -> Result<Void, UIAXError> {
+        let cf: CFTypeRef
+        switch value {
+        case .string(let s): cf = s as CFString
+        case .number(let d): cf = NSNumber(value: d)
+        case .bool(let b): cf = b ? kCFBooleanTrue : kCFBooleanFalse
+        case .point, .size: return .failure(.other(AXError.illegalArgument.rawValue))
+        }
+        let err = AXUIElementSetAttributeValue(ax, name as CFString, cf)
+        return err == .success ? .success(()) : .failure(Self.map(err))
+    }
 }
 
 /// The live sources `UISnapshotTool` reads from. All non-prompting.
@@ -216,5 +252,53 @@ enum AXLive {
     static func displays() -> UIDisplayMap {
         let list = DisplayOrder.activeDisplayIDs().map { (id: UInt32($0), bounds: CGDisplayBounds($0)) }
         return UIDisplayMap(displays: list, mainID: CGMainDisplayID())
+    }
+
+    /// `ui_action` with `activate: true` only: bring the app frontmost, then wait (20 ms
+    /// polls, at most 0.5 s and never past the call's deadline) until it is. false when
+    /// the app is gone or did not become active in time.
+    ///
+    /// Through AX first (`AXFrontmost = true` on the app element): macOS 14+ activation
+    /// is cooperative and may decline `NSRunningApplication.activate()` from a process
+    /// that is not itself active, as this agent never is, while a trusted AX client can
+    /// still set the attribute. `activate()` is the fallback when the AX write fails.
+    ///
+    /// Success is read back from the app's own `AXFrontmost` as well as from AppKit:
+    /// `isActive` and `frontmostApplication` are updated by notifications on this
+    /// process's main run loop, so a busy main thread could make a real activation
+    /// look failed.
+    static func activate(pid: Int32, deadline: UIDeadline) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated else { return false }
+        return activate(
+            appElement: AXLiveElement(AXUIElementCreateApplication(pid)),
+            appKitActive: { app.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid },
+            fallbackActivate: { app.activate() },
+            deadline: deadline,
+            sleep: { Thread.sleep(forTimeInterval: $0) })
+    }
+
+    /// The provider-independent part of `activate(pid:deadline:)`, so the AX write, the
+    /// fallback, the `AXFrontmost` read-back and their deadline arming can be tested
+    /// against a fake element. Every AX call is armed; a failed read counts as not active.
+    static func activate(appElement element: any UIElement, appKitActive: () -> Bool,
+                         fallbackActivate: () -> Bool, deadline: UIDeadline,
+                         sleep: (TimeInterval) -> Void) -> Bool {
+        func active() -> Bool {
+            if appKitActive() { return true }
+            guard deadline.arm(element),
+                  case .success(let attrs) = element.attributes([AXAttr.frontmost]) else { return false }
+            return attrs[AXAttr.frontmost] == .bool(true)
+        }
+        if active() { return true }
+        guard deadline.arm(element) else { return false }
+        if case .failure = element.setValue(AXAttr.frontmost, .bool(true)) {
+            guard fallbackActivate() else { return false }
+        }
+        let stop = min(deadline.now() + 0.5, deadline.end)
+        while deadline.now() < stop {
+            if active() { return true }
+            sleep(0.02)
+        }
+        return active()
     }
 }

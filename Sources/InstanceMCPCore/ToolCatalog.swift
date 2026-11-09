@@ -6,6 +6,6 @@ import Foundation
 public enum ToolCatalog {
     public static func local(agentVersion: String) -> [any Tool] {
         [SysInfoTool(agentVersion: agentVersion), ExecTool(), ExecStartTool(), ExecPollTool(),
-         ExecListTool(), ExecCancelTool(), ScreenshotTool(), UISnapshotTool(), MouseTool(), KeyTool(), OsascriptTool()]
+         ExecListTool(), ExecCancelTool(), ScreenshotTool(), UISnapshotTool(), UIActionTool(), MouseTool(), KeyTool(), OsascriptTool()]
     }
 }

@@ -267,7 +267,7 @@ fn listed(v: &Value) -> Vec<String> {
         .collect()
 }
 
-/// macOS-only local tools (`osascript`, `exec`, `ui_snapshot`, #67) are in the shared
+/// macOS-only local tools (`osascript`, `exec`, `ui_snapshot`, `ui_action`, #67) are in the shared
 /// vectors under `macos` only; the Linux port must neither list nor serve them.
 #[test]
 fn macos_only_tools_are_not_served_on_linux() {
@@ -278,6 +278,7 @@ fn macos_only_tools_are_not_served_on_linux() {
         .filter(|t| !linux.contains(t))
         .collect();
     assert!(only.iter().any(|t| t == "ui_snapshot"), "{only:?}");
+    assert!(only.iter().any(|t| t == "ui_action"), "{only:?}");
     let owner = listed(&tool_list_with("owner", &[]));
     for t in &only {
         assert!(!owner.contains(t), "linux lists macOS-only {t}");

@@ -27,11 +27,13 @@ struct Options {
     var switchboardProfile: ToolProfile = .observe
     /// The name given to --switchboard-profile when it was mapped (`desktop`, #59).
     var switchboardRequestedProfile: String? = nil
+    /// Let `ui_action` set secure fields through the switchboard (refused by default).
+    var switchboardAllowSecureSetValue = false
 }
 
 func usage() -> Never {
     print("""
-    oab-instance-mcp \(version) — MCP server exposing this Mac (exec / screenshot / ui_snapshot / mouse / key / osascript / sys_info)
+    oab-instance-mcp \(version) — MCP server exposing this Mac (exec / screenshot / ui_snapshot / ui_action / mouse / key / osascript / sys_info)
 
     USAGE: oab-instance-mcp [--host 127.0.0.1] [--port 8795] [--path /mcp]
                         [--allow-login <email>]... [--token <str> | --token-file <path>]
@@ -66,6 +68,10 @@ func usage() -> Never {
                       Tool profile served to the switchboard (default observe: sys_info + screenshot;
                       owner: every tool, including the shell and the browser). The switchboard's own
                       per-caller allowlist applies on top.
+      --switchboard-allow-secure-set-value
+                      Let ui_action set_value fill secure (password) fields through the switchboard.
+                      Off by default: openab-sb writes call arguments to its audit log. Turn it on only
+                      for a switchboard that does not record them (audit_args = false).
       --menu-bar      Show a status item in the menu bar (permissions, activity, restart/quit).
       --public-url    The URL clients use (shown/copied from the menu); defaults to the local one.
 
@@ -100,6 +106,7 @@ while !args.isEmpty {
     case "--no-attach": opts.attach = false
     case "--switchboard": opts.switchboard = next(a)
     case "--switchboard-secret-file": opts.switchboardSecretFile = next(a)
+    case "--switchboard-allow-secure-set-value": opts.switchboardAllowSecureSetValue = true
     case "--switchboard-profile":
         let v = next(a)
         // The retired `desktop` (a 0.8.x plist flag) serves `observe` with a warning
@@ -149,6 +156,8 @@ if let raw = opts.switchboard {
     switchboardTarget = (url, file, s.trimmingCharacters(in: .whitespacesAndNewlines))
 } else if opts.switchboardSecretFile != nil {
     fputs("--switchboard-secret-file needs --switchboard\n", stderr); exit(64)
+} else if opts.switchboardAllowSecureSetValue {
+    fputs("--switchboard-allow-secure-set-value needs --switchboard\n", stderr); exit(64)
 }
 
 let auth = AuthPolicy(allowedLogins: opts.allowLogins, bearerToken: opts.token, allowLocalUnauthenticated: opts.insecureLocal)
@@ -183,7 +192,10 @@ let server = MCPServer(
         Call `sys_info` when unsure which permissions or displays exist. If `ui_snapshot` is available, \
         use it for native apps: it returns the window's accessibility tree (roles, titles, values, frames \
         in the same display points `mouse` takes), cheaper and more exact than reading a screenshot; fall \
-        back to `screenshot` for custom-drawn content.\(opts.upstreams.isEmpty ? "" : """
+        back to `screenshot` for custom-drawn content. To act on a node, call `ui_action` with its \
+        `snapshot_id`, `ref` and `action` (press, set_value, focus, …): no pointer movement, no focus \
+        stealing; then take a new `ui_snapshot` to confirm. Use `mouse` for drags and custom-drawn \
+        content.\(opts.upstreams.isEmpty ? "" : """
          A browser is available through the `browser_*` tools (Playwright, a real window on this Mac's \
         desktop): prefer `browser_navigate` + `browser_snapshot` (accessibility tree as text) to read a \
         page, and `browser_click` / `browser_type` / `browser_fill_form` to act — they are exact and need \
@@ -232,11 +244,13 @@ if let attachManager {
 // Global for the same reason as `http`: the client must outlive this scope.
 let switchboardClient: ReverseAttachClient? = switchboardTarget.map { t in
     Switchboard.client(url: t.url, secretFile: t.file, secret: t.secret, profile: opts.switchboardProfile,
-                       server: server, log: log)
+                       server: server, allowSecureSetValue: opts.switchboardAllowSecureSetValue, log: log)
 }
 if let switchboardClient, let t = switchboardTarget {
     log("switchboard: dialling \(t.url.absoluteString) as \(opts.switchboardProfile.rawValue)" +
-        (opts.switchboardRequestedProfile.map { " (requested \($0))" } ?? ""))
+        (opts.switchboardRequestedProfile.map { " (requested \($0))" } ?? "") +
+        (opts.switchboardProfile.allows("ui_action")
+            ? " secure_set_value=\(opts.switchboardAllowSecureSetValue ? "allowed" : "refused")" : ""))
     Task { await switchboardClient.start() }
 }
 
