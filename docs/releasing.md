@@ -6,13 +6,16 @@ users and inspection.
 
 ## Artifacts
 
-A `vMAJOR.MINOR.PATCH` tag publishes:
+A `vMAJOR.MINOR.PATCH` tag publishes a GitHub Release titled `oab-computer VERSION` with:
 
 | Artifact | Use |
 |---|---|
 | `oab-instance-mcp-VERSION-universal.pkg` | Recommended. Double-click; installs/configures the app for the logged-in desktop user |
 | `oab-instance-mcp-VERSION-universal.app.zip` | Pre-signed app, no package receipt. Contains `Contents/Resources/install-prebuilt.sh` for manual installation |
 | `SHA256SUMS` | SHA-256 of both artifacts |
+
+Only the release title uses the new name: asset names (`oab-instance-mcp-VERSION-*`), the binary,
+the bundle id and the install paths stay `oab-instance-mcp` on purpose (see #63).
 
 The installer:
 
