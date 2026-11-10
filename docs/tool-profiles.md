@@ -70,8 +70,8 @@ Linux). Without it, `owner` has 12 tools on macOS and 9 on Linux, and `observe` 
 | Screen / input | `screenshot`, `mouse`, `key` |
 | Browser (32) | the same 32 as on macOS |
 
-Linux has no `osascript`, and no `ui_snapshot` or `ui_action` yet (AT-SPI versions are planned,
-[#67](https://github.com/openabdev/openab-computer/issues/67)). `bash` is the counterpart of macOS `exec`; the four job tools have
+Linux has no `osascript`, and no `ui_snapshot` or `ui_action` yet (AT-SPI versions are deferred,
+[#102](https://github.com/openabdev/openab-computer/issues/102)). `bash` is the counterpart of macOS `exec`; the four job tools have
 the same names and contract on both (#32 item 4).
 
 `owner` gets every upstream tool, so a tool that Playwright adds later appears under `owner`
