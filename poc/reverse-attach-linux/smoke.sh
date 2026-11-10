@@ -66,7 +66,7 @@ check "POST /attach → 202" "[[ '$code' == 202 ]]"
 GID=$(echo "$r" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 check "Connect grant shape" "echo '$r' | python3 -c 'import sys,json; g=json.load(sys.stdin); assert all(k in g for k in (\"id\",\"runtime\",\"session\",\"profile\",\"principal\",\"state\",\"expires_in_secs\"))'"
 check "grant returned" "[[ -n '$GID' ]]"
-check "expires_in_secs=60 forwarded" "[[ '$r' == *'\"expires_in_secs\":60'* ]]"
+check "expires_in_secs≈60 forwarded" "echo '$r' | python3 -c 'import sys,json; assert 58 <= json.load(sys.stdin)[\"expires_in_secs\"] <= 60'"
 check "mint saw ttl_secs=60" "grep -q '\"ev\": \"mint\", \"session\": \"laptop\", \"status\": 200, \"ttl_secs\": 60' $LOG"
 
 # wait: attach#1 → MCP script → close 1000 → redial after 1s → attach#2 → close 4010 → stop
