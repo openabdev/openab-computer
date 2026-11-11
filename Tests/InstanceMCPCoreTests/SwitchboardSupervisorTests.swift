@@ -118,15 +118,71 @@ final class SwitchboardSupervisorTests: XCTestCase {
         XCTAssertEqual(fakes.made.count, 1)
     }
 
-    func testASecretOnlyChangeKeepsTheDialerAndSaysItAppliesOnTheNextDial() async throws {
+    func testASecretOnlyChangeKeepsAnAttachedDialerAndSaysItAppliesOnTheNextDial() async throws {
         let sup = supervisor()
         try await configured(sup, secret: "old")
+        await fakes.made[0].emit(.attached)
+        try await waitFor(sup) { $0.kind == .connected }
 
         let outcome = try await sup.save(edit(secret: "rotated"))
 
         XCTAssertEqual(outcome, .nextDial)
         XCTAssertEqual(fakes.made.count, 1, "a secret change must not drop the attach")
         XCTAssertEqual(store.load()?.secret, "rotated")
+    }
+
+    func testASecretOnlyChangeRedialsWhenTheDialerHasEnded() async throws {
+        // After a 4002 the dialer is terminal and never reads the secret again, so the
+        // save must start a new dialer or the new secret would never be used.
+        let sup = supervisor()
+        try await configured(sup, secret: "old")
+        await fakes.made[0].emit(.ended(.replaced))
+        try await waitFor(sup) { $0.kind == .stopped }
+
+        let outcome = try await sup.save(edit(secret: "rotated"))
+
+        XCTAssertEqual(outcome, .started)
+        XCTAssertEqual(fakes.made.count, 2)
+        let oldCancelled = await fakes.made[0].cancelled
+        XCTAssertTrue(oldCancelled)
+    }
+
+    func testASecretOnlyChangeRedialsWhileBackingOff() async throws {
+        let sup = supervisor()
+        try await configured(sup, secret: "old")
+        await fakes.made[0].emit(.waitingToRedial(seconds: 300))
+        try await waitFor(sup) { $0.kind == .backingOff(seconds: 300) }
+
+        let outcome = try await sup.save(edit(secret: "rotated"))
+
+        XCTAssertEqual(outcome, .started)
+        XCTAssertEqual(fakes.made.count, 2)
+    }
+
+    func testTheBackoffCountdownRunsDownFromTheDialersDeadline() async throws {
+        let sup = supervisor()
+        try await configured(sup)
+        await fakes.made[0].emit(.waitingToRedial(seconds: 300))
+        try await waitFor(sup) { $0.kind == .backingOff(seconds: 300) }
+
+        let s = await sup.status
+        let deadline = try XCTUnwrap(s.redialAt)
+        XCTAssertTrue(s.title(now: deadline.addingTimeInterval(-300)) { _ in "t" }.contains("retry in 300 s"))
+        XCTAssertTrue(s.title(now: deadline.addingTimeInterval(-120)) { _ in "t" }.contains("retry in 120 s"))
+    }
+
+    func testAProfileWarningFromASavedFileReachesTheStatusNote() async throws {
+        // A saved `desktop` runs as observe, and the menu must say so.
+        try store.save(edit(secret: "s3cret"))
+        try "desktop\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        let sup = supervisor()
+        let cfg = try XCTUnwrap(store.load())
+
+        await sup.start(cfg)
+
+        let s = await sup.status
+        XCTAssertEqual(s.profile, .observe)
+        XCTAssertEqual(s.note, ToolProfile.retiredWarning)
     }
 
     func testAURLOrProfileChangeReconnectsAndCancelsTheOldDialer() async throws {
@@ -300,6 +356,15 @@ final class SwitchboardStatusTests: XCTestCase {
     func testNotConfiguredHasNoComputerOrClose() {
         let title = make(nil, configured: false).title { _ in "t" }
         XCTAssertEqual(title, "Switchboard: not configured")
+    }
+
+    func testReconnectAndForgetNeedAConfigAndDisabledHasNone() {
+        XCTAssertFalse(make(nil, configured: false).hasConfig)
+        XCTAssertTrue(make(.attached).hasConfig)
+        let disabled = SwitchboardStatus.make(state: nil, lastClose: nil, configured: false, profile: nil,
+                                              computer: "Test Mac", disabledReason: "flag unreadable")
+        XCTAssertEqual(disabled.kind, .disabled)
+        XCTAssertFalse(disabled.hasConfig)
     }
 }
 

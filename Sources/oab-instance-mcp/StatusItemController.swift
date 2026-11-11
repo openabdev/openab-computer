@@ -152,11 +152,26 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(label("Open Log", action: #selector(openLog)))
         menu.addItem(label("Restart Agent", action: #selector(restart)))
         menu.addItem(label("Quit Agent (stops launchd job)", action: #selector(quit)))
+        startRefreshTimer()
     }
 
     func menuDidClose(_ menu: NSMenu) {
         grantTimer?.invalidate()
         grantTimer = nil
+    }
+
+    /// Refreshes the grant rows and the backoff countdown while the menu is open. Added in
+    /// `.common` mode: a `.default` timer does not fire while the menu tracks the mouse.
+    private func startRefreshTimer() {
+        grantTimer?.invalidate()
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshGrants()
+                self?.refreshSwitchboardTitle()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        grantTimer = timer
     }
 
     // MARK: switchboard
@@ -170,13 +185,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if let note = switchboardStatus?.note {
             menu.addItem(label(note))
         }
-        let configured = switchboardStatus.map { $0.kind != .notConfigured } ?? false
+        // With no config there is nothing to reconnect or forget. Configure… is always offered.
+        let hasConfig = switchboardStatus?.hasConfig ?? false
         menu.addItem(label("Configure…", action: #selector(configureSwitchboard)))
         let reconnect = label("Reconnect", action: #selector(reconnectSwitchboard))
-        reconnect.isEnabled = configured
+        reconnect.isEnabled = hasConfig
         menu.addItem(reconnect)
         let forget = label("Disconnect & forget…", action: #selector(forgetSwitchboard))
-        forget.isEnabled = configured
+        forget.isEnabled = hasConfig
         menu.addItem(forget)
         menu.addItem(.separator())
     }
@@ -210,15 +226,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         grantRowItems = []
         menu.addItem(header)
         refreshGrants()
-        grantTimer?.invalidate()
-        grantTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshGrants() }
-        }
     }
 
     private func refreshGrants() {
         guard let attach else { return }
-        Task { renderGrants(await attach.list()) }
+        Task { renderGrants(await attach.liveGrants()) }
     }
 
     /// Replace the grant rows under the header. The menu may be open while this runs.
@@ -239,7 +251,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let now = Date()
         for grant in grants {
             let row = GrantRowModel.make(grant, now: now)
-            insert(label("\(row.session) · \(row.profile) · \(row.stateLabel) · \(row.expiresText)"))
+            let shell = row.shellEquivalent ? " · shell-equivalent" : ""
+            insert(label("\(row.session) · \(row.profile)\(shell) · \(row.stateLabel) · \(row.expiresText)"))
             if let requested = row.requestedProfile {
                 insert(label("   requested \(requested), served as \(row.profile)"))
             }
@@ -255,9 +268,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func revokeGrant(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, let attach else { return }
         Task {
-            await attach.revoke(id, reason: "revoked from the menu bar")
-            renderGrants(await attach.list())
+            guard confirmRevoke() else { return }
+            await attach.revokeIfPresent(id, reason: "revoked from the menu bar")
+            renderGrants(await attach.liveGrants())
         }
+    }
+
+    /// Revoking closes the reverse-attach session, and the runtime's agent loses it.
+    private func confirmRevoke() -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Revoke this grant?"
+        alert.informativeText = "The reverse-attach session closes now. Granting it again needs a new attach request."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Revoke")
+        NSApp.activate(ignoringOtherApps: true)
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     private func label(_ title: String, action: Selector? = nil, tip: String? = nil) -> NSMenuItem {

@@ -122,10 +122,38 @@ final class SwitchboardFilesTests: XCTestCase {
         XCTAssertFalse(ProfileChoice.needsConfirmation(.observe))
     }
 
-    func testRetiredDesktopProfileFileLoadsAsObserve() throws {
+    func testRetiredDesktopProfileFileLoadsAsObserveWithItsWarning() throws {
         try store.save(edit(profile: .observe))
         try "desktop\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
-        XCTAssertEqual(store.load()?.profile, .observe)
+        let loaded = try XCTUnwrap(store.load())
+        XCTAssertEqual(loaded.profile, .observe)
+        XCTAssertEqual(loaded.requestedProfile, "desktop")
+        XCTAssertEqual(loaded.profileWarning, ToolProfile.retiredWarning)
+    }
+
+    func testAnUnrecognisedProfileFileServesObserveAndSaysSo() throws {
+        try store.save(edit(profile: .observe))
+        try "owner-ish\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        let loaded = try XCTUnwrap(store.load())
+        XCTAssertEqual(loaded.profile, .observe, "an unknown name must not widen to owner")
+        XCTAssertEqual(loaded.requestedProfile, "owner-ish")
+        XCTAssertTrue(loaded.profileWarning?.contains("owner-ish") == true)
+    }
+
+    func testAConfigDescriptionNeverPrintsTheSecret() {
+        let cfg = SwitchboardConfig(url: URL(string: goodURL)!, secret: "HUNTER2-DO-NOT-SHOW", profile: .observe)
+        XCTAssertFalse(String(describing: cfg).contains("HUNTER2"))
+        XCTAssertFalse(String(reflecting: cfg).contains("HUNTER2"))
+        XCTAssertTrue(String(describing: cfg).contains("<redacted>"))
+    }
+
+    func testAnExistingDirectoryIsTightenedTo700() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+
+        try store.save(edit())
+
+        XCTAssertEqual(mode(dir), 0o700)
     }
 
     func testLoadNeedsBothTheURLAndTheSecret() throws {

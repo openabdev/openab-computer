@@ -40,6 +40,12 @@ final class GrantRowModelTests: XCTestCase {
         XCTAssertEqual(row.profile, "owner")
     }
 
+    func testOwnerGrantsAreMarkedShellEquivalentAndObserveGrantsAreNot() {
+        XCTAssertTrue(GrantRowModel.make(grant(profile: .owner, requested: "owner", warning: nil), now: now).shellEquivalent)
+        XCTAssertFalse(GrantRowModel.make(
+            grant(profile: .observe, requested: "desktop", warning: ToolProfile.retiredWarning), now: now).shellEquivalent)
+    }
+
     func testStateLabelsCoverEveryState() {
         XCTAssertEqual(GrantRowModel.stateLabel(.idle), "idle")
         XCTAssertEqual(GrantRowModel.stateLabel(.dialing), "dialling")
@@ -54,5 +60,25 @@ final class GrantRowModelTests: XCTestCase {
         XCTAssertEqual(GrantRowModel.expiresText(now.addingTimeInterval(14 * 60), now: now), "expires in 14 min")
         XCTAssertEqual(GrantRowModel.expiresText(now.addingTimeInterval(7_200), now: now), "expires in 2 h")
         XCTAssertEqual(GrantRowModel.expiresText(now.addingTimeInterval(5_400), now: now), "expires in 1 h 30 min")
+    }
+}
+
+/// The menu's list and revoke go through the same `AttachManager` operations as `GET` and
+/// `DELETE /attach`, so an expired grant is absent from both and a missing id is a no-op.
+final class AttachSharedOperationTests: XCTestCase {
+    func testRevokeIfPresentReportsAMissingGrant() async {
+        let mgr = AttachManager(server: MCPServer(name: "t", version: "0", tools: []))
+        let removed = await mgr.revokeIfPresent("no-such-grant")
+        XCTAssertFalse(removed)
+    }
+
+    func testLiveGrantsDropsAnExpiredGrant() async throws {
+        let mgr = AttachManager(server: MCPServer(name: "t", version: "0", tools: []))
+        _ = try await mgr.create(.init(runtime: URL(string: "ws://127.0.0.1:1")!, session: "expiring",
+                                       profile: .observe, ttl: 1, secret: "s"), principal: "test")
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+
+        let live = await mgr.liveGrants()
+        XCTAssertTrue(live.isEmpty)
     }
 }

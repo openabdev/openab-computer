@@ -30,7 +30,8 @@ final class SwitchboardMenu {
         popup.selectItem(withTitle: previous.rawValue)
         let note = NSTextField(wrappingLabelWithString:
             "Changing the URL or profile reconnects now and drops the current attach. " +
-            "A new secret applies on the next dial. The secret is never shown.")
+            "A new secret applies on the next dial; if the switchboard is not attached, saving dials now. " +
+            "The secret is never shown.")
         note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         let stack = NSStackView(views: [
             labeled("URL", urlField), labeled("Secret", secretField), labeled("Profile", popup), note,

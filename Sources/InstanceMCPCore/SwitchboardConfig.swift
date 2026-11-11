@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// The switchboard settings this daemon dials with. The secret is held in memory
 /// for a dial and is never shown or logged.
@@ -6,10 +9,26 @@ public struct SwitchboardConfig: Equatable, Sendable {
     public var url: URL
     public var secret: String
     public var profile: ToolProfile
+    /// The profile name as written (a flag or `switchboard.profile`), when it differs from `profile`.
+    public var requestedProfile: String
+    /// Set when the name was mapped or not recognised (`desktop` → `observe`, #59). Logged, audited and shown.
+    public var profileWarning: String?
 
-    public init(url: URL, secret: String, profile: ToolProfile) {
+    public init(url: URL, secret: String, profile: ToolProfile,
+                requestedProfile: String? = nil, profileWarning: String? = nil) {
         self.url = url; self.secret = secret; self.profile = profile
+        self.requestedProfile = requestedProfile ?? profile.rawValue
+        self.profileWarning = profileWarning
     }
+}
+
+/// Never prints the secret, so a config in a log line, a debugger or an assertion
+/// message shows the URL and profile only.
+extension SwitchboardConfig: CustomStringConvertible, CustomDebugStringConvertible {
+    public var description: String {
+        "SwitchboardConfig(url: \(url.absoluteString), secret: <redacted>, profile: \(profile.rawValue))"
+    }
+    public var debugDescription: String { description }
 }
 
 /// Which profiles the menu offers for a switchboard, and which need the
@@ -23,8 +42,8 @@ public enum ProfileChoice {
 }
 
 /// What the daemon does at startup with the switchboard settings, and what to log
-/// about it. Saved files win over launch flags (P2); flags with an unreadable secret
-/// and nothing saved leave the switchboard off rather than exiting (P1).
+/// about it. Saved files win over launch flags (#57); flags with an unreadable secret
+/// and nothing saved leave the switchboard off rather than exiting (#57).
 public struct SwitchboardStartup: Equatable, Sendable {
     public enum Mode: Equatable, Sendable {
         /// The files saved by the menu (or by hand) replace the launch flags.
@@ -124,7 +143,9 @@ public struct SwitchboardConfigStore: Sendable {
     public func load() -> SwitchboardConfig? {
         guard let text = firstLine(urlFile), let url = try? Switchboard.validate(text),
               let secret = readSecret() else { return nil }
-        return SwitchboardConfig(url: url, secret: secret, profile: savedProfile() ?? .observe)
+        let p = savedProfile()
+        return SwitchboardConfig(url: url, secret: secret, profile: p.profile,
+                                 requestedProfile: p.requested, profileWarning: p.warning)
     }
 
     public func secretState() -> SecretState {
@@ -184,10 +205,17 @@ public struct SwitchboardConfigStore: Sendable {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func savedProfile() -> ToolProfile? {
-        guard let name = firstLine(profileFile) else { return nil }
-        // `desktop` resolves to observe with a warning, as the installer and the flag do.
-        return ToolProfile.resolve(requested: name)?.profile
+    private func savedProfile() -> (profile: ToolProfile, requested: String, warning: String?) {
+        guard let name = firstLine(profileFile) else {
+            return (ToolProfile.defaultProfile, ToolProfile.defaultProfile.rawValue, nil)
+        }
+        // `desktop` resolves to observe with the retired warning, as the installer and the flag do.
+        // An unrecognised name also serves observe (the least privilege), and says so.
+        guard let r = ToolProfile.resolve(requested: name) else {
+            return (ToolProfile.defaultProfile, name,
+                    "switchboard.profile says '\(name)', which is not a profile; serving observe. Write observe or owner.")
+        }
+        return (r.profile, r.requested, r.warning)
     }
 
     private func firstLine(_ file: URL) -> String? {
@@ -201,23 +229,30 @@ public struct SwitchboardConfigStore: Sendable {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
+        // createDirectory does not change the mode of a directory that already exists.
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
     }
 
     private func writeSecure(_ text: String, to file: URL) throws {
         let fm = FileManager.default
         let tmp = file.appendingPathExtension("tmp")
         try? fm.removeItem(at: tmp)
-        guard fm.createFile(atPath: tmp.path, contents: Data((text + "\n").utf8),
-                            attributes: [.posixPermissions: 0o600]) else {
-            throw Failure.io("cannot create \(tmp.lastPathComponent)")
+        // O_EXCL at 0600: the secret is never on disk at a wider mode, even briefly.
+        let fd = open(tmp.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw Failure.io("cannot create \(tmp.lastPathComponent)") }
+        let data = Data((text + "\n").utf8)
+        let written = data.withUnsafeBytes { buf in write(fd, buf.baseAddress, buf.count) == buf.count }
+        close(fd)
+        guard written else {
+            try? fm.removeItem(at: tmp)
+            throw Failure.io("cannot write \(tmp.lastPathComponent)")
         }
         if fm.fileExists(atPath: file.path) {
             _ = try fm.replaceItemAt(file, withItemAt: tmp)
         } else {
             try fm.moveItem(at: tmp, to: file)
         }
-        // createFile does not change the mode of an existing file, and replaceItemAt
-        // may keep the old one, so set it on the final file explicitly.
+        // replaceItemAt may keep the old file's mode, so set it on the final file explicitly.
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

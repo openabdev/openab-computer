@@ -138,8 +138,7 @@ extension MCPHTTPEndpoint {
             }
         case ("DELETE", false):
             let id = String(sub.dropFirst())   // strip "/"
-            guard await attach.get(id) != nil else { return .json(404, JSONValue.object(["error": "no such grant"])) }
-            await attach.revoke(id)
+            guard await attach.revokeIfPresent(id) else { return .json(404, JSONValue.object(["error": "no such grant"])) }
             return .init(status: 204)
         case ("GET", false):
             let id = String(sub.dropFirst())

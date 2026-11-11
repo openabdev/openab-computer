@@ -458,15 +458,16 @@ When a switchboard is configured the menu also shows:
   dialog only says whether one is saved. Leave it blank to keep the saved secret. The profile
   offers `observe` (the default) and `owner`. Choosing `owner` asks for confirmation first, because
   `owner` is shell-equivalent. Changing the URL or profile reconnects at once and drops the current
-  attach. A new secret applies on the next dial.
+  attach. A new secret applies on the next dial; if the switchboard is not attached, saving dials
+  at once.
 - **Reconnect:** drops the current attach and dials again. After a `4002` it asks first, since
   another daemon with the same secret would be displaced again.
 - **Disconnect & forget…:** after confirmation, deletes `switchboard.url`, `switchboard.secret`
   and `switchboard.profile` and stops dialling. The LaunchAgent plist keeps its flags until the
   installer is re-run, so until then the daemon starts with the switchboard off.
-- **Reverse-attach grants:** each live grant, with its session, profile, state and expiry. A grant
-  whose request named a retired profile shows that name and the warning. **Revoke** ends the grant
-  on this Mac.
+- **Reverse-attach grants:** each live grant, with its session, profile, state and expiry. `owner`
+  grants are marked shell-equivalent. A grant whose request named a retired profile shows that name
+  and the warning. **Revoke** asks for confirmation, then ends the grant on this Mac.
 
 ## Operate
 

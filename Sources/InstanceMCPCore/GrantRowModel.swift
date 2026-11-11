@@ -7,6 +7,8 @@ public struct GrantRowModel: Equatable, Sendable {
     public let session: String
     /// The profile served (`owner` or `observe`).
     public let profile: String
+    /// True for `owner`: the grant reaches the desktop user's shell, so the row says so.
+    public let shellEquivalent: Bool
     /// The name the granter asked for, shown only when it differs from `profile`
     /// (for example `desktop`, mapped to `observe` per #59).
     public let requestedProfile: String?
@@ -20,6 +22,7 @@ public struct GrantRowModel: Equatable, Sendable {
             id: g.id,
             session: g.session,
             profile: g.profile.rawValue,
+            shellEquivalent: g.profile.isShellEquivalent,
             requestedProfile: g.requestedProfile == g.profile.rawValue ? nil : g.requestedProfile,
             warning: g.warning,
             stateLabel: stateLabel(g.state),

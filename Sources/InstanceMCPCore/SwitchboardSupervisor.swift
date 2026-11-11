@@ -21,13 +21,20 @@ public struct SwitchboardStatus: Equatable, Sendable {
     public let computer: String
     /// A startup note the operator should see, e.g. saved files overriding flags.
     public let note: String?
+    /// When the next dial happens, while backing off. The title counts down to it.
+    public let redialAt: Date?
+
+    /// Whether a config exists to reconnect or forget. Off at startup with a disabled
+    /// switchboard, there is nothing to act on.
+    public var hasConfig: Bool { kind != .notConfigured && kind != .disabled }
 
     public static func make(state: ReverseAttachClient.State?, lastClose: ReverseAttachClient.CloseRecord?,
                             configured: Bool, profile: ToolProfile?, computer: String,
-                            disabledReason: String? = nil, note: String? = nil) -> SwitchboardStatus {
-        func status(_ kind: Kind, _ reason: String? = nil) -> SwitchboardStatus {
+                            disabledReason: String? = nil, note: String? = nil,
+                            redialAt: Date? = nil) -> SwitchboardStatus {
+        func status(_ kind: Kind, _ reason: String? = nil, redialAt: Date? = nil) -> SwitchboardStatus {
             SwitchboardStatus(kind: kind, profile: profile, lastClose: lastClose, reason: reason,
-                              computer: computer, note: note)
+                              computer: computer, note: note, redialAt: redialAt)
         }
         guard configured else {
             if let disabledReason { return status(.disabled, disabledReason) }
@@ -40,7 +47,8 @@ public struct SwitchboardStatus: Equatable, Sendable {
         case .attached:
             return status(.connected)
         case .waitingToRedial(let seconds):
-            return status(.backingOff(seconds: Int(seconds.rounded())), backoffReason(lastClose))
+            return status(.backingOff(seconds: Int(seconds.rounded())), backoffReason(lastClose),
+                          redialAt: redialAt)
         case .ended(let terminal):
             return status(.stopped, describe(terminal))
         }
@@ -67,15 +75,18 @@ public struct SwitchboardStatus: Equatable, Sendable {
     }
 
     /// One line for the menu, e.g. `Switchboard: connected as observe · computer X`.
-    /// `timeText` formats the last close time, so tests pin the clock.
-    public func title(timeText: (Date) -> String) -> String {
+    /// `timeText` formats the last close time, so tests pin the clock. `now` sets the
+    /// countdown while backing off.
+    public func title(now: Date = Date(), timeText: (Date) -> String) -> String {
         let head: String
         switch kind {
         case .notConfigured: head = "Switchboard: not configured"
         case .disabled: head = "Switchboard: disabled"
         case .dialling: head = "Switchboard: dialling"
         case .connected: head = "Switchboard: connected as \(profile?.rawValue ?? "?")"
-        case .backingOff(let s): head = "Switchboard: backing off, retry in \(s) s"
+        case .backingOff(let s):
+            let left = redialAt.map { max(0, Int(ceil($0.timeIntervalSince(now)))) } ?? s
+            head = "Switchboard: backing off, retry in \(left) s"
         case .stopped: head = "Switchboard: stopped"
         }
         var parts = [head]
@@ -131,6 +142,7 @@ public actor SwitchboardSupervisor {
     private var onChange: (@Sendable (SwitchboardStatus) -> Void)?
     private var disabledReason: String?
     private var note: String?
+    private var redialAt: Date?
 
     public init(store: SwitchboardConfigStore, computer: String, factory: @escaping Factory,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
@@ -148,7 +160,8 @@ public actor SwitchboardSupervisor {
     public var status: SwitchboardStatus {
         SwitchboardStatus.make(state: state, lastClose: lastClose, configured: config != nil,
                                profile: config?.profile, computer: computer,
-                               disabledReason: disabledReason, note: note)
+                               disabledReason: disabledReason,
+                               note: note ?? config?.profileWarning, redialAt: redialAt)
     }
 
     /// Record what startup decided, so the menu can show it. Called once at launch.
@@ -193,10 +206,18 @@ public actor SwitchboardSupervisor {
             return .started
         }
         if before.url == after.url && before.profile == after.profile {
-            config = after
-            log("switchboard: secret saved; the next dial uses it")
-            notify()
-            return .nextDial
+            // Only the secret changed. An attached dialer keeps its attach and reads the
+            // new secret on its next dial. Any other state has no attach to keep, so dial
+            // now: an ended or backing-off dialer would otherwise never use the new secret.
+            if case .attached = state {
+                config = after
+                log("switchboard: secret saved; the next dial uses it")
+                notify()
+                return .nextDial
+            }
+            await start(after)
+            log("switchboard: secret saved; dialling with it")
+            return .started
         }
         await start(after)
         log("switchboard: settings saved; reconnected")
@@ -229,6 +250,7 @@ public actor SwitchboardSupervisor {
         let old = dialer
         dialer = nil
         state = nil
+        redialAt = nil
         if let old { await old.cancel() }
     }
 
@@ -239,6 +261,11 @@ public actor SwitchboardSupervisor {
         let snap = await d.snapshot()
         state = snap.state
         lastClose = snap.lastClose ?? lastClose
+        if case .waitingToRedial(let seconds) = snap.state {
+            redialAt = Date().addingTimeInterval(seconds)
+        } else {
+            redialAt = nil
+        }
         notify()
     }
 

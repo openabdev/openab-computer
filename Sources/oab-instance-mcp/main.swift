@@ -209,9 +209,6 @@ let server = MCPServer(
 )
 /// Every `desktop` → `observe` mapping is recorded here as well as in the log (#59).
 let auditLog = FileAuditLog(log: log)
-if let requested = opts.switchboardRequestedProfile, switchboardTarget != nil {
-    auditLog.append(ProfileAudit.mapped(source: "switchboard", requested: requested, profile: opts.switchboardProfile))
-}
 let attachManager: AttachManager? = opts.attach
     ? AttachManager(server: server,
                     store: opts.persistGrants ? FileGrantStore(log: log) : nil,
@@ -250,9 +247,19 @@ let switchboardFlagSecretFile = switchboardTarget?.file
 let switchboardAllowSecure = opts.switchboardAllowSecureSetValue
 let switchboardStartup = SwitchboardStartup.resolve(
     saved: switchboardStore.load(),
-    flags: switchboardTarget.map { SwitchboardConfig(url: $0.url, secret: $0.secret, profile: opts.switchboardProfile) },
+    flags: switchboardTarget.map {
+        SwitchboardConfig(url: $0.url, secret: $0.secret, profile: opts.switchboardProfile,
+                          requestedProfile: opts.switchboardRequestedProfile,
+                          profileWarning: opts.switchboardRequestedProfile == nil ? nil : ToolProfile.retiredWarning)
+    },
     flagsGiven: opts.switchboard != nil)
 if let warning = switchboardStartup.warning { log(warning) }
+// The profile mapping is logged and audited for whichever source won (#59).
+if let cfg = switchboardStartup.config, let warning = cfg.profileWarning {
+    log("switchboard: \(warning)")
+    auditLog.append(ProfileAudit.mapped(source: switchboardStartup.mode == .saved ? "switchboard-saved" : "switchboard",
+                                        requested: cfg.requestedProfile, profile: cfg.profile))
+}
 let switchboardSupervisor = SwitchboardSupervisor(
     store: switchboardStore,
     computer: Host.current().localizedName ?? "this Mac",
@@ -266,7 +273,7 @@ let switchboardSupervisor = SwitchboardSupervisor(
     log: log)
 if let cfg = switchboardStartup.config {
     log("switchboard: \(switchboardStartup.mode == .saved ? "saved" : "flagged") config, profile \(cfg.profile.rawValue)" +
-        (opts.switchboardRequestedProfile.map { " (requested \($0))" } ?? "") +
+        (cfg.requestedProfile != cfg.profile.rawValue ? " (requested \(cfg.requestedProfile))" : "") +
         (cfg.profile.allows("ui_action")
             ? " secure_set_value=\(switchboardAllowSecure ? "allowed" : "refused")" : ""))
 }
