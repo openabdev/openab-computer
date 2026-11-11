@@ -1,27 +1,32 @@
 # OpenAB Computer (`oab-instance-mcp`)
 
-> **Renaming in progress.** This product is moving from `instance-mcp` to **OpenAB Computer**
-> (repository `openabdev/openab-computer`, tracked in
-> [#63](https://github.com/openabdev/openab-computer/issues/63)). The executable, bundle id and
-> paths keep their current names (`oab-instance-mcp` / `dev.openab.instance-mcp`) and will not
-> change in this rename. Commands in this README use those names.
+> **Name.** The product is now OpenAB Computer (repository `openabdev/openab-computer`, tracked in
+> [#63](https://github.com/openabdev/openab-computer/issues/63)). The executable, bundle id, release
+> asset names, config directory and Linux unit names keep the old `instance-mcp` names on purpose:
+> macOS TCC grants are keyed to the bundle id `dev.openab.instance-mcp`, and changing it would drop
+> every grant. Commands in this README use those names.
 
 The "hands and feet" half of [openabdev/openab#1544](https://github.com/openabdev/openab/issues/1544):
 a thin daemon that lives in a Mac's logged-in desktop session and exposes the machine to a
 coding CLI or agent elsewhere on the tailnet as **MCP servers**. Nothing here is smart; all
 the intelligence stays in the caller.
 
-> **Read before deploying.** `exec` is an unrestricted shell as the logged-in user, and `mouse` /
-> `key` / `osascript` drive the desktop. Access is gated by Tailscale identity **and** a bearer
-> token, nothing finer. Run this only on a Mac you own, for callers you would hand your keyboard
-> to; on a shared tailnet, an allow-list of one login is the intended shape.
+> **Read before deploying.** `exec` is an unrestricted shell as the logged-in user, and `mouse`,
+> `key` and `osascript` drive the desktop. There are two profiles: `observe` (`sys_info` and
+> `screenshot`) and `owner` (every local tool and browser tool). Every `/mcp` and `/attach`
+> request, and every switchboard caller, must present a bearer token. A switchboard can also keep
+> a per-caller allow-list. `owner` is not a security boundary
+> ([#45](https://github.com/openabdev/openab-computer/issues/45)). Run this only on a Mac you own,
+> for callers you would trust with your keyboard.
 
 ```mermaid
 flowchart LR
     subgraph callers["Callers — the brain (anywhere on the tailnet)"]
-        cli["Coding CLI / agent<br/>kiro-cli · claude · openab<br/><i>mcp.json: macmini-mcp, macmini-browser</i>"]
+        cli["Coding CLI / agent<br/>kiro-cli · claude · openab<br/><i>mcp.json: mac-mcp, mac-browser</i>"]
         connect["OpenAB Connect<br/>(Mac app, Screens pane)"]
     end
+
+    sb["<b>Switchboard</b> (openab-sb)<br/>/mcp/computer · bearer token per caller<br/>routes calls down the computer's open socket"]
 
     subgraph mac["The instance — a Mac with someone logged in"]
         subgraph ts["tailscale serve (TLS + identity)"]
@@ -32,6 +37,7 @@ flowchart LR
             mcp["<b>oab-instance-mcp</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · ui_action · mouse · key · osascript"]
             pw["@playwright/mcp<br/>headed Chromium, persistent profile"]
         end
+        dial["<b>--switchboard</b> client<br/>dials out to /vm/attach"]
         subgraph hands["What the daemon touches — nothing a logged-in user could not"]
             shell["Shell<br/>zsh as the desktop user<br/>Xcode · xcodebuild · simulators · git"]
             screen["Display<br/>ScreenCaptureKit"]
@@ -43,33 +49,64 @@ flowchart LR
 
     cli -- "HTTPS · MCP Streamable HTTP" --> s8444
     connect -- "screenshot loop" --> s8444
-    cli -- "HTTPS · MCP" --> s8443
+    cli -- "HTTPS · MCP via /mcp/computer" --> sb
+    dial -- "WSS · dialed out, /vm/attach" --> sb
+    sb -- "tool calls over that socket" --> dial
+    dial --> mcp
     s8444 --> mcp
+    cli -- "HTTPS · MCP" --> s8443
     s8443 --> pw
     mcp --> hands
     tcc -. "gates screen / input / apps" .-> hands
 ```
 
 Read it left to right: the model and its reasoning live in the caller; the machine only receives
-tool calls, and the daemon can do nothing a logged-in user sitting at it could not do. Everything
-on the right is one machine — no cloud hop, no control plane; `tailscale serve` terminates TLS and
-stamps each request with the caller's Tailscale identity, which the daemon checks together with a
-bearer token. On macOS the tools that touch screen or input are gated by TCC, granted once to the
-stable bundle id. The loop the tools are built for: `screenshot` → decide →
+tool calls, and the daemon can do nothing a logged-in user sitting at it could not do. Without a
+switchboard, everything on the right is one machine and no cloud hop: `tailscale serve` terminates
+TLS and stamps each request with the caller's Tailscale identity, which the daemon checks together
+with a bearer token. The switchboard path (`--switchboard`) is for a Mac that can only dial out.
+The daemon dials the switchboard, and the switchboard routes caller requests down that socket. On
+macOS the tools that touch screen or input are gated by TCC, granted once to the stable bundle id.
+The loop the tools are built for: `screenshot` → decide →
 `mouse` / `key` / `osascript` / `exec` → `screenshot` to confirm. SSH already gives you a shell;
 this exists for what SSH cannot reach.
 
 ## Contents
 
-- [Quick start](#quick-start) · [Platforms](#platforms)
+- [Goal](#goal) · [Status and known limits](#status-and-known-limits) · [Quick start](#quick-start) · [Platforms](#platforms)
 - [Tools](#tools) · [Auth](#auth)
 - [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) · [Switchboard](#serving-a-switchboard---switchboard) · [Browser tools](#browser-tools-for-lent-sessions---upstream)
-- Deploy & operate: [Download and install](#download-and-install) · [Build & test](#build--test-on-macmini-the-laptop-never-compiles-swift) · [Deploy](#deploy-run-on-the-target) · [Menu bar](#menu-bar) · [Operate](#operate)
-- Operator notes: [TCC & signing](#tcc-grants-survive-re-deploys-only-if-the-signature-does) · [Gotchas](#gotchas-each-one-cost-a-cycle)
+- Deploy & operate: [Download and install](#download-and-install) · [Build & test](#build--test-on-the-build-mac-the-laptop-never-compiles-swift) · [Deploy](#deploy-run-on-the-target) · [Menu bar](#menu-bar) · [Operate](#operate)
+- Operator notes: [TCC & signing](#tcc-grants-survive-re-deploys-only-if-the-signature-does) · [Gotchas](#gotchas)
+- Detail: [UI tools](docs/ui-tools.md) · [Operator notes and gotchas](docs/operators.md)
 
 Components: `oab-instance-mcp` is this package (Swift on macOS, zero deps; Rust on Linux). The
 browser server is `@playwright/mcp`, not ours ([`poc/pw-mcp/README.md`](poc/pw-mcp/README.md)).
 Design notes: [`docs/requirements/connect-closed-loop.md`](docs/requirements/connect-closed-loop.md).
+
+## Goal
+
+Let agents on your tailnet use your own computers, a Mac mini, a Linux mini PC or a Raspberry Pi,
+once you have authorized or paired them with a token and a tool profile. An agent can drive the
+browser and everything else you would do on that machine: build, compile and test, use the desktop,
+and run everyday tasks. Each grant is per agent and can be revoked. The `observe` profile gives
+read-only access (screenshot and system info), and `owner` gives full control. On macOS the full
+tool set is available, including the accessibility-tree tools. On Linux the browser, shell,
+screenshot, mouse and key tools are available, but the accessibility-tree tools are not yet
+([#102](https://github.com/openabdev/openab-computer/issues/102)).
+
+## Status and known limits
+
+- macOS has `ui_snapshot` (0.9.0) and `ui_action` (0.10.0). Linux has neither yet; the AT-SPI port
+  is deferred ([#102](https://github.com/openabdev/openab-computer/issues/102)).
+- `owner` is not a security boundary ([#45](https://github.com/openabdev/openab-computer/issues/45)).
+  Only `observe` is.
+- Switchboard callers are authorized by bearer token only. Binding a caller to its tailnet identity
+  is open ([openabdev/openab-sb#20](https://github.com/openabdev/openab-sb/issues/20)).
+- Switchboard audit logs record `ui_action` values and `key` text in full unless openab-sb 0.2.2 or
+  later is in use ([#14](https://github.com/openabdev/openab-sb/issues/14),
+  [#16](https://github.com/openabdev/openab-sb/pull/16)).
+- Browser tools use one persistent browser profile per computer, with its cookies and logins.
 
 ## Quick start
 
@@ -78,9 +115,21 @@ Design notes: [`docs/requirements/connect-closed-loop.md`](docs/requirements/con
 permissions wizard ([details](#download-and-install)). Then point a caller at it:
 
 ```sh
-kiro-cli mcp add --name macmini-mcp --url https://<host>.<tailnet>.ts.net:8444/mcp \
+kiro-cli mcp add --name mac-mcp --url https://<host>.<tailnet>.ts.net:8444/mcp \
   --header "Authorization: Bearer $(ssh <host> cat ~/.config/oab-instance-mcp/token)" \
   --scope global --timeout 30000
+```
+
+**Through a switchboard** (the usual path for a Mac that dials out): the caller uses the
+switchboard's per-computer route and its own bearer token. The first call is `initialize`. If the
+response sets `Mcp-Session-Id`, send that header on later calls.
+
+```sh
+curl -s https://<switchboard>.<tailnet>.ts.net/mcp/<computer> \
+  -H "Authorization: Bearer <caller-token>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
 **Linux** (Raspberry Pi, Intel mini PC) — one installer does the whole node
@@ -105,6 +154,7 @@ The URL is `https://<host>.<tailnet>.ts.net:8444/mcp` and the bearer token is in
 | Screen / input | ScreenCaptureKit · CGEvent, gated by TCC | grim (JPEG encoded in-process) · wlroots virtual pointer · wtype on a wlroots seat (labwc, sway) |
 | Shell | `exec` / `exec_start*` (`zsh -f`) | `bash` / `exec_start*` (`bash -c`) |
 | Apps | `osascript` / JXA | — (use `bash`: `gdbus`, `xdg-open`) |
+| Accessibility tree (`ui_snapshot` / `ui_action`) | ✅ (0.9.0 / 0.10.0) | deferred ([#102](https://github.com/openabdev/openab-computer/issues/102)) |
 | Reverse attach · browser upstream | ✅ | ✅ |
 | Install | signed/notarized `.pkg` | `-linux-{arm64,amd64}.tar.gz` + `install-linux.sh` |
 | Guide | this README | [`docs/linux-setup.md`](docs/linux-setup.md) |
@@ -127,8 +177,8 @@ same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-instance-mcp
 | `exec_list` | all running jobs + the 10 most recently finished | recover a forgotten `job_id` or see what is running; each entry has state, pid, exit_code, command, cwd, timestamps, stdout/stderr byte sizes |
 | `exec_cancel` | stop a running job (or drop a finished one) | `job_id`, `signal` `KILL` (default) / `TERM` — signals the whole process group; poll once more for final output. Finished jobs are dropped from the registry (log files stay on disk) |
 | `screenshot` | ScreenCaptureKit → JPEG/PNG as MCP `image` content | `display`, `scale` (px per point, default 1.0), `region` {x,y,w,h} crop in points, `format`, `quality`. Needs Screen Recording TCC. Read small UI text with `region` + `scale: 2` |
-| `ui_snapshot` | Accessibility tree of a native app's window (AXUIElement), read-only | `owner` only. Default: the frontmost app's focused window; `app` (bundle id or name) or `pid`, `window` (title or index) or `all_windows`; `include_menu_bar` also walks the app's menu bar so menu items get refs. Per node: role, subrole, title, value (secure fields always masked), state, frame in display points (the `screenshot`/`mouse` space, with display index) and a `ref` valid within the `snapshot_id`. `max_depth` 20 (≤50), `max_nodes` 300 (≤2000), `timeout_ms` 3000 (≤10000) bounds the whole call, every AX call included; partial results are flagged `truncated` / `timed_out`, and elements that do not answer within 0.5 s are flagged `unresponsive`. Long text values are read as a 200-character prefix. Needs Accessibility TCC. macOS only |
-| `ui_action` | Act on a `ui_snapshot` node by ref through the Accessibility API, without moving the pointer | `owner` only (`shell`-class, like `mouse`/`key`). `snapshot_id` + `ref` + `action`: `press` (AXPress), `set_value` (AXValue, with `value`: string, number or bool; replaces the whole value), `focus` (sets AXFocused; never raises a window, refused where AXFocused is not settable), `show_menu`, `confirm`, `cancel`, `increment`, `decrement`. The last 4 snapshots are kept for 5 minutes; a ref from one that is gone, or an element that vanished, changed role/subrole, moved to another process or left its window, is refused as `stale ref` — take a new `ui_snapshot`, the tool never guesses a replacement. An action the element does not support is refused before anything is done, listing the ones it does support. Does **not** activate the app or raise a window unless `activate: true` (sets AXFrontmost on the app, falling back to activating it, then raises the ref's window; fails, doing nothing, if the app does not come to the front); `show_menu`, menu-bar items of a background app and `focus` before `key` typing commonly need it. Secure fields can be set over `/mcp` and a reverse attach; this daemon never logs or returns their value, and never logs `value` for any target. Through a switchboard older than openab-sb 0.2.2, `ui_action` arguments, including `set_value` values, are written to the switchboard's audit log; 0.2.2 (openabdev/openab-sb#16) records `value` and `key` `text` only as a redacted length. Do not send secrets through `set_value` over an older switchboard (`key` typing has the same exposure). Through `--switchboard`, `set_value` on a secure field is also **refused by default** (nothing is typed into the app); see [Serving a switchboard](#serving-a-switchboard---switchboard) for the opt-in. `timeout_ms` 2000 (≤10000) bounds the whole call: checks get at most 0.5 s each, the action gets the rest, and an action the app does not confirm in time is reported as *unconfirmed* (it may have happened — re-snapshot, do not repeat blindly). `structuredContent` has the target, `activated` and, budget permitting, `post_state` (focused, value for non-secure fields). Needs Accessibility TCC. macOS only |
+| `ui_snapshot` | Accessibility tree of a native app's window, read-only | Read-only. `owner` only. Targets the frontmost window by default; arguments, bounds and masking are in [docs/ui-tools.md](docs/ui-tools.md#ui_snapshot). Needs Accessibility TCC. macOS only |
+| `ui_action` | Act on a `ui_snapshot` node by ref, without moving the pointer | `owner` only. Actions: `press`, `set_value`, `focus`, `show_menu`, `confirm`, `cancel`, `increment`, `decrement`. Refs are tied to a snapshot; stale refs are refused. No pointer movement; `activate: true` is opt-in. Secure fields are refused over a switchboard by default. Full detail: [docs/ui-tools.md](docs/ui-tools.md#ui_action). Needs Accessibility TCC. macOS only |
 | `mouse` | CGEvent: `move` `click` `double_click` `right_click` `drag` `scroll` | coordinates in display points = screenshot pixels at scale 1. `modifiers`. Needs Accessibility TCC |
 | `key` | CGEvent: `type` (unicode, layout-independent) / `press` combos (`cmd+shift+4`) | Needs Accessibility TCC |
 | `osascript` | AppleScript / JXA via `/usr/bin/osascript` in the GUI session | `timeout_secs` (default 15). First script against an app raises an Automation consent dialog on the Mac — screenshot, then `mouse` click Allow |
@@ -143,12 +193,8 @@ leaf with no value and no children, since it cannot be ruled out as a secure fie
 To act on a native app without taking the pointer: `ui_snapshot` → `ui_action {snapshot_id, ref,
 action}` → `ui_snapshot` again to confirm. `set_value` replaces the whole value, and some apps
 commit a field only on `confirm` or when focus moves. Drags, gestures and custom-drawn content
-that has no accessibility node stay on `screenshot` + `mouse`. A ref under a window is accepted
-only while the element is still in a window it was walked under: its `AXWindow`, or, for
-controls that report none (a save or confirm sheet's buttons), its `AXTopLevelUIElement` or the
-nearest window, sheet, drawer or popover up its `AXParent` chain, must be one recorded on the
-ref's path. An element whose nearest container was never walked is refused as `stale ref … has
-left its window`.
+that has no accessibility node stay on `screenshot` + `mouse`. Ref containment and stale-ref
+rules are in [docs/ui-tools.md](docs/ui-tools.md#refs-and-stale-refs).
 
 The loop the tools are designed for: `screenshot` → decide → `mouse`/`key`/`osascript` → `screenshot` to confirm.
 Verified 2026-09-22 from the laptop: open TextEdit, type a line, read it back, close via the save
@@ -218,31 +264,25 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
   from `tools/list`, and a forced `tools/call` is an *unknown tool* error. Widening is a new
   grant. Full per-profile tool lists: [`docs/tool-profiles.md`](docs/tool-profiles.md).
 - ⚠️ **`owner` is not a security boundary; only `observe` is**
-  ([#45](https://github.com/openabdev/openab-computer/issues/45)). `owner` includes `exec`, and
-  GUI control is a shell too: `osascript` runs `do shell script`, `key` types into a terminal,
-  `mouse` opens one. The browser tools run with this computer's logged-in browser profile and
-  network (localhost and tailnet included). Filtering AppleScript text cannot fix this (JXA
-  `doShellScript`, `ObjC.import` → `NSTask`, Terminal `do script`, System Events keystrokes). When
-  an agent needs full control, **lend a dedicated computer** — a Linux hands node or a throwaway
-  machine/VM — not the one you work on. An isolated browser tier with a throwaway profile is
-  planned in #45; `ProfileBoundaryTests` fails any profile that claims to be narrower while still
-  allowing a shell-capable tool.
+  ([#45](https://github.com/openabdev/openab-computer/issues/45)). `owner` includes a shell in
+  several forms (`exec`, `osascript`, `key`, `mouse`), and the browser tools run with this
+  computer's logged-in browser profile. Filtering text cannot fix this. When an agent needs full
+  control, **lend a dedicated computer** (a Linux hands node or a throwaway VM), not the Mac you
+  work on. `ProfileBoundaryTests` fails any profile that claims to be narrower while still allowing
+  a shell-capable tool.
 - Either `secret` (already minted by the operator at the runtime) or `admin_credential` (the Mac
   mints, TTL is the runtime's) — exactly one. A new grant for the same runtime+session replaces the
   old one; that is renewal. `ttl_secs` is forwarded all the way to the runtime (not just held by
   the Mac): Connect/Remote offer exactly 1/2/4/12/24 hours; OpenAB Computer accepts up to 24h, and a
   runtime with a lower operator ceiling rejects the request rather than silently shortening it.
-- **Redial policy** (openab-pty CLIENT-CONTRACT §9.2): stop on `4001` expired · `4002` replaced ·
-  `4004` session ended · `4010` revoked, and on any handshake status other than
-  `101`/`2xx`/`429`/`5xx` (`401` refused; `400`/`403`/`404` mean a malformed upgrade, a wrong path
-  or a proxy refusing it); redial with backoff (1 s → 30 s) on every other close code (`1000` /
-  `1006` / `4006` / `4011` liveness, and unlisted codes such as `4003`, which is `/pty`'s renew
-  code), on handshake `101`/`2xx`/`429`/`5xx`, and on errors, until the grant deadline. A connection that stayed up for 60 s resets
-  the backoff. The Mac keeps a receive outstanding during tool calls, so it answers the runtime's
-  pings, and pings the runtime itself every 15 s. On these attaches `exec` refuses a
+- **Redial:** close codes and backoff follow openab-pty
+  [CLIENT-CONTRACT §9.2](https://github.com/openabdev/openab-pty/blob/main/runtime/CLIENT-CONTRACT.md).
+  Tool lists per profile are in [`docs/tool-profiles.md`](docs/tool-profiles.md).
+- **Liveness and exec:** the Mac keeps a receive outstanding during tool calls, so it answers the
+  runtime's pings, and pings the runtime every 15 s. On these attaches `exec` refuses a
   `timeout_secs` over 100 s, because the runtime fails any call still running after 120 s; use
-  `exec_start` + `exec_poll` for long work. Nothing on the attached socket is trusted as identity — the
-  grant is the identity; `Tailscale-User-Login` there would be pod-supplied.
+  `exec_start` + `exec_poll` for long work. Nothing on the attached socket is trusted as identity:
+  the grant is the identity, and a `Tailscale-User-Login` header there would be pod-supplied.
 - `--no-attach` disables the plane (`/attach` → 404).
 
 ### Serving a switchboard (`--switchboard`)
@@ -264,29 +304,24 @@ oab-instance-mcp --token-file ~/.config/oab-instance-mcp/token \
   allowlist applies on top, so a caller gets the intersection. With `owner` that allowlist is the
   only limit. The retired `desktop` serves `observe` with a warning in the agent log, and the
   installer writes `observe` for a `switchboard.profile` file that still says `desktop` (#59).
-- **Audit exposure:** openab-sb writes the audit line when the call arrives, before it forwards
-  it, so nothing this daemon does can keep a value out of that log. Since openab-sb
-  [0.2.2](https://github.com/openabdev/openab-sb/releases/tag/v0.2.2), which includes
-  [openabdev/openab-sb#16](https://github.com/openabdev/openab-sb/pull/16) (redaction of
-  secret-bearing arguments, for [#14](https://github.com/openabdev/openab-sb/issues/14)), the
-  log records `ui_action`'s `value` and `key`'s `text` only as a redacted length. An older
-  switchboard with `audit_args = true` records them in full, so do not send secrets through
-  `set_value` over one. `key` typing has the same exposure there, and did before `ui_action`.
-  Upgrading does not clean an existing log: rotate audit files written by an older release.
-- **Secure fields:** `ui_action` `set_value` on a secure (password) field is refused through the
-  switchboard by default, and nothing is typed into the app. The attempted call is still in the
-  switchboard's audit log, for the reason above (redacted on 0.2.2 and later). Opt in only for a
-  switchboard with `audit_args = false` or one that runs openab-sb 0.2.2 or later: write `allow` to
-  `~/.config/oab-instance-mcp/switchboard.secure-set-value` and re-run the installer (the flag is
-  `--switchboard-allow-secure-set-value`). Without the opt-in, fill secure fields over a direct
-  `/mcp` connection.
+- **Audit exposure:** the switchboard writes its audit line before it forwards a call, so this
+  daemon cannot keep argument values out of that log. openab-sb 0.2.2 or later
+  ([openabdev/openab-sb#16](https://github.com/openabdev/openab-sb/pull/16)) redacts `ui_action`
+  `value` and `key` `text` to a redacted length. An older switchboard with `audit_args = true`
+  records them in full, so do not send secrets through `set_value` or `key` over one. Upgrading
+  does not clean an existing log, so rotate audit files written by an older release.
+- **Secure fields:** `ui_action` `set_value` on a password field is refused through a switchboard
+  by default, and nothing is typed into the app. To allow it, write `allow` to
+  `~/.config/oab-instance-mcp/switchboard.secure-set-value` and re-run the installer (flag
+  `--switchboard-allow-secure-set-value`). Do this only when the switchboard has
+  `audit_args = false` or runs openab-sb 0.2.2 or later. Otherwise, fill secure fields over a
+  direct `/mcp` connection.
 - **Transport:** `ws://` is accepted for loopback only. Anything else needs `wss://`.
-- **Redial policy** (openab-sb `SOUTHBOUND-CONTRACT.md`):
-  - It stops on `4002` (replaced by another daemon) and `4003` (secret revoked).
-  - It redials with backoff (1 s → 60 s, ±20 %) on `4005`, `1001`, drops and proxy errors.
-  - On `401`/`403` it retries every ~5 minutes rather than stopping.
-- **Secret rotation:** the secret file is re-read on every dial, so rotating the secret means
-  updating the file; the next retry picks it up.
+- **Redial:** stops on `4002` (replaced by another daemon) and `4003` (secret revoked). Redials
+  with backoff (1 s → 60 s, ±20 %) on `4005`, `1001`, drops and proxy errors. Retries every ~5
+  minutes on `401`/`403` instead of stopping. The contract is openab-sb `SOUTHBOUND-CONTRACT.md`.
+- **Rotation:** the secret file is re-read on every dial. Update the file, and the next retry
+  picks it up.
 - **Installed with the package:** put the URL in `~/.config/oab-instance-mcp/switchboard.url`, the
   secret in `switchboard.secret` (mode 600) and, optionally, the profile in `switchboard.profile`
   and `allow` in `switchboard.secure-set-value`.
@@ -310,15 +345,6 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   window on this Mac's desktop, so Connect's Screens pane shows what the agent is doing.
 - Upstream down → its tools are absent from `tools/list`; everything else works. The upstream's
   `Mcp-Session-Id` is re-established automatically. Local tool names win on collision.
-
-Verified 2026-09-26 from a lent pod session (under the profile then named `sandbox`, later
-`desktop`, removed in #59): 16 `browser_*` tools listed, `run_code_unsafe` unknown, navigate →
-snapshot on a YouTube channel returned the first video's title as text.
-
-Verified 2026-09-26 end to end on macmini against the openab-pty runtime (PR #38): mint via
-`admin_credential`, dial, the session shell's `$OPENAB_TOOLS_MCP_URL` listed
-`sys_info screenshot mouse key osascript instance_status`, `exec` refused, `sys_info` answered,
-`DELETE /attach/{id}` detached.
 
 ## Download and install
 
@@ -350,12 +376,12 @@ The installer never re-signs the app: doing so would change the identity TCC gra
 See [`docs/releasing.md`](docs/releasing.md) for artifacts, signing/notarization, required secrets,
 local packaging smoke, and the current first-release signing blocker.
 
-## Build & test (on macmini; the laptop never compiles Swift)
+## Build & test (on the build Mac; the laptop never compiles Swift)
 
 ```sh
-rsync -a --delete --exclude .build --exclude .git ./ macmini:~/src/oab-instance-mcp/
-ssh macmini 'cd ~/src/oab-instance-mcp && swift build -c release && swift test'
-ssh macmini 'cd ~/src/oab-instance-mcp && bash scripts/smoke.sh'   # loopback, every step time-bounded
+rsync -a --delete --exclude .build --exclude .git ./ <mac>:~/src/oab-instance-mcp/
+ssh <mac> 'cd ~/src/oab-instance-mcp && swift build -c release && swift test'
+ssh <mac> 'cd ~/src/oab-instance-mcp && bash scripts/smoke.sh'   # loopback, every step time-bounded
 ```
 
 `~/src` is on the internal disk on purpose: `~/build` is a RAID symlink and LaunchAgents cannot
@@ -364,7 +390,7 @@ read the RAID (TCC on external volumes).
 ## Deploy (run on the target)
 
 ```sh
-ssh macmini 'cd ~/src/oab-instance-mcp && \
+ssh <mac> 'cd ~/src/oab-instance-mcp && \
   KEYCHAIN=~/Library/Keychains/signing.keychain-db KEYCHAIN_PASSWORD_FILE=~/.config/signing/keychain-password \
   bash scripts/deploy.sh you@example.com <codesign-identity-sha1>'
 ```
@@ -375,6 +401,7 @@ given Apple Development identity (any cert of yours; TCC grants are keyed on ide
 and runs `tailscale serve --bg --https=8444 http://127.0.0.1:8795`.
 
 Then, once, on the Mac's own screen, System Settings → Privacy & Security:
+
 - Screen & System Audio Recording → enable **OpenAB Computer** (older builds: `oab-instance-mcp`)
 - Accessibility → enable **OpenAB Computer** (older builds: `oab-instance-mcp`)
 
@@ -387,15 +414,6 @@ done. Grants survive re-signing with the same identity + bundle id (verified acr
 
 Also on the Mac: `sudo pmset -a displaysleep 0`. With display sleep on, an idle Mac returns black
 screenshots and, once the lock engages, drops injected input.
-
-Client (the deployed agent requires the bearer token — copy it from the menu bar or the
-`deploy.sh` summary and pass it as a header):
-
-```sh
-kiro-cli mcp add --name macmini-mcp --url https://<host>.<tailnet>.ts.net:8444/mcp \
-  --header "Authorization: Bearer $(ssh macmini cat ~/.config/oab-instance-mcp/token)" \
-  --scope global --timeout 30000
-```
 
 ## Menu bar
 
@@ -411,13 +429,13 @@ tool call.
 ## Operate
 
 ```sh
-ssh macmini 'launchctl print gui/501/dev.openab.instance-mcp | grep -E "state|pid"'
-ssh macmini 'tail -20 ~/Library/Logs/oab-instance-mcp/agent.log'      # one line per session open / tools/call / deny
-ssh macmini 'launchctl kickstart -k gui/501/dev.openab.instance-mcp'  # restart
-ssh macmini '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve status'
+ssh <mac> 'launchctl print gui/501/dev.openab.instance-mcp | grep -E "state|pid"'
+ssh <mac> 'tail -20 ~/Library/Logs/oab-instance-mcp/agent.log'      # one line per session open / tools/call / deny
+ssh <mac> 'launchctl kickstart -k gui/501/dev.openab.instance-mcp'  # restart
+ssh <mac> '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve status'
 curl -s https://<host>.<tailnet>.ts.net:8444/healthz
-ssh macmini 'ls -lt ~/Library/Logs/oab-instance-mcp/jobs/'             # exec_start job logs (<id>.out/.err), GC'd after 7 days
-ssh macmini 'tail -f ~/Library/Logs/oab-instance-mcp/jobs/<job_id>.out'  # follow a background build live
+ssh <mac> 'ls -lt ~/Library/Logs/oab-instance-mcp/jobs/'             # exec_start job logs (<id>.out/.err), GC'd after 7 days
+ssh <mac> 'tail -f ~/Library/Logs/oab-instance-mcp/jobs/<job_id>.out'  # follow a background build live
 ```
 
 Measured from the laptop: `sys_info` 0.75 s, `exec` 0.47 s, a 1 s exec timeout returns in 1.6 s.
@@ -435,40 +453,7 @@ Run it from a console session (the login keychain is locked over SSH, which is w
 sneaking in). You grant each permission **once**; later versions keep it. Override for a throwaway
 local build with `ALLOW_ADHOC=1`, accepting that you will have to re-grant.
 
-## Gotchas (each one cost a cycle)
+## Gotchas
 
-- **Keep the `LoopbackHTTPServer` a global.** Declared inside `do {}` it was released at the
-  end of the block; the listener stayed bound, accepted connections, and never answered —
-  the `[weak self]` handlers were no-ops. `curl` hung to its timeout with no server log line.
-- **`codesign` over SSH → `errSecInternalComponent`** for anything in the login keychain, with
-  or without `ssh -t`. Sign from a dedicated keychain whose password is on disk
-  (`KEYCHAIN` / `KEYCHAIN_PASSWORD_FILE` in `deploy.sh`), passing `--keychain` explicitly.
-- **`kiro-cli mcp add --force` truncated `~/.kiro/settings/mcp.json` to 0 bytes** the second
-  time it was used in a session. Back the file up before `mcp add`, or edit it by hand.
-- **macOS has no `timeout`.** Remote scripts bound steps with `perl -e 'alarm shift; exec @ARGV'`
-  and `curl -m`. Write them as bash files: zsh does not word-split `$VAR`, so
-  `C="curl -s -m 10"; $C …` is "command not found".
-- **`tccutil reset ScreenCapture <bundle-id>` does not make the prompt appear.** After the
-  first denial the system records it and further capture attempts fail silently; the grant
-  has to be toggled in System Settings on the machine's own display.
-- **Display sleep = black screenshots.** macmini shipped with `displaysleep 3`; the first
-  screenshot after a quiet spell was solid black with a cursor. `pmset -a displaysleep 0`.
-- **A stuck `osascript` is usually a consent dialog.** First AppleEvent to an app pops an
-  Automation prompt on the Mac; the call blocks until answered. Over SSH the prompt is attributed
-  to `sshd-keygen-wrapper` — decline those; only the agent bundle should hold Automation grants.
-- **`launchctl bootout` returns before the job is gone**; an immediate `bootstrap` fails and,
-  under `set -e`, took the deploy script with it — leaving no agent running. Poll until
-  `launchctl print` fails before bootstrapping.
-- **Model vision vs capture.** At scale 0.5 a 1080p menu bar is ~12 px tall and the model refuses
-  to read it (correctly). Default is now scale 1.0; for text, crop with `region` at `scale: 2`.
-- `/tmp` is `/private/tmp` — `exec` reports resolved paths.
-- `zsh -f` is deliberate: the user's `.zshenv` sources a RAID-path `.cargo/env` that fails
-  under launchd. Callers get a clean shell; set `env` explicitly if they need PATH additions.
-- **A LaunchAgent cannot read external volumes without Full Disk Access.** A `cwd` on
-  `/Volumes/…` (e.g. a RAID where builds live) does not fail with EPERM — the syscall
-  *blocks*, so an un-guarded `exec` would hang to its timeout. Two fixes: `ExecCwd` time-boxes
-  a readability probe and returns a clear "grant Full Disk Access to dev.openab.instance-mcp"
-  error instead of hanging; and granting FDA to the bundle in System Settings → Privacy &
-  Security → Full Disk Access makes the volume readable (verified 2026-09-23: same `ls
-  /Volumes/…` went from a 15 s timeout to 39 ms). The grant sticks across re-signing like the
-  Screen Recording / Accessibility ones. `exec_start` builds on the RAID work once FDA is granted.
+The gotchas that each cost a deploy cycle, with their fixes, are in
+[`docs/operators.md`](docs/operators.md).
