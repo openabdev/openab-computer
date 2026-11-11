@@ -172,7 +172,7 @@ final class SwitchboardSupervisorTests: XCTestCase {
         let sup = supervisor()
         try await configured(sup)
 
-        try await sup.forget()
+        try await sup.forget(confirmed: true)
 
         let cancelled = await fakes.made[0].cancelled
         XCTAssertTrue(cancelled)
@@ -202,6 +202,42 @@ final class SwitchboardSupervisorTests: XCTestCase {
         try await waitFor(sup) { $0.kind == .backingOff(seconds: 6) }
         let code = await sup.status.lastClose?.code
         XCTAssertEqual(code, 4005)
+    }
+
+    func testForgetWithoutConfirmationChangesNothing() async throws {
+        let sup = supervisor()
+        try await configured(sup)
+
+        do {
+            try await sup.forget(confirmed: false)
+            XCTFail("forget without confirmation must be refused")
+        } catch {
+            XCTAssertEqual(error as? SwitchboardConfigStore.Failure, .forgetNeedsConfirmation)
+        }
+        XCTAssertEqual(fakes.made.count, 1)
+        let cancelled = await fakes.made[0].cancelled
+        XCTAssertFalse(cancelled)
+        XCTAssertNotNil(store.load())
+    }
+
+    func testADisabledStartupShowsAsDisabledWithItsReason() async throws {
+        let sup = supervisor()
+        await sup.applyStartup(SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: true))
+
+        let s = await sup.status
+        XCTAssertEqual(s.kind, .disabled)
+        XCTAssertTrue(s.title { _ in "t" }.contains("disabled"))
+        XCTAssertEqual(fakes.made.count, 0, "a disabled switchboard dials nothing")
+    }
+
+    func testASavedOverrideIsShownAsANote() async throws {
+        let sup = supervisor()
+        try await configured(sup)
+        let saved = try XCTUnwrap(store.load())
+        await sup.applyStartup(SwitchboardStartup.resolve(saved: saved, flags: saved, flagsGiven: true))
+
+        let note = await sup.status.note
+        XCTAssertNotNil(note)
     }
 
     func testAStaleCallbackFromAReplacedDialerIsIgnored() async throws {

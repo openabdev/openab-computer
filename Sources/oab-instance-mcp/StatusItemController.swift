@@ -18,6 +18,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let defaults: UserDefaults
     private static let permissionSetupShownKey = "permissionSetupWizard.hasShown.v1"
     private var permissionSetupWindow: PermissionSetupWindowController?
+    private let attach: AttachManager?
+    private let switchboardSupervisor: SwitchboardSupervisor?
+    private lazy var switchboardMenu: SwitchboardMenu? = switchboardSupervisor.map { SwitchboardMenu(supervisor: $0) }
+    /// Latest switchboard status, pushed from the supervisor. The menu is built synchronously, so it reads this.
+    var switchboardStatus: SwitchboardStatus? {
+        didSet { refreshSwitchboardTitle() }
+    }
+    private var switchboardTitleItem: NSMenuItem?
+    private var grantHeaderItem: NSMenuItem?
+    private var grantRowItems: [NSMenuItem] = []
+    private var grantTimer: Timer?
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f
+    }()
 
     private var sessions = 0
     private var calls = 0
@@ -26,12 +40,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var flashWork: DispatchWorkItem?
 
     init(version: String, url: String, logPath: String, token: String? = nil,
-         defaults: UserDefaults = .standard) {
+         defaults: UserDefaults = .standard, attach: AttachManager? = nil,
+         switchboard: SwitchboardSupervisor? = nil) {
         self.version = version
         self.url = url
         self.logPath = logPath
         self.token = token
         self.defaults = defaults
+        self.attach = attach
+        self.switchboardSupervisor = switchboard
         self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         item.button?.image = Self.icon(active: false)
@@ -119,6 +136,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                                         state: permissions.fullDiskAccess, action: #selector(openFDAPane)))
         menu.addItem(.separator())
 
+        addSwitchboardSection()
+        addGrantSection()
+        menu.addItem(.separator())
+
         menu.addItem(label("Sessions \(sessions) · Calls \(calls)" + (denies > 0 ? " · Denied \(denies)" : "")))
         if let l = lastCall {
             let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
@@ -131,6 +152,112 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(label("Open Log", action: #selector(openLog)))
         menu.addItem(label("Restart Agent", action: #selector(restart)))
         menu.addItem(label("Quit Agent (stops launchd job)", action: #selector(quit)))
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        grantTimer?.invalidate()
+        grantTimer = nil
+    }
+
+    // MARK: switchboard
+
+    private func addSwitchboardSection() {
+        guard switchboardSupervisor != nil else { return }
+        let title = label("")
+        switchboardTitleItem = title
+        menu.addItem(title)
+        refreshSwitchboardTitle()
+        if let note = switchboardStatus?.note {
+            menu.addItem(label(note))
+        }
+        let configured = switchboardStatus.map { $0.kind != .notConfigured } ?? false
+        menu.addItem(label("Configure…", action: #selector(configureSwitchboard)))
+        let reconnect = label("Reconnect", action: #selector(reconnectSwitchboard))
+        reconnect.isEnabled = configured
+        menu.addItem(reconnect)
+        let forget = label("Disconnect & forget…", action: #selector(forgetSwitchboard))
+        forget.isEnabled = configured
+        menu.addItem(forget)
+        menu.addItem(.separator())
+    }
+
+    private func refreshSwitchboardTitle() {
+        guard let status = switchboardStatus else {
+            switchboardTitleItem?.title = "Switchboard: starting…"
+            return
+        }
+        switchboardTitleItem?.title = status.title { Self.timeFormatter.string(from: $0) }
+    }
+
+    @objc private func configureSwitchboard() {
+        Task { await switchboardMenu?.configure() }
+    }
+
+    @objc private func reconnectSwitchboard() {
+        Task { await switchboardMenu?.reconnect() }
+    }
+
+    @objc private func forgetSwitchboard() {
+        Task { await switchboardMenu?.forget() }
+    }
+
+    // MARK: reverse-attach grants
+
+    private func addGrantSection() {
+        guard attach != nil else { return }
+        let header = label("Reverse-attach grants")
+        grantHeaderItem = header
+        grantRowItems = []
+        menu.addItem(header)
+        refreshGrants()
+        grantTimer?.invalidate()
+        grantTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshGrants() }
+        }
+    }
+
+    private func refreshGrants() {
+        guard let attach else { return }
+        Task { renderGrants(await attach.list()) }
+    }
+
+    /// Replace the grant rows under the header. The menu may be open while this runs.
+    private func renderGrants(_ grants: [AttachManager.Grant]) {
+        guard let header = grantHeaderItem, menu.index(of: header) >= 0 else { return }
+        for item in grantRowItems { menu.removeItem(item) }
+        grantRowItems = []
+        var index = menu.index(of: header) + 1
+        func insert(_ item: NSMenuItem) {
+            menu.insertItem(item, at: index)
+            grantRowItems.append(item)
+            index += 1
+        }
+        if grants.isEmpty {
+            insert(label("No live grants"))
+            return
+        }
+        let now = Date()
+        for grant in grants {
+            let row = GrantRowModel.make(grant, now: now)
+            insert(label("\(row.session) · \(row.profile) · \(row.stateLabel) · \(row.expiresText)"))
+            if let requested = row.requestedProfile {
+                insert(label("   requested \(requested), served as \(row.profile)"))
+            }
+            if let warning = row.warning {
+                insert(label("   ⚠︎ \(warning)"))
+            }
+            let revoke = label("   Revoke \(row.session)…", action: #selector(revokeGrant(_:)))
+            revoke.representedObject = row.id
+            insert(revoke)
+        }
+    }
+
+    @objc private func revokeGrant(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let attach else { return }
+        Task {
+            await attach.revoke(id, reason: "revoked from the menu bar")
+            renderGrants(await attach.list())
+        }
     }
 
     private func label(_ title: String, action: Selector? = nil, tip: String? = nil) -> NSMenuItem {

@@ -140,20 +140,43 @@ final class SwitchboardFilesTests: XCTestCase {
         try "allow\n".write(to: dir.appendingPathComponent("switchboard.secure-set-value"),
                             atomically: true, encoding: .utf8)
 
-        try store.forget()
+        XCTAssertThrowsError(try store.forget(confirmed: false)) { error in
+            XCTAssertEqual(error as? SwitchboardConfigStore.Failure, .forgetNeedsConfirmation)
+        }
+        XCTAssertNotNil(store.load(), "a refused forget removes nothing")
+        try store.forget(confirmed: true)
 
         XCTAssertNil(store.load())
         XCTAssertEqual(filesInDir(), ["switchboard.secure-set-value"])
     }
 
-    func testStartupPrefersSavedThenFlagsThenDisablesOnlyWhenFlagsAreUnusable() {
+    func testASavedFileWinsOverALaunchFlagAndSaysSo() {
         let saved = SwitchboardConfig(url: URL(string: goodURL)!, secret: "a", profile: .observe)
-        let flags = SwitchboardConfig(url: URL(string: goodURL)!, secret: "b", profile: .owner)
+        let flags = SwitchboardConfig(url: URL(string: "wss://flag.example.test/vm/attach")!, secret: "b", profile: .owner)
 
-        XCTAssertEqual(SwitchboardStartup.resolve(saved: saved, flags: flags, flagsGiven: true), .saved(saved))
-        XCTAssertEqual(SwitchboardStartup.resolve(saved: nil, flags: flags, flagsGiven: true), .flags(flags))
+        let s = SwitchboardStartup.resolve(saved: saved, flags: flags, flagsGiven: true)
+
+        XCTAssertEqual(s.mode, .saved)
+        XCTAssertEqual(s.config, saved)
+        XCTAssertNotNil(s.warning, "an overridden flag must be logged")
+        XCTAssertFalse(s.warning?.contains("secret") == true, "the warning must not carry secret material")
+    }
+
+    func testAnUnreadableFlaggedSecretWithNothingSavedStartsWithTheSwitchboardOff() {
         // The forget case: the plist still has flags, their secret file is gone, nothing is saved.
-        XCTAssertEqual(SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: true), .disabled)
-        XCTAssertEqual(SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false), .none)
+        // The daemon keeps /mcp and /attach up, so this must not be an exit.
+        let s = SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: true)
+
+        XCTAssertEqual(s.mode, .disabled)
+        XCTAssertNil(s.config)
+        XCTAssertTrue(s.warning?.contains("disabled") == true)
+    }
+
+    func testFlagsAloneDialAndNothingGivenIsSilent() {
+        let flags = SwitchboardConfig(url: URL(string: goodURL)!, secret: "b", profile: .owner)
+        XCTAssertEqual(SwitchboardStartup.resolve(saved: nil, flags: flags, flagsGiven: true).mode, .flags)
+        let none = SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false)
+        XCTAssertEqual(none.mode, .none)
+        XCTAssertNil(none.warning)
     }
 }

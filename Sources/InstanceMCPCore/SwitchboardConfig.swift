@@ -22,24 +22,44 @@ public enum ProfileChoice {
     }
 }
 
-/// What the daemon does at startup with the switchboard settings.
-public enum SwitchboardStartup: Equatable, Sendable {
-    /// The files saved by the menu (or by hand) replace the launch flags.
-    case saved(SwitchboardConfig)
-    /// The launch flags, when no saved config exists.
-    case flags(SwitchboardConfig)
-    /// Flags were given but their secret file cannot be read, and nothing is saved.
-    /// The daemon runs without the switchboard instead of exiting, because launchd
-    /// restarts a failing daemon forever and `/mcp` and `/attach` go down with it.
-    case disabled
-    /// No switchboard at all.
-    case none
+/// What the daemon does at startup with the switchboard settings, and what to log
+/// about it. Saved files win over launch flags (P2); flags with an unreadable secret
+/// and nothing saved leave the switchboard off rather than exiting (P1).
+public struct SwitchboardStartup: Equatable, Sendable {
+    public enum Mode: Equatable, Sendable {
+        /// The files saved by the menu (or by hand) replace the launch flags.
+        case saved
+        /// The launch flags, when no saved config exists.
+        case flags
+        /// Flags were given but their secret file cannot be read, and nothing is saved.
+        case disabled
+        /// No switchboard at all.
+        case none
+    }
+
+    public let mode: Mode
+    /// The config to dial, for `saved` and `flags`.
+    public let config: SwitchboardConfig?
+    /// One log line for the cases the operator must notice: a saved file overriding a
+    /// flag, or the switchboard disabled. Never contains the secret.
+    public let warning: String?
 
     public static func resolve(saved: SwitchboardConfig?, flags: SwitchboardConfig?,
                                flagsGiven: Bool) -> SwitchboardStartup {
-        if let saved { return .saved(saved) }
-        if let flags { return .flags(flags) }
-        return flagsGiven ? .disabled : .none
+        if let saved {
+            let warning = flagsGiven
+                ? "switchboard: saved switchboard files override the launch flags for this run; the LaunchAgent flags are not used"
+                : nil
+            return SwitchboardStartup(mode: .saved, config: saved, warning: warning)
+        }
+        if let flags {
+            return SwitchboardStartup(mode: .flags, config: flags, warning: nil)
+        }
+        if flagsGiven {
+            return SwitchboardStartup(mode: .disabled, config: nil,
+                                      warning: "switchboard disabled: the flagged secret file is unreadable and no config is saved; the menu bar can configure it, or re-run the installer to clear the LaunchAgent flags")
+        }
+        return SwitchboardStartup(mode: .none, config: nil, warning: nil)
     }
 }
 
@@ -71,6 +91,7 @@ public struct SwitchboardConfigStore: Sendable {
         case url(Switchboard.ConfigError)
         case secretRequired
         case ownerNeedsConfirmation
+        case forgetNeedsConfirmation
         case io(String)
 
         public var description: String {
@@ -78,6 +99,7 @@ public struct SwitchboardConfigStore: Sendable {
             case .url(let e): return e.description
             case .secretRequired: return "no secret is saved; enter the switchboard secret"
             case .ownerNeedsConfirmation: return "owner is shell-equivalent; confirm it before saving"
+            case .forgetNeedsConfirmation: return "forgetting the switchboard needs confirmation"
             case .io(let s): return "could not write the switchboard files: \(s)"
             }
         }
@@ -144,7 +166,9 @@ public struct SwitchboardConfigStore: Sendable {
 
     /// Remove the URL, secret and profile files. The installer's secure-set-value file
     /// stays. The LaunchAgent plist still has the flags until the installer is re-run.
-    public func forget() throws {
+    /// Refused unless the caller confirms, so a stray call cannot delete the config.
+    public func forget(confirmed: Bool) throws {
+        guard confirmed else { throw Failure.forgetNeedsConfirmation }
         for file in [urlFile, secretFile, profileFile] where FileManager.default.fileExists(atPath: file.path) {
             do { try FileManager.default.removeItem(at: file) } catch {
                 throw Failure.io(error.localizedDescription)

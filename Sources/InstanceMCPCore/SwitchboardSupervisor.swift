@@ -5,6 +5,8 @@ import Foundation
 public struct SwitchboardStatus: Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
         case notConfigured
+        /// Off at startup because the flagged secret is unreadable and nothing is saved.
+        case disabled
         case dialling
         case connected
         case backingOff(seconds: Int)
@@ -17,13 +19,20 @@ public struct SwitchboardStatus: Equatable, Sendable {
     /// Why the link is backing off or stopped, in words. Nil when connected.
     public let reason: String?
     public let computer: String
+    /// A startup note the operator should see, e.g. saved files overriding flags.
+    public let note: String?
 
     public static func make(state: ReverseAttachClient.State?, lastClose: ReverseAttachClient.CloseRecord?,
-                            configured: Bool, profile: ToolProfile?, computer: String) -> SwitchboardStatus {
+                            configured: Bool, profile: ToolProfile?, computer: String,
+                            disabledReason: String? = nil, note: String? = nil) -> SwitchboardStatus {
         func status(_ kind: Kind, _ reason: String? = nil) -> SwitchboardStatus {
-            SwitchboardStatus(kind: kind, profile: profile, lastClose: lastClose, reason: reason, computer: computer)
+            SwitchboardStatus(kind: kind, profile: profile, lastClose: lastClose, reason: reason,
+                              computer: computer, note: note)
         }
-        guard configured else { return status(.notConfigured) }
+        guard configured else {
+            if let disabledReason { return status(.disabled, disabledReason) }
+            return status(.notConfigured)
+        }
         guard let state else { return status(.stopped, "not running") }
         switch state {
         case .idle, .dialing:
@@ -63,6 +72,7 @@ public struct SwitchboardStatus: Equatable, Sendable {
         let head: String
         switch kind {
         case .notConfigured: head = "Switchboard: not configured"
+        case .disabled: head = "Switchboard: disabled"
         case .dialling: head = "Switchboard: dialling"
         case .connected: head = "Switchboard: connected as \(profile?.rawValue ?? "?")"
         case .backingOff(let s): head = "Switchboard: backing off, retry in \(s) s"
@@ -74,7 +84,7 @@ public struct SwitchboardStatus: Equatable, Sendable {
             let code = close.code.map(String.init) ?? (close.handshakeStatus.map { "HTTP \($0)" } ?? "error")
             parts.append("last close \(code) at \(timeText(close.at))")
         }
-        if kind != .notConfigured { parts.append("computer \(computer)") }
+        if kind != .notConfigured && kind != .disabled { parts.append("computer \(computer)") }
         return parts.joined(separator: " · ")
     }
 }
@@ -119,6 +129,8 @@ public actor SwitchboardSupervisor {
     private var state: ReverseAttachClient.State?
     private var lastClose: ReverseAttachClient.CloseRecord?
     private var onChange: (@Sendable (SwitchboardStatus) -> Void)?
+    private var disabledReason: String?
+    private var note: String?
 
     public init(store: SwitchboardConfigStore, computer: String, factory: @escaping Factory,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
@@ -135,7 +147,15 @@ public actor SwitchboardSupervisor {
 
     public var status: SwitchboardStatus {
         SwitchboardStatus.make(state: state, lastClose: lastClose, configured: config != nil,
-                               profile: config?.profile, computer: computer)
+                               profile: config?.profile, computer: computer,
+                               disabledReason: disabledReason, note: note)
+    }
+
+    /// Record what startup decided, so the menu can show it. Called once at launch.
+    public func applyStartup(_ startup: SwitchboardStartup) {
+        note = startup.mode == .saved ? startup.warning : nil
+        disabledReason = startup.mode == .disabled ? startup.warning : nil
+        notify()
     }
 
     /// The config the dialer is using, for the Configure dialog's defaults. Its secret
@@ -146,6 +166,7 @@ public actor SwitchboardSupervisor {
     public func start(_ cfg: SwitchboardConfig) async {
         await stopDialer()
         config = cfg
+        disabledReason = nil
         generation += 1
         let gen = generation
         let made = factory(cfg) { [self] _ in
@@ -192,12 +213,13 @@ public actor SwitchboardSupervisor {
 
     /// Stop dialling and delete the switchboard files. The LaunchAgent plist keeps its
     /// flags until the installer is re-run, so the caller must say so.
-    public func forget() async throws {
+    public func forget(confirmed: Bool) async throws {
+        try store.forget(confirmed: confirmed)
         await stopDialer()
-        try store.forget()
         config = nil
         state = nil
         lastClose = nil
+        disabledReason = nil
         log("switchboard: forgotten; the installer must be re-run to clear the launch flags")
         notify()
     }
