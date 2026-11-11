@@ -73,7 +73,7 @@ this exists for what SSH cannot reach.
 
 ## Contents
 
-- [Goal](#goal) · [Status and known limits](#status-and-known-limits) · [Quick start](#quick-start) · [Platforms](#platforms)
+- [Goal](#goal) · [Features](#features) · [Status and known limits](#status-and-known-limits) · [Quick start](#quick-start) · [Platforms](#platforms)
 - [Tools](#tools) · [Auth](#auth)
 - [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) · [Switchboard](#serving-a-switchboard---switchboard) · [Browser tools](#browser-tools-for-lent-sessions---upstream)
 - Deploy & operate: [Download and install](#download-and-install) · [Build & test](#build--test-on-the-build-mac-the-laptop-never-compiles-swift) · [Deploy](#deploy-run-on-the-target) · [Menu bar](#menu-bar) · [Operate](#operate)
@@ -93,6 +93,20 @@ and run everyday tasks. Each grant is per agent and can be revoked. The `observe
 read-only access (screenshot and system info), and `owner` gives full control. On macOS the full
 tool set is available, including the accessibility-tree tools. On Linux the browser, shell,
 screenshot, mouse and key tools are available, but the accessibility-tree tools are not yet
+([#102](https://github.com/openabdev/openab-computer/issues/102)).
+
+## Features
+
+- **Browser:** a Playwright-driven Chromium on the machine. `browser_snapshot` returns the page as an accessibility tree. The `browser_*` tools need the `owner` profile.
+- **Shell, build and test:** `bash` on Linux, `exec` on macOS. Background jobs (`exec_start`, `exec_poll`, `exec_list`, `exec_cancel`) run long builds, and they keep running if the connection drops.
+- **Desktop control:** screenshots, mouse and keyboard. AppleScript (`osascript`) is macOS only.
+- **Accessibility tree (macOS):** `ui_snapshot` reads a window's controls with refs. `ui_action` presses or sets them by ref without moving the pointer.
+- **Access control:** a bearer token per caller. A caller gets the `observe` profile (read-only: `sys_info` and `screenshot`) or `owner` (full control). A switchboard can also keep a per-caller tool allowlist.
+- **Reverse attach:** lend a machine to a sandboxed agent session with a time-limited grant that can be revoked.
+- **Switchboard:** the machine dials out to a relay, so callers reach it without an inbound port on the machine.
+- **Platforms:** macOS (signed, notarized `.pkg`) and Linux nodes such as a Raspberry Pi or a mini PC, installed with an installer script.
+
+The accessibility-tree tools are macOS only for now; Linux is deferred
 ([#102](https://github.com/openabdev/openab-computer/issues/102)).
 
 ## Status and known limits
