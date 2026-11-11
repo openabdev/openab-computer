@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -63,6 +64,16 @@ public struct SwitchboardStartup: Equatable, Sendable {
     /// flag, or the switchboard disabled. Never contains the secret.
     public let warning: String?
 
+    /// Whether this process may dial from the saved files. Saved files apply only to the
+    /// installer's layout (the flag names the installer's `switchboard.secret`), or to a
+    /// menu bar process given no switchboard flags. Any other explicit flags win, and a
+    /// headless process with no flags never dials from saved files.
+    public static func savedFilesApply(flagSecretFile: URL?, menuBar: Bool, store: SwitchboardConfigStore) -> Bool {
+        guard let flagSecretFile else { return menuBar }
+        return flagSecretFile.standardizedFileURL == store.secretFile.standardizedFileURL
+    }
+
+    /// The config a process dials with, and why. `flagsGiven` says whether any switchboard flag was passed.
     public static func resolve(saved: SwitchboardConfig?, flags: SwitchboardConfig?,
                                flagsGiven: Bool) -> SwitchboardStartup {
         if let saved {
@@ -111,6 +122,7 @@ public struct SwitchboardConfigStore: Sendable {
         case secretRequired
         case ownerNeedsConfirmation
         case forgetNeedsConfirmation
+        case notManaged
         case io(String)
 
         public var description: String {
@@ -119,6 +131,7 @@ public struct SwitchboardConfigStore: Sendable {
             case .secretRequired: return "no secret is saved; enter the switchboard secret"
             case .ownerNeedsConfirmation: return "owner is shell-equivalent; confirm it before saving"
             case .forgetNeedsConfirmation: return "forgetting the switchboard needs confirmation"
+            case .notManaged: return "this process dials from its launch flags; the saved switchboard files are not used here"
             case .io(let s): return "could not write the switchboard files: \(s)"
             }
         }
@@ -138,11 +151,18 @@ public struct SwitchboardConfigStore: Sendable {
     public var urlFile: URL { directory.appendingPathComponent("switchboard.url") }
     public var secretFile: URL { directory.appendingPathComponent("switchboard.secret") }
     public var profileFile: URL { directory.appendingPathComponent("switchboard.profile") }
+    /// Written by `save` after the three files, holding a digest of their contents. `load`
+    /// trusts the files only while the digest still matches, so a hand edit is ignored
+    /// until the menu bar saves again. The installer never reads it.
+    public var markerFile: URL { directory.appendingPathComponent("switchboard.menu-digest") }
 
-    /// The saved config, or nil unless both the URL and the secret are usable.
+    /// The saved config, or nil unless the URL and the secret are usable and the files
+    /// were last written by `save` (the digest matches).
     public func load() -> SwitchboardConfig? {
         guard let text = firstLine(urlFile), let url = try? Switchboard.validate(text),
               let secret = readSecret() else { return nil }
+        let profileLine = firstLine(profileFile) ?? ""
+        guard firstLine(markerFile) == Self.digest(url: text, secret: secret, profile: profileLine) else { return nil }
         let p = savedProfile()
         return SwitchboardConfig(url: url, secret: secret, profile: p.profile,
                                  requestedProfile: p.requested, profileWarning: p.warning)
@@ -174,10 +194,11 @@ public struct SwitchboardConfigStore: Sendable {
         do {
             try ensureDirectory()
             // The secret goes first and the URL last, so a URL file exists only once
-            // the other two are in place.
+            // the other two are in place. The marker comes after all three.
             try writeSecure(secret, to: secretFile)
             try writeSecure(edit.profile.rawValue, to: profileFile)
             try writeSecure(urlText, to: urlFile)
+            try writeMarker()
         } catch let f as Failure {
             throw f
         } catch {
@@ -185,16 +206,30 @@ public struct SwitchboardConfigStore: Sendable {
         }
     }
 
-    /// Remove the URL, secret and profile files. The installer's secure-set-value file
+    /// Remove the URL, secret, profile and marker files. The installer's secure-set-value file
     /// stays. The LaunchAgent plist still has the flags until the installer is re-run.
     /// Refused unless the caller confirms, so a stray call cannot delete the config.
     public func forget(confirmed: Bool) throws {
         guard confirmed else { throw Failure.forgetNeedsConfirmation }
-        for file in [urlFile, secretFile, profileFile] where FileManager.default.fileExists(atPath: file.path) {
+        for file in [urlFile, secretFile, profileFile, markerFile] where FileManager.default.fileExists(atPath: file.path) {
             do { try FileManager.default.removeItem(at: file) } catch {
                 throw Failure.io(error.localizedDescription)
             }
         }
+    }
+
+    /// Record that the three files were written by `save`, so `load` trusts them. Internal:
+    /// tests use it to seal files they wrote by hand.
+    func writeMarker() throws {
+        let url = firstLine(urlFile) ?? ""
+        let secret = readSecret() ?? ""
+        let profile = firstLine(profileFile) ?? ""
+        try writeSecure(Self.digest(url: url, secret: secret, profile: profile), to: markerFile)
+    }
+
+    static func digest(url: String, secret: String, profile: String) -> String {
+        let input = "url=\(url)\nsecret=\(secret)\nprofile=\(profile)\n"
+        return SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: helpers

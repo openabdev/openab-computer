@@ -23,6 +23,8 @@ public struct SwitchboardStatus: Equatable, Sendable {
     public let note: String?
     /// When the next dial happens, while backing off. The title counts down to it.
     public let redialAt: Date?
+    /// False when this process dials from its launch flags, so the menu cannot edit the saved files.
+    public let managesSaved: Bool
 
     /// Whether a config exists to reconnect or forget. Off at startup with a disabled
     /// switchboard, there is nothing to act on.
@@ -31,10 +33,10 @@ public struct SwitchboardStatus: Equatable, Sendable {
     public static func make(state: ReverseAttachClient.State?, lastClose: ReverseAttachClient.CloseRecord?,
                             configured: Bool, profile: ToolProfile?, computer: String,
                             disabledReason: String? = nil, note: String? = nil,
-                            redialAt: Date? = nil) -> SwitchboardStatus {
+                            redialAt: Date? = nil, managesSaved: Bool = true) -> SwitchboardStatus {
         func status(_ kind: Kind, _ reason: String? = nil, redialAt: Date? = nil) -> SwitchboardStatus {
             SwitchboardStatus(kind: kind, profile: profile, lastClose: lastClose, reason: reason,
-                              computer: computer, note: note, redialAt: redialAt)
+                              computer: computer, note: note, redialAt: redialAt, managesSaved: managesSaved)
         }
         guard configured else {
             if let disabledReason { return status(.disabled, disabledReason) }
@@ -144,10 +146,15 @@ public actor SwitchboardSupervisor {
     private var note: String?
     private var redialAt: Date?
 
-    public init(store: SwitchboardConfigStore, computer: String, factory: @escaping Factory,
+    /// False for a process given explicit switchboard flags for another file: it dials from
+    /// those flags, so Configure and Forget (which edit the saved files) are refused.
+    private let managesSaved: Bool
+
+    public init(store: SwitchboardConfigStore, computer: String, managesSaved: Bool = true, factory: @escaping Factory,
                 log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.store = store
         self.computer = computer
+        self.managesSaved = managesSaved
         self.factory = factory
         self.log = log
     }
@@ -157,11 +164,14 @@ public actor SwitchboardSupervisor {
         f(status)
     }
 
+    static let flagsNote = "dialling from this process's launch flags; the saved switchboard files are not used here"
+
     public var status: SwitchboardStatus {
         SwitchboardStatus.make(state: state, lastClose: lastClose, configured: config != nil,
                                profile: config?.profile, computer: computer,
                                disabledReason: disabledReason,
-                               note: note ?? config?.profileWarning, redialAt: redialAt)
+                               note: note ?? config?.profileWarning ?? (managesSaved ? nil : Self.flagsNote),
+                               redialAt: redialAt, managesSaved: managesSaved)
     }
 
     /// Record what startup decided, so the menu can show it. Called once at launch.
@@ -196,6 +206,7 @@ public actor SwitchboardSupervisor {
     /// edit changes nothing, including the running dialer.
     @discardableResult
     public func save(_ edit: SwitchboardConfigStore.Edit) async throws -> SaveOutcome {
+        guard managesSaved else { throw SwitchboardConfigStore.Failure.notManaged }
         let before = config
         try store.save(edit)
         guard let after = store.load() else {
@@ -235,6 +246,7 @@ public actor SwitchboardSupervisor {
     /// Stop dialling and delete the switchboard files. The LaunchAgent plist keeps its
     /// flags until the installer is re-run, so the caller must say so.
     public func forget(confirmed: Bool) async throws {
+        guard managesSaved else { throw SwitchboardConfigStore.Failure.notManaged }
         try store.forget(confirmed: confirmed)
         await stopDialer()
         config = nil

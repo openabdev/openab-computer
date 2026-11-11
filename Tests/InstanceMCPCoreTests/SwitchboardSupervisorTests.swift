@@ -175,6 +175,7 @@ final class SwitchboardSupervisorTests: XCTestCase {
         // A saved `desktop` runs as observe, and the menu must say so.
         try store.save(edit(secret: "s3cret"))
         try "desktop\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        try store.writeMarker()
         let sup = supervisor()
         let cfg = try XCTUnwrap(store.load())
 
@@ -294,6 +295,29 @@ final class SwitchboardSupervisorTests: XCTestCase {
 
         let note = await sup.status.note
         XCTAssertNotNil(note)
+    }
+
+    func testAProcessDialingFromFlagsCannotEditOrForgetTheSavedFiles() async throws {
+        try store.save(edit(secret: "saved-secret"))
+        let flagged = SwitchboardSupervisor(store: store, computer: "Test Mac", managesSaved: false, factory: fakes.factory)
+        await flagged.start(SwitchboardConfig(url: URL(string: goodURL)!, secret: "flag-secret", profile: .observe))
+
+        let s = await flagged.status
+        XCTAssertFalse(s.managesSaved)
+        XCTAssertTrue(s.note?.contains("launch flags") == true)
+        do {
+            _ = try await flagged.save(edit(secret: "rotated"))
+            XCTFail("a flagged process must not save the saved files")
+        } catch {
+            XCTAssertEqual(error as? SwitchboardConfigStore.Failure, .notManaged)
+        }
+        do {
+            try await flagged.forget(confirmed: true)
+            XCTFail("a flagged process must not forget the saved files")
+        } catch {
+            XCTAssertEqual(error as? SwitchboardConfigStore.Failure, .notManaged)
+        }
+        XCTAssertEqual(store.load()?.secret, "saved-secret")
     }
 
     func testAStaleCallbackFromAReplacedDialerIsIgnored() async throws {

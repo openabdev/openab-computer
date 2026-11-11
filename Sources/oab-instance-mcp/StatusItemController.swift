@@ -185,14 +185,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if let note = switchboardStatus?.note {
             menu.addItem(label(note))
         }
-        // With no config there is nothing to reconnect or forget. Configure… is always offered.
+        // With no config there is nothing to reconnect or forget. A process dialling from
+        // explicit flags cannot edit the saved files, so Configure and Forget are off there.
         let hasConfig = switchboardStatus?.hasConfig ?? false
-        menu.addItem(label("Configure…", action: #selector(configureSwitchboard)))
+        let managesSaved = switchboardStatus?.managesSaved ?? false
+        let configure = label("Configure…", action: #selector(configureSwitchboard))
+        configure.isEnabled = managesSaved
+        menu.addItem(configure)
         let reconnect = label("Reconnect", action: #selector(reconnectSwitchboard))
         reconnect.isEnabled = hasConfig
         menu.addItem(reconnect)
         let forget = label("Disconnect & forget…", action: #selector(forgetSwitchboard))
-        forget.isEnabled = hasConfig
+        forget.isEnabled = hasConfig && managesSaved
         menu.addItem(forget)
         menu.addItem(.separator())
     }

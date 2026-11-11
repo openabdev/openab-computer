@@ -40,6 +40,7 @@ final class SwitchboardFilesTests: XCTestCase {
         XCTAssertEqual(mode(store.urlFile), 0o600)
         XCTAssertEqual(mode(store.secretFile), 0o600)
         XCTAssertEqual(mode(store.profileFile), 0o600)
+        XCTAssertEqual(mode(store.markerFile), 0o600)
         XCTAssertEqual(mode(dir), 0o700)
         XCTAssertEqual(try String(contentsOf: store.urlFile, encoding: .utf8).trimmingCharacters(in: .newlines), goodURL)
         XCTAssertEqual(try String(contentsOf: store.profileFile, encoding: .utf8).trimmingCharacters(in: .newlines), "observe")
@@ -125,6 +126,7 @@ final class SwitchboardFilesTests: XCTestCase {
     func testRetiredDesktopProfileFileLoadsAsObserveWithItsWarning() throws {
         try store.save(edit(profile: .observe))
         try "desktop\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        try store.writeMarker()
         let loaded = try XCTUnwrap(store.load())
         XCTAssertEqual(loaded.profile, .observe)
         XCTAssertEqual(loaded.requestedProfile, "desktop")
@@ -134,6 +136,7 @@ final class SwitchboardFilesTests: XCTestCase {
     func testAnUnrecognisedProfileFileServesObserveAndSaysSo() throws {
         try store.save(edit(profile: .observe))
         try "owner-ish\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        try store.writeMarker()
         let loaded = try XCTUnwrap(store.load())
         XCTAssertEqual(loaded.profile, .observe, "an unknown name must not widen to owner")
         XCTAssertEqual(loaded.requestedProfile, "owner-ish")
@@ -154,6 +157,48 @@ final class SwitchboardFilesTests: XCTestCase {
         try store.save(edit())
 
         XCTAssertEqual(mode(dir), 0o700)
+    }
+
+    func testHandEditedFilesAreIgnoredUntilTheMenuSavesAgain() throws {
+        try store.save(edit(profile: .observe))
+        try "wss://hand-edited.example.test/vm/attach\n".write(to: store.urlFile, atomically: true, encoding: .utf8)
+
+        XCTAssertNil(store.load(), "a file changed after the menu saved it must not be dialled")
+
+        try store.save(edit(url: "wss://hand-edited.example.test/vm/attach", profile: .observe))
+        XCTAssertEqual(store.load()?.url.host, "hand-edited.example.test")
+    }
+
+    func testFilesWithoutAMarkerAreIgnored() throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try (goodURL + "\n").write(to: store.urlFile, atomically: true, encoding: .utf8)
+        try "s3cret\n".write(to: store.secretFile, atomically: true, encoding: .utf8)
+        XCTAssertNil(store.load(), "files the menu bar did not write are not trusted")
+    }
+
+    func testSavedFilesApplyOnlyForTheInstallerLayoutOrAMenuBarWithNoFlags() {
+        let store = self.store
+        // Headless, no flags: never dials from saved files.
+        XCTAssertFalse(SwitchboardStartup.savedFilesApply(flagSecretFile: nil, menuBar: false, store: store))
+        XCTAssertEqual(SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false).mode, .none)
+        // Menu bar, no flags: uses saved files.
+        XCTAssertTrue(SwitchboardStartup.savedFilesApply(flagSecretFile: nil, menuBar: true, store: store))
+        // Installer layout: the flag names the installer's switchboard.secret.
+        XCTAssertTrue(SwitchboardStartup.savedFilesApply(flagSecretFile: store.secretFile, menuBar: true, store: store))
+        XCTAssertTrue(SwitchboardStartup.savedFilesApply(flagSecretFile: store.secretFile, menuBar: false, store: store))
+    }
+
+    func testASecondInstanceWithExplicitFlagsDialsItsFlagsAndNotTheSavedFiles() throws {
+        try store.save(edit(profile: .observe))
+        let other = dir.appendingPathComponent("other.secret")
+        let flags = SwitchboardConfig(url: URL(string: "wss://flag.example.test/vm/attach")!, secret: "b", profile: .owner)
+
+        XCTAssertFalse(SwitchboardStartup.savedFilesApply(flagSecretFile: other, menuBar: false, store: store))
+        XCTAssertFalse(SwitchboardStartup.savedFilesApply(flagSecretFile: other, menuBar: true, store: store))
+
+        let s = SwitchboardStartup.resolve(saved: nil, flags: flags, flagsGiven: true)
+        XCTAssertEqual(s.mode, .flags)
+        XCTAssertEqual(s.config, flags)
     }
 
     func testLoadNeedsBothTheURLAndTheSecret() throws {

@@ -243,10 +243,14 @@ if let attachManager {
 // The switchboard supervisor owns the config files and the one live dialer. Saved files
 // win over flags (SwitchboardStartup); the menu bar edits the saved files.
 let switchboardStore = SwitchboardConfigStore()
-let switchboardFlagSecretFile = switchboardTarget?.file
 let switchboardAllowSecure = opts.switchboardAllowSecureSetValue
+// The secret file named by the flags, readable or not. Saved files apply only when the
+// flags name the installer's file, or when this is a menu bar process with no flags.
+let switchboardFlagFile: URL? = opts.switchboardSecretFile.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+let switchboardSavedApply = SwitchboardStartup.savedFilesApply(
+    flagSecretFile: switchboardFlagFile, menuBar: opts.menuBar, store: switchboardStore)
 let switchboardStartup = SwitchboardStartup.resolve(
-    saved: switchboardStore.load(),
+    saved: switchboardSavedApply ? switchboardStore.load() : nil,
     flags: switchboardTarget.map {
         SwitchboardConfig(url: $0.url, secret: $0.secret, profile: opts.switchboardProfile,
                           requestedProfile: opts.switchboardRequestedProfile,
@@ -263,9 +267,11 @@ if let cfg = switchboardStartup.config, let warning = cfg.profileWarning {
 let switchboardSupervisor = SwitchboardSupervisor(
     store: switchboardStore,
     computer: Host.current().localizedName ?? "this Mac",
+    managesSaved: switchboardSavedApply,
     factory: { cfg, onState in
-        // The secret file is re-read on every dial: the saved file once one exists, else the flag's file.
-        let secretFile = (switchboardStore.load() == nil ? switchboardFlagSecretFile : nil) ?? switchboardStore.secretFile
+        // The secret file is re-read on every dial: the installer's saved file when saved files
+        // apply, otherwise the file the flags name.
+        let secretFile = switchboardSavedApply ? switchboardStore.secretFile : (switchboardFlagFile ?? switchboardStore.secretFile)
         return Switchboard.client(url: cfg.url, secretFile: secretFile, secret: cfg.secret, profile: cfg.profile,
                                   server: server, allowSecureSetValue: switchboardAllowSecure,
                                   onStateChange: onState, log: log)

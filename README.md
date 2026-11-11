@@ -343,9 +343,14 @@ oab-instance-mcp --token-file ~/.config/oab-instance-mcp/token \
   and `allow` in `switchboard.secure-set-value`.
   Then re-run the installer: it writes the flags into the LaunchAgent plist whenever both files
   exist, so upgrades keep them.
-- **Saved files win over the plist flags:** when `switchboard.url` and `switchboard.secret` both
-  exist, the daemon dials them instead of the flags, and logs one line saying so. A file written
-  by hand or by the menu bar takes effect at the next start, without the installer.
+- **Saved files (menu bar):** Configure writes `switchboard.url`, `switchboard.secret` and
+  `switchboard.profile` together with a digest marker. The daemon dials the saved files only when
+  the marker matches, so a file edited by hand is ignored until the menu bar saves again. Saved
+  files apply in two cases only: the flags name the installer's `switchboard.secret`, or the
+  process is a `--menu-bar` process given no switchboard flags. A headless process with no
+  switchboard flags never dials from saved files. A process given explicit flags for another
+  secret file dials those flags, and its menu cannot edit the saved files. When saved files apply,
+  the daemon logs one line saying so.
 - **Unreadable secret:** if the flagged secret file is missing and nothing is saved, the daemon
   starts with the switchboard off and logs why. It keeps serving `/mcp` and `/attach`. It does not
   exit. Configure the switchboard from the menu bar or re-run the installer.
