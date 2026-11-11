@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 600" width="1200" height="600" role="img" aria-labelledby="t d">
+  <title id="t">OpenAB Computer overview</title>
+  <desc id="d">Agents on your tailnet reach your own computers through a switchboard. Each agent has its own token and profile. The computers dial out to the switchboard, so they need no inbound port, and they offer browser, shell, build and test, desktop control and accessibility-tree tools.</desc>
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .bg{fill:#ffffff}
+      .h1{font:700 30px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#0f172a}
+      .sub{font:400 17px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#475569}
+      .lbl{font:600 18px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#0f172a}
+      .sm{font:400 14px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#334155}
+      .xs{font:500 13px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#475569}
+      .cap{font:600 13px system-ui,-apple-system,"Segoe UI",sans-serif;fill:#1e3a8a}
+      .card{fill:#f8fafc;stroke:#cbd5e1;stroke-width:1.5}
+      .agent{fill:#fef3c7;stroke:#f59e0b;stroke-width:1.5}
+      .sb{fill:#e0e7ff;stroke:#4f46e5;stroke-width:2}
+      .pc{fill:#ecfdf5;stroke:#10b981;stroke-width:1.5}
+      .chip{fill:#dbeafe;stroke:#93c5fd;stroke-width:1}
+      .tailnet{fill:none;stroke:#94a3b8;stroke-width:2;stroke-dasharray:8 6}
+      .line{stroke:#475569;stroke-width:2;fill:none}
+      .dial{stroke:#2563eb;stroke-width:2.5;fill:none;stroke-dasharray:6 4}
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="600" rx="18"/>
+
+  <text class="h1" x="40" y="58">OpenAB Computer</text>
+  <text class="sub" x="40" y="88">Lend your own computers to the agents you trust on your tailnet.</text>
+
+  <!-- tailnet boundary -->
+  <rect class="tailnet" x="20" y="118" width="1160" height="462" rx="22"/>
+  <text class="xs" x="40" y="142">your tailnet</text>
+
+  <!-- Agents -->
+  <text class="lbl" x="60" y="182">Agents</text>
+  <text class="xs" x="60" y="202">the brain: they decide what to do</text>
+  <rect class="agent" x="60" y="222" width="250" height="62" rx="12"/>
+  <text class="lbl" x="80" y="250">Cloud agent</text>
+  <text class="sm" x="80" y="272">e.g. Grok Bot, Muse</text>
+  <rect class="agent" x="60" y="302" width="250" height="62" rx="12"/>
+  <text class="lbl" x="80" y="330">Coding CLI</text>
+  <text class="sm" x="80" y="352">kiro-cli, claude, openab</text>
+  <rect class="agent" x="60" y="382" width="250" height="62" rx="12"/>
+  <text class="lbl" x="80" y="410">Your apps</text>
+  <text class="sm" x="80" y="432">OpenAB Connect, Remote</text>
+
+  <rect class="card" x="60" y="470" width="250" height="86" rx="12"/>
+  <text class="lbl" x="80" y="497">Per-agent access</text>
+  <text class="sm" x="80" y="520">own token · revocable</text>
+  <text class="sm" x="80" y="541">observe (look) / owner (full)</text>
+
+  <!-- Switchboard -->
+  <rect class="sb" x="440" y="262" width="250" height="140" rx="16"/>
+  <text class="lbl" x="465" y="296">Switchboard</text>
+  <text class="sm" x="465" y="320">openab-sb, tailnet only</text>
+  <text class="sm" x="465" y="344">checks token + allowlist</text>
+  <text class="sm" x="465" y="368">audit log, secrets redacted</text>
+  <text class="xs" x="465" y="390">MCP over HTTPS</text>
+
+  <text class="xs" x="440" y="436">Also: call a computer directly over</text>
+  <text class="xs" x="440" y="454">the tailnet, or lend it to a sandboxed</text>
+  <text class="xs" x="440" y="472">session (reverse attach).</text>
+
+  <!-- agent -> switchboard -->
+  <path class="line" d="M310,253 C380,253 380,300 438,300" marker-end="url(#ah)"/>
+  <path class="line" d="M310,333 L438,333" marker-end="url(#ah)"/>
+  <path class="line" d="M310,413 C380,413 380,370 438,370" marker-end="url(#ah)"/>
+  <text class="xs" x="330" y="322">token</text>
+
+  <!-- Computers -->
+  <text class="lbl" x="820" y="182">Your computers</text>
+  <text class="xs" x="820" y="202">the hands: they run the tools</text>
+
+  <rect class="pc" x="820" y="222" width="330" height="62" rx="12"/>
+  <text class="lbl" x="840" y="250">Mac mini</text>
+  <text class="sm" x="840" y="272">macOS · signed .pkg</text>
+  <rect class="pc" x="820" y="302" width="330" height="62" rx="12"/>
+  <text class="lbl" x="840" y="330">Linux mini PC</text>
+  <text class="sm" x="840" y="352">installer · systemd</text>
+  <rect class="pc" x="820" y="382" width="330" height="62" rx="12"/>
+  <text class="lbl" x="840" y="410">Raspberry Pi</text>
+  <text class="sm" x="840" y="432">arm64 · desktop seat</text>
+
+  <!-- computers dial out to switchboard -->
+  <path class="dial" d="M818,253 C760,253 760,300 692,300" marker-end="url(#ahb)"/>
+  <path class="dial" d="M818,333 L692,333" marker-end="url(#ahb)"/>
+  <path class="dial" d="M818,413 C760,413 760,370 692,370" marker-end="url(#ahb)"/>
+  <text class="cap" x="706" y="252">dials out</text>
+  <text class="xs" x="706" y="452">no inbound port</text>
+  <text class="xs" x="706" y="470">on the computer</text>
+
+  <!-- capability chips -->
+  <text class="lbl" x="820" y="482">What an agent can do there</text>
+  <rect class="chip" x="820" y="496" width="92" height="28" rx="14"/><text class="cap" x="840" y="515">Browser</text>
+  <rect class="chip" x="920" y="496" width="78" height="28" rx="14"/><text class="cap" x="942" y="515">Shell</text>
+  <rect class="chip" x="1006" y="496" width="144" height="28" rx="14"/><text class="cap" x="1024" y="515">Build &amp; test</text>
+  <rect class="chip" x="820" y="532" width="170" height="28" rx="14"/><text class="cap" x="838" y="551">Screen · mouse · keys</text>
+  <rect class="chip" x="998" y="532" width="152" height="28" rx="14"/><text class="cap" x="1014" y="551">UI tree (macOS)</text>
+</svg>
