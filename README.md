@@ -86,6 +86,8 @@ Design notes: [`docs/requirements/connect-closed-loop.md`](docs/requirements/con
 
 ## Goal
 
+![OpenAB Computer overview: agents on your tailnet reach your own computers through a switchboard; the computers dial out, so they need no inbound port.](docs/images/oab-computer-overview.svg)
+
 Let agents on your tailnet use your own computers, a Mac mini, a Linux mini PC or a Raspberry Pi,
 once you have authorized or paired them with a token and a tool profile. An agent can drive the
 browser and everything else you would do on that machine: build, compile and test, use the desktop,
