@@ -40,8 +40,8 @@ func usage() -> Never {
                         [--insecure-local] [--quiet] [--menu-bar] [--public-url <https://…/mcp>]
 
     With no arguments (a Finder launch): the menu bar app and the backend on 127.0.0.1:8795/mcp,
-    with a bearer token at ~/Library/Application Support/oab-instance-mcp/token (created on first run)
-    and the Tailscale login when `tailscale status` reports one.
+    with a bearer token at ~/.config/oab-instance-mcp/token (the installer's token; created on first run)
+    and the Tailscale login when `tailscale status` reports one. It exits with a message if port 8795 is in use.
 
     Auth (at least one required unless --insecure-local):
       --allow-login   Tailscale login (from `tailscale serve`'s Tailscale-User-Login header). Repeatable.
@@ -138,13 +138,26 @@ while !args.isEmpty {
     }
 }
 
-// No flags: the menu bar app with the token file under Application Support, created on first run, and the
-// Tailscale login if one is detected. Without a login the launch continues with the token alone.
+// No flags: the menu bar app with the installer's token file (~/.config/oab-instance-mcp/token), created on first
+// run, and the Tailscale login if one is detected. Without a login the launch continues with the token alone.
 // Flag launches never reach this block, so their behavior and the installer's path are unchanged.
 var firstRunNotice: String? = nil
 var firstRunLines: [String] = []
 if firstRunLaunch {
     opts.menuBar = true
+    // Checked before any token is touched: a taken port means the installed agent is already serving.
+    if FirstRunSetup.isPortInUse(host: opts.host, port: opts.port) {
+        let message = FirstRunSetup.portInUseMessage(host: opts.host, port: opts.port)
+        fputs(message + "\n", stderr)
+        MainActor.assumeIsolated {
+            _ = NSApplication.shared
+            let alert = NSAlert()
+            alert.messageText = "OpenAB Computer did not start"
+            alert.informativeText = message
+            alert.runModal()
+        }
+        exit(75)
+    }
     do {
         let plan = try FirstRunSetup.prepare(home: NSHomeDirectory())
         opts.tokenFile = plan.tokenPath

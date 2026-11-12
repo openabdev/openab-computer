@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import InstanceMCPCore
@@ -28,9 +29,35 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertFalse(FirstRunSetup.isNoFlagLaunch(arguments: ["--token-file", "/tmp/t", "--menu-bar"]))
     }
 
-    func testTokenPathIsInApplicationSupport() {
+    func testTokenPathIsTheInstallersTokenFile() {
         XCTAssertEqual(FirstRunSetup.tokenPath(home: "/Users/x"),
-                       "/Users/x/Library/Application Support/oab-instance-mcp/token")
+                       "/Users/x/.config/oab-instance-mcp/token")
+    }
+
+    func testPortInUseIsDetectedWhileAnotherProcessListens() throws {
+        let port = UInt16(40_000 + Int.random(in: 0..<20_000))
+        XCTAssertFalse(FirstRunSetup.isPortInUse(host: "127.0.0.1", port: port), "a free port is reported free")
+
+        let listener = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listener, 0)
+        defer { close(listener) }
+        var on: Int32 = 1
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        XCTAssertEqual(inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr), 1)
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+        XCTAssertEqual(listen(listener, 1), 0)
+
+        XCTAssertTrue(FirstRunSetup.isPortInUse(host: "127.0.0.1", port: port), "a listening port is reported in use")
+        XCTAssertTrue(FirstRunSetup.portInUseMessage(host: "127.0.0.1", port: port).contains("\(port)"))
     }
 
     // MARK: no-flag startup (the same `prepare` call main.swift makes)

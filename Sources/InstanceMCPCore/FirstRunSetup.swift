@@ -5,10 +5,37 @@ import Security
 /// The launch with no flags (a double-click in Finder): menu bar app plus the loopback backend, with a
 /// bearer token created on first run. Launches with flags never reach this code path.
 public enum FirstRunSetup {
-    /// Where the no-flag launch keeps its bearer token. The installer's token lives under
-    /// ~/.config/oab-instance-mcp/token and is untouched by this path.
+    /// Where the no-flag launch keeps its bearer token: the installer's token file. The installed agent and the
+    /// app therefore share one token, and clients need to copy only one.
     public static func tokenPath(home: String) -> String {
-        home + "/Library/Application Support/oab-instance-mcp/token"
+        home + "/.config/oab-instance-mcp/token"
+    }
+
+    /// True when another process already listens on host:port. Binds a probe socket with SO_REUSEADDR, so
+    /// connections in TIME_WAIT do not count, and sends no request to the port.
+    public static func isPortInUse(host: String, port: UInt16) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else { return false }
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return bound != 0 && errno == EADDRINUSE
+    }
+
+    /// Shown in an alert when the no-flag launch finds its port taken, for example by the installed agent.
+    public static func portInUseMessage(host: String, port: UInt16) -> String {
+        "Port \(port) on \(host) is already in use, probably by the installed oab-instance-mcp agent. " +
+        "This app did not start. Quit the other process, then open the app again."
     }
 
     /// True when no flag was given. Finder can pass a `-psn_…` process serial argument on older systems;
