@@ -176,10 +176,12 @@ no `grant`, `session` or `principal`). A write failure is logged and never block
 
 **To restore shell or browser access**, grant `owner` explicitly: pick Owner in OpenAB Connect or
 OpenAB Remote, or send `POST /attach` with `"profile":"owner"`. The new grant replaces the old one
-for the same runtime and session. For a switchboard, write `owner` to
-`~/.config/oab-instance-mcp/switchboard.profile` and re-run the installer: the flag lives in the
-plist, so restarting the agent alone does not apply it. To keep `observe` and silence the warning,
-write `observe` there.
+for the same runtime and session. For a switchboard, choose `owner` in the menu bar's Configure…
+(it asks for confirmation), or write `owner` to `~/.config/oab-instance-mcp/switchboard.profile`
+and re-run the installer, which bakes the file into the LaunchAgent plist. A hand-edited profile
+file alone does not apply: the daemon ignores it until the menu bar saves again, so a restart
+serves the profile in the plist. To keep `observe` and silence the warning, write `observe` there
+and re-run the installer. The menu bar's Configure… offers only `observe` and `owner`.
 
 **Rolling back** to 0.8.x keeps migrated grants at `observe`: the old daemon reads
 `profile: observe` and ignores the extra field. The file `version` stays 1.

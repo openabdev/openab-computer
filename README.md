@@ -341,10 +341,23 @@ oab-instance-mcp --token-file ~/.config/oab-instance-mcp/token \
 - **Installed with the package:** put the URL in `~/.config/oab-instance-mcp/switchboard.url`, the
   secret in `switchboard.secret` (mode 600) and, optionally, the profile in `switchboard.profile`
   and `allow` in `switchboard.secure-set-value`.
-  Then re-run the installer: the flags live in the LaunchAgent plist, which the installer writes
-  whenever both files exist, so a restart alone does not pick them up and upgrades keep them.
-- **Exiting:** the HTTP endpoint keeps serving after the switchboard attach stops. Restart the
-  process (or the LaunchAgent) to dial again after a `4002` or `4003`.
+  Then re-run the installer: it writes the flags into the LaunchAgent plist whenever both files
+  exist, so upgrades keep them.
+- **Saved files (menu bar):** Configure writes `switchboard.url`, `switchboard.secret` and
+  `switchboard.profile` together with a digest marker over the URL and profile. The daemon dials the
+  saved files only when the marker matches, so a URL or profile edited by hand is ignored until the
+  menu bar saves again, and the daemon logs one line saying so. Rotating the secret by hand keeps
+  the saved config. Saved files apply in two cases only: the flags name the installer's
+  `switchboard.secret`, or the process is a `--menu-bar` process given no switchboard flags. A
+  headless process with no switchboard flags never dials from saved files. A process given explicit
+  flags for another secret file dials those flags, and its menu cannot edit the saved files. When
+  saved files apply, the daemon logs one line saying so.
+- **Unreadable secret:** if the flagged secret file is missing and nothing is saved, a `--menu-bar`
+  process starts with the switchboard off and logs why. It keeps serving `/mcp` and `/attach`, and
+  it does not exit. A headless process (no `--menu-bar`) exits with status 66, as before. Configure
+  the switchboard from the menu bar or re-run the installer.
+- **Exiting:** the HTTP endpoint keeps serving after the switchboard attach stops. To dial again
+  after a `4002` or `4003`, choose **Reconnect** in the menu bar, or restart the process.
 
 ### Browser tools for lent sessions (`--upstream`)
 
@@ -441,6 +454,30 @@ last tool call, Open Log, Restart, and Quit. The setup window opens the exact Sy
 for each permission and re-tests when the app becomes active or the user clicks Test Again; it
 never polls screenshot or triggers permission prompts by itself. The icon fills briefly on each
 tool call.
+
+With `--menu-bar`, the menu also shows a switchboard section and the reverse-attach grant list. The
+switchboard section appears in every menu bar process and reads "not configured" until a switchboard
+is saved. The setup is described in [Serving a switchboard](#serving-a-switchboard---switchboard),
+and the profiles in [docs/tool-profiles.md](docs/tool-profiles.md). The menu offers:
+
+- **Switchboard status:** connected (with its profile), dialling, backing off (with the seconds
+  until the next try), or stopped, plus the last close code and time and this computer's name.
+  A startup note appears when saved files override the launch flags (their URL or profile differs),
+  and a disabled state appears when the flagged secret is unreadable.
+- **Configure…:** the URL, the secret and the profile. The secret field is never shown back; the
+  dialog only says whether one is saved. Leave it blank to keep the saved secret. The profile
+  offers `observe` (the default) and `owner`. Choosing `owner` asks for confirmation first, because
+  `owner` is shell-equivalent. Changing the URL or profile reconnects at once and drops the current
+  attach. A new secret applies on the next dial; if the switchboard is not attached, saving dials
+  at once.
+- **Reconnect:** drops the current attach and dials again. After a `4002` it asks first, since
+  another daemon with the same secret would be displaced again.
+- **Disconnect & forget…:** after confirmation, deletes `switchboard.url`, `switchboard.secret`
+  and `switchboard.profile` and stops dialling. The LaunchAgent plist keeps its flags until the
+  installer is re-run, so until then the daemon starts with the switchboard off.
+- **Reverse-attach grants:** each live grant, with its session, profile, state and expiry. `owner`
+  grants are marked shell-equivalent. A grant whose request named a retired profile shows that name
+  and the warning. **Revoke** asks for confirmation, then ends the grant on this Mac.
 
 ## Operate
 

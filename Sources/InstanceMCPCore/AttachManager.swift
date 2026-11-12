@@ -123,6 +123,22 @@ public actor AttachManager {
 
     public func get(_ id: String) -> Grant? { grants[id] }
 
+    /// The grants `GET /attach` and the menu bar list: expired and ended grants are
+    /// swept first, so neither surface shows a grant the other would have dropped.
+    public func liveGrants() async -> [Grant] {
+        await sweep()
+        return list()
+    }
+
+    /// Revoke `id` if it exists. Returns false when there is no such grant. `DELETE
+    /// /attach/{id}` and the menu bar both revoke through this.
+    @discardableResult
+    public func revokeIfPresent(_ id: String, reason: String = "revoked") async -> Bool {
+        guard grants[id] != nil else { return false }
+        await revoke(id, reason: reason)
+        return true
+    }
+
     @discardableResult
     public func create(_ req: Request, principal: String) async throws -> Grant {
         guard let scheme = req.runtime.scheme?.lowercased(), scheme == "ws" || scheme == "wss",

@@ -1,0 +1,293 @@
+import Foundation
+
+/// What the menu shows for the switchboard. A pure function of the dialer's state,
+/// its last close, and whether a config exists, so it is tested without a socket.
+public struct SwitchboardStatus: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        case notConfigured
+        /// Off at startup because the flagged secret is unreadable and nothing is saved.
+        case disabled
+        case dialling
+        case connected
+        case backingOff(seconds: Int)
+        case stopped
+    }
+
+    public let kind: Kind
+    public let profile: ToolProfile?
+    public let lastClose: ReverseAttachClient.CloseRecord?
+    /// Why the link is backing off or stopped, in words. Nil when connected.
+    public let reason: String?
+    public let computer: String
+    /// A startup note the operator should see, e.g. saved files overriding flags.
+    public let note: String?
+    /// When the next dial happens, while backing off. The title counts down to it.
+    public let redialAt: Date?
+    /// False when this process dials from its launch flags, so the menu cannot edit the saved files.
+    public let managesSaved: Bool
+
+    /// Whether a config exists to reconnect or forget. Off at startup with a disabled
+    /// switchboard, there is nothing to act on.
+    public var hasConfig: Bool { kind != .notConfigured && kind != .disabled }
+
+    public static func make(state: ReverseAttachClient.State?, lastClose: ReverseAttachClient.CloseRecord?,
+                            configured: Bool, profile: ToolProfile?, computer: String,
+                            disabledReason: String? = nil, note: String? = nil,
+                            redialAt: Date? = nil, managesSaved: Bool = true) -> SwitchboardStatus {
+        func status(_ kind: Kind, _ reason: String? = nil, redialAt: Date? = nil) -> SwitchboardStatus {
+            SwitchboardStatus(kind: kind, profile: profile, lastClose: lastClose, reason: reason,
+                              computer: computer, note: note, redialAt: redialAt, managesSaved: managesSaved)
+        }
+        guard configured else {
+            if let disabledReason { return status(.disabled, disabledReason) }
+            return status(.notConfigured)
+        }
+        guard let state else { return status(.stopped, "not running") }
+        switch state {
+        case .idle, .dialing:
+            return status(.dialling)
+        case .attached:
+            return status(.connected)
+        case .waitingToRedial(let seconds):
+            return status(.backingOff(seconds: Int(seconds.rounded())), backoffReason(lastClose),
+                          redialAt: redialAt)
+        case .ended(let terminal):
+            return status(.stopped, describe(terminal))
+        }
+    }
+
+    static func backoffReason(_ close: ReverseAttachClient.CloseRecord?) -> String {
+        if let s = close?.handshakeStatus, s == 401 || s == 403 {
+            return "credentials refused (HTTP \(s)); retrying slowly"
+        }
+        if let s = close?.handshakeStatus { return "handshake failed (HTTP \(s))" }
+        if let c = close?.code { return "closed with \(c)" }
+        return "connection lost"
+    }
+
+    static func describe(_ t: ReverseAttachClient.Terminal) -> String {
+        switch t {
+        case .replaced: return "replaced by another daemon with this secret (4002)"
+        case .secretRevoked: return "secret revoked or rotated (4003)"
+        case .handshakeRejected(let s): return "handshake refused (HTTP \(s))"
+        case .cancelled: return "stopped from the menu"
+        case .grantExpired, .sessionEnded, .revoked, .deadline:
+            return AttachManager.Grant.label(t)
+        }
+    }
+
+    /// One line for the menu, e.g. `Switchboard: connected as observe · this Mac X`.
+    /// `timeText` formats the last close time, so tests pin the clock. `now` sets the
+    /// countdown while backing off.
+    public func title(now: Date = Date(), timeText: (Date) -> String) -> String {
+        let head: String
+        switch kind {
+        case .notConfigured: head = "Switchboard: not configured"
+        case .disabled: head = "Switchboard: disabled"
+        case .dialling: head = "Switchboard: dialling"
+        case .connected: head = "Switchboard: connected as \(profile?.rawValue ?? "?")"
+        case .backingOff(let s):
+            let left = redialAt.map { max(0, Int(ceil($0.timeIntervalSince(now)))) } ?? s
+            head = "Switchboard: backing off, retry in \(left) s"
+        case .stopped: head = "Switchboard: stopped"
+        }
+        var parts = [head]
+        if let reason { parts.append(reason) }
+        if let close = lastClose {
+            let code = close.code.map(String.init) ?? (close.handshakeStatus.map { "HTTP \($0)" } ?? "error")
+            parts.append("last close \(code) at \(timeText(close.at))")
+        }
+        if kind != .notConfigured && kind != .disabled { parts.append("this Mac \(computer)") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// The part of `ReverseAttachClient` the supervisor drives. A fake stands in for
+/// it in tests.
+public protocol SwitchboardDialer: Sendable {
+    func start() async
+    func cancel() async
+    func snapshot() async -> (state: ReverseAttachClient.State, lastClose: ReverseAttachClient.CloseRecord?)
+}
+
+extension ReverseAttachClient: SwitchboardDialer {
+    public func snapshot() -> (state: ReverseAttachClient.State, lastClose: ReverseAttachClient.CloseRecord?) {
+        (state, lastClose)
+    }
+}
+
+/// Owns the switchboard config files and the one live dialer. Every change to the
+/// URL or profile replaces the dialer, which drops the current attach. A secret-only
+/// change does not: the dialer re-reads the secret file on every dial.
+public actor SwitchboardSupervisor {
+    public typealias Factory = @Sendable (SwitchboardConfig, @escaping @Sendable (ReverseAttachClient.State) -> Void) -> SwitchboardDialer
+
+    public enum SaveOutcome: Equatable, Sendable {
+        /// Nothing was dialling before, so this started the switchboard.
+        case started
+        /// The URL or profile changed: the current attach was dropped and redialled.
+        case reconnected
+        /// Only the secret changed: the running dialer uses it on its next dial.
+        case nextDial
+    }
+
+    public let store: SwitchboardConfigStore
+    private let computer: String
+    private let factory: Factory
+    private let log: @Sendable (String) -> Void
+    private var config: SwitchboardConfig?
+    private var dialer: SwitchboardDialer?
+    /// Bumped on every dialer change, so a late state callback from an old dialer is ignored.
+    private var generation = 0
+    private var state: ReverseAttachClient.State?
+    private var lastClose: ReverseAttachClient.CloseRecord?
+    private var onChange: (@Sendable (SwitchboardStatus) -> Void)?
+    private var disabledReason: String?
+    private var note: String?
+    private var redialAt: Date?
+
+    /// False for a process given explicit switchboard flags for another file: it dials from
+    /// those flags, so Configure and Forget (which edit the saved files) are refused.
+    private let managesSaved: Bool
+
+    public init(store: SwitchboardConfigStore, computer: String, managesSaved: Bool = true, factory: @escaping Factory,
+                log: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.store = store
+        self.computer = computer
+        self.managesSaved = managesSaved
+        self.factory = factory
+        self.log = log
+    }
+
+    public func setOnChange(_ f: @escaping @Sendable (SwitchboardStatus) -> Void) {
+        onChange = f
+        f(status)
+    }
+
+    static let flagsNote = "dialling from this process's launch flags; the saved switchboard files are not used here"
+
+    public var status: SwitchboardStatus {
+        // Show every line that applies: the startup note, the profile warning of the config in use, and
+        // the flags note for a process that cannot edit the saved files.
+        let parts = [note, config?.profileWarning, managesSaved ? nil : Self.flagsNote].compactMap { $0 }
+        return SwitchboardStatus.make(state: state, lastClose: lastClose, configured: config != nil,
+                                      profile: config?.profile, computer: computer,
+                                      disabledReason: disabledReason,
+                                      note: parts.isEmpty ? nil : parts.joined(separator: " "),
+                                      redialAt: redialAt, managesSaved: managesSaved)
+    }
+
+    /// Record what startup decided, so the menu can show it. Called once at launch.
+    public func applyStartup(_ startup: SwitchboardStartup) {
+        note = startup.mode == .disabled ? nil : startup.warning
+        disabledReason = startup.mode == .disabled ? startup.warning : nil
+        notify()
+    }
+
+    /// The config the dialer is using, for the Configure dialog's defaults. Its secret
+    /// is not for display.
+    public var current: SwitchboardConfig? { config }
+
+    /// Start dialling with `cfg`, replacing any running dialer.
+    public func start(_ cfg: SwitchboardConfig) async {
+        await stopDialer()
+        config = cfg
+        disabledReason = nil
+        generation += 1
+        let gen = generation
+        let made = factory(cfg) { [self] _ in
+            Task { await self.receive(gen) }
+        }
+        dialer = made
+        state = .idle
+        log("switchboard: dialling \(cfg.url.absoluteString) as \(cfg.profile.rawValue)")
+        notify()
+        await made.start()
+    }
+
+    /// Save the menu's edit and apply it. The store validates first, so a rejected
+    /// edit changes nothing, including the running dialer.
+    @discardableResult
+    public func save(_ edit: SwitchboardConfigStore.Edit) async throws -> SaveOutcome {
+        guard managesSaved else { throw SwitchboardConfigStore.Failure.notManaged }
+        let before = config
+        try store.save(edit)
+        // The startup note described the files as they were before this save, so it no longer applies.
+        note = nil
+        guard let after = store.load() else {
+            throw SwitchboardConfigStore.Failure.io("saved files do not form a complete config")
+        }
+        guard let before, dialer != nil else {
+            await start(after)
+            return .started
+        }
+        if before.url == after.url && before.profile == after.profile {
+            // Only the secret changed. An attached dialer keeps its attach and reads the
+            // new secret on its next dial. Any other state has no attach to keep, so dial
+            // now: an ended or backing-off dialer would otherwise never use the new secret.
+            if case .attached = state {
+                config = after
+                log("switchboard: secret saved; the next dial uses it")
+                notify()
+                return .nextDial
+            }
+            await start(after)
+            log("switchboard: secret saved; dialling with it")
+            return .started
+        }
+        await start(after)
+        log("switchboard: settings saved; reconnected")
+        return .reconnected
+    }
+
+    /// Dial again with the saved config. Drops the current attach. A fresh dialer
+    /// is needed because a terminal client stays terminal.
+    public func reconnect() async {
+        guard let cfg = config else { return }
+        log("switchboard: reconnect requested")
+        await start(cfg)
+    }
+
+    /// Stop dialling and delete the switchboard files. The LaunchAgent plist keeps its
+    /// flags until the installer is re-run, so the caller must say so.
+    public func forget(confirmed: Bool) async throws {
+        guard managesSaved else { throw SwitchboardConfigStore.Failure.notManaged }
+        try store.forget(confirmed: confirmed)
+        await stopDialer()
+        config = nil
+        state = nil
+        lastClose = nil
+        disabledReason = nil
+        note = nil
+        log("switchboard: forgotten; the installer must be re-run to clear the launch flags")
+        notify()
+    }
+
+    private func stopDialer() async {
+        generation += 1
+        let old = dialer
+        dialer = nil
+        state = nil
+        redialAt = nil
+        if let old { await old.cancel() }
+    }
+
+    /// Reads the dialer's current state, not the one the callback named: callbacks can
+    /// arrive out of order, and the snapshot is always the latest.
+    private func receive(_ gen: Int) async {
+        guard gen == generation, let d = dialer else { return }
+        let snap = await d.snapshot()
+        state = snap.state
+        lastClose = snap.lastClose ?? lastClose
+        if case .waitingToRedial(let seconds) = snap.state {
+            redialAt = Date().addingTimeInterval(seconds)
+        } else {
+            redialAt = nil
+        }
+        notify()
+    }
+
+    private func notify() {
+        onChange?(status)
+    }
+}

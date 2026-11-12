@@ -166,7 +166,18 @@ public actor ReverseAttachClient {
         }
     }
 
+    /// The last close or handshake failure of this client, for the menu. Set on
+    /// every failed dial; never cleared by a successful one.
+    public struct CloseRecord: Equatable, Sendable {
+        /// The WebSocket close code, nil when the socket ended without one.
+        public let code: Int?
+        /// The HTTP status of a rejected upgrade, nil otherwise.
+        public let handshakeStatus: Int?
+        public let at: Date
+    }
+
     public private(set) var state: State = .idle
+    public private(set) var lastClose: CloseRecord?
     public let config: Config
     private let server: MCPServer
     private let log: @Sendable (String) -> Void
@@ -320,15 +331,18 @@ public actor ReverseAttachClient {
                 if Task.isCancelled { return .stop(.cancelled) }
                 if let http = ws.response as? HTTPURLResponse, http.statusCode != 101, firstFrame {
                     log("attach \(config.session): handshake rejected \(http.statusCode)")
+                    lastClose = CloseRecord(code: nil, handshakeStatus: http.statusCode, at: Date())
                     return Self.disposition(handshakeStatus: http.statusCode, kind: config.kind)
                 }
                 let code = ws.closeCode.rawValue
                 if code != 0, !sendFailed.isSet {
                     log("attach \(config.session): closed \(code) after \(callsServed) calls")
+                    lastClose = CloseRecord(code: code, handshakeStatus: nil, at: Date())
                     finishAttached()
                     return Self.disposition(closeCode: code, kind: config.kind)
                 }
                 log("attach \(config.session): socket error \(error.localizedDescription)")
+                lastClose = CloseRecord(code: nil, handshakeStatus: nil, at: Date())
                 finishAttached()
                 return .redial
             }

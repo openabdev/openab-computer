@@ -149,11 +149,15 @@ if let raw = opts.switchboard {
         fputs("--switchboard needs --switchboard-secret-file\n", stderr); exit(64)
     }
     let file = URL(fileURLWithPath: (f as NSString).expandingTildeInPath)
-    guard let s = try? String(contentsOf: file, encoding: .utf8),
-          !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    // An unreadable secret file does not exit under the menu bar: launchd would restart a refusing
+    // daemon forever and take /mcp and /attach down with it. The switchboard stays off unless
+    // a saved config exists (SwitchboardStartup logs why). A headless process still exits 66.
+    if let s = try? String(contentsOf: file, encoding: .utf8),
+       !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        switchboardTarget = (url, file, s.trimmingCharacters(in: .whitespacesAndNewlines))
+    } else if !opts.menuBar {
         fputs("cannot read --switchboard-secret-file \(f), or it is empty\n", stderr); exit(66)
     }
-    switchboardTarget = (url, file, s.trimmingCharacters(in: .whitespacesAndNewlines))
 } else if opts.switchboardSecretFile != nil {
     fputs("--switchboard-secret-file needs --switchboard\n", stderr); exit(64)
 } else if opts.switchboardAllowSecureSetValue {
@@ -207,9 +211,6 @@ let server = MCPServer(
 )
 /// Every `desktop` → `observe` mapping is recorded here as well as in the log (#59).
 let auditLog = FileAuditLog(log: log)
-if let requested = opts.switchboardRequestedProfile, switchboardTarget != nil {
-    auditLog.append(ProfileAudit.mapped(source: "switchboard", requested: requested, profile: opts.switchboardProfile))
-}
 let attachManager: AttachManager? = opts.attach
     ? AttachManager(server: server,
                     store: opts.persistGrants ? FileGrantStore(log: log) : nil,
@@ -241,17 +242,54 @@ if let attachManager {
     }
 }
 
-// Global for the same reason as `http`: the client must outlive this scope.
-let switchboardClient: ReverseAttachClient? = switchboardTarget.map { t in
-    Switchboard.client(url: t.url, secretFile: t.file, secret: t.secret, profile: opts.switchboardProfile,
-                       server: server, allowSecureSetValue: opts.switchboardAllowSecureSetValue, log: log)
+// The switchboard supervisor owns the config files and the one live dialer. Saved files
+// win over flags (SwitchboardStartup); the menu bar edits the saved files.
+let switchboardStore = SwitchboardConfigStore()
+let switchboardAllowSecure = opts.switchboardAllowSecureSetValue
+// The secret file named by the flags, readable or not. Saved files apply only when the
+// flags name the installer's file, or when this is a menu bar process with no flags.
+let switchboardFlagFile: URL? = opts.switchboardSecretFile.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+let switchboardSavedApply = SwitchboardStartup.savedFilesApply(
+    flagSecretFile: switchboardFlagFile, menuBar: opts.menuBar, store: switchboardStore)
+let switchboardSaved: SwitchboardConfigStore.Loaded = switchboardSavedApply ? switchboardStore.inspect() : .absent
+let switchboardStartup = SwitchboardStartup.resolve(
+    saved: switchboardSaved.config,
+    flags: switchboardTarget.map {
+        SwitchboardConfig(url: $0.url, secret: $0.secret, profile: opts.switchboardProfile,
+                          requestedProfile: opts.switchboardRequestedProfile,
+                          profileWarning: opts.switchboardRequestedProfile == nil ? nil : ToolProfile.retiredWarning)
+    },
+    flagsGiven: opts.switchboard != nil,
+    unsealed: switchboardSaved.unsealed)
+if let warning = switchboardStartup.warning { log(warning) }
+// The profile mapping is logged and audited for whichever source won (#59).
+if let cfg = switchboardStartup.config, let warning = cfg.profileWarning {
+    log("switchboard: \(warning)")
+    auditLog.append(ProfileAudit.mapped(source: switchboardStartup.mode == .saved ? "switchboard-saved" : "switchboard",
+                                        requested: cfg.requestedProfile, profile: cfg.profile))
 }
-if let switchboardClient, let t = switchboardTarget {
-    log("switchboard: dialling \(t.url.absoluteString) as \(opts.switchboardProfile.rawValue)" +
-        (opts.switchboardRequestedProfile.map { " (requested \($0))" } ?? "") +
-        (opts.switchboardProfile.allows("ui_action")
-            ? " secure_set_value=\(opts.switchboardAllowSecureSetValue ? "allowed" : "refused")" : ""))
-    Task { await switchboardClient.start() }
+let switchboardSupervisor = SwitchboardSupervisor(
+    store: switchboardStore,
+    computer: Host.current().localizedName ?? "this Mac",
+    managesSaved: switchboardSavedApply,
+    factory: { cfg, onState in
+        // The secret file is re-read on every dial: the installer's saved file when saved files
+        // apply, otherwise the file the flags name.
+        let secretFile = switchboardSavedApply ? switchboardStore.secretFile : (switchboardFlagFile ?? switchboardStore.secretFile)
+        return Switchboard.client(url: cfg.url, secretFile: secretFile, secret: cfg.secret, profile: cfg.profile,
+                                  server: server, allowSecureSetValue: switchboardAllowSecure,
+                                  onStateChange: onState, log: log)
+    },
+    log: log)
+if let cfg = switchboardStartup.config {
+    log("switchboard: \(switchboardStartup.mode == .saved ? "saved" : "flagged") config, profile \(cfg.profile.rawValue)" +
+        (cfg.requestedProfile != cfg.profile.rawValue ? " (requested \(cfg.requestedProfile))" : "") +
+        (cfg.profile.allows("ui_action")
+            ? " secure_set_value=\(switchboardAllowSecure ? "allowed" : "refused")" : ""))
+}
+Task {
+    await switchboardSupervisor.applyStartup(switchboardStartup)
+    if let cfg = switchboardStartup.config { await switchboardSupervisor.start(cfg) }
 }
 
 signal(SIGPIPE, SIG_IGN)
@@ -266,7 +304,13 @@ if opts.menuBar {
     let logPath = NSHomeDirectory() + "/Library/Logs/oab-instance-mcp/agent.log"
     let publicURL = opts.publicURL ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     statusItem = MainActor.assumeIsolated {
-        StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token)
+        StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
+                             attach: attachManager, switchboard: switchboardSupervisor)
+    }
+    Task {
+        await switchboardSupervisor.setOnChange { s in
+            DispatchQueue.main.async { MainActor.assumeIsolated { statusItem?.switchboardStatus = s } }
+        }
     }
     DispatchQueue.main.async {
         MainActor.assumeIsolated { statusItem?.showPermissionSetupIfNeeded() }
