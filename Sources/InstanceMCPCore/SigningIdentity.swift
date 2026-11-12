@@ -10,9 +10,12 @@ public enum SigningIdentity {
     public static func teamIdentifier() -> String? {
         var code: SecCode?
         guard SecCodeCopySelf(SecCSFlags(rawValue: 0), &code) == errSecSuccess, let code else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
+              let staticCode else { return nil }
         var info: CFDictionary?
         let flags = SecCSFlags(rawValue: UInt32(kSecCSSigningInformation))
-        guard SecCodeCopySigningInformation(code, flags, &info) == errSecSuccess,
+        guard SecCodeCopySigningInformation(staticCode, flags, &info) == errSecSuccess,
               let dict = info as? [String: Any] else { return nil }
         return dict[kSecCodeInfoTeamIdentifier as String] as? String
     }
