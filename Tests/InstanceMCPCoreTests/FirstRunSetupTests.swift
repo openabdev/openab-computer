@@ -230,4 +230,86 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertEqual(anonymous, 401, "the flag launch answers /mcp and refuses a request without a bearer token")
         XCTAssertNotEqual(status(of: url, bearer: token), 401, "the token from --token-file is accepted")
     }
+
+    // MARK: no-flag launch (process level, no arguments)
+
+    /// Polls `url` until something answers or the attempts run out. Returns the last status (0 when nothing answered).
+    private func waitForStatus(of url: URL, bearer: String?, attempts: Int = 200) -> Int {
+        var code = 0
+        for _ in 0..<attempts {
+            code = status(of: url, bearer: bearer)
+            if code != 0 { break }
+            usleep(100_000)
+        }
+        return code
+    }
+
+    private func launchWithoutArguments(_ binary: URL) throws -> Process {
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = home
+        let child = Process()
+        child.executableURL = binary
+        child.arguments = []
+        child.environment = environment
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        return child
+    }
+
+    private func stop(_ child: Process) {
+        guard child.isRunning else { return }
+        child.terminate()
+        child.waitUntilExit()
+    }
+
+    func testNoArgumentLaunchCreatesTokenAndServesMCPOnTheDefaultPort() throws {
+        let binary = try builtBinary()
+        // The no-flag launch always binds the default port, so the test cannot pick another one.
+        guard !FirstRunSetup.isPortInUse(host: "127.0.0.1", port: 8795) else {
+            throw XCTSkip("127.0.0.1:8795 is in use, so the no-flag launch cannot bind its default port")
+        }
+
+        // The child takes its home from HOME. Point this process at the isolated home and check that
+        // NSHomeDirectory() follows it, so the launch cannot write the token into the real home.
+        let original = ProcessInfo.processInfo.environment["HOME"]
+        setenv("HOME", home, 1)
+        defer {
+            if let original { setenv("HOME", original, 1) } else { unsetenv("HOME") }
+        }
+        guard NSHomeDirectory() == home else {
+            XCTFail("NSHomeDirectory() ignores HOME, so an isolated no-flag launch cannot be tested here")
+            return
+        }
+
+        let tokenPath = FirstRunSetup.tokenPath(home: home)
+        let url = URL(string: "http://127.0.0.1:8795/mcp")!
+
+        let first = try launchWithoutArguments(binary)
+        defer { stop(first) }
+        XCTAssertEqual(waitForStatus(of: url, bearer: nil), 401,
+                       "the no-flag launch serves /mcp on 127.0.0.1:8795 and refuses a request without a bearer")
+        XCTAssertEqual(try mode(of: tokenPath), 0o600, "the first launch creates the token file at mode 600")
+        let token = try String(contentsOfFile: tokenPath, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(token.count, 64)
+        XCTAssertNotEqual(status(of: url, bearer: token), 401, "the token created on first run is accepted")
+        stop(first)
+
+        // Wait for the port to free before the second launch.
+        for _ in 0..<50 where FirstRunSetup.isPortInUse(host: "127.0.0.1", port: 8795) { usleep(100_000) }
+
+        let second = try launchWithoutArguments(binary)
+        defer { stop(second) }
+        XCTAssertEqual(waitForStatus(of: url, bearer: nil), 401, "the second no-flag launch starts too")
+        XCTAssertEqual(try String(contentsOfFile: tokenPath, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines), token, "a later launch reuses the stored token")
+        XCTAssertNotEqual(status(of: url, bearer: token), 401, "the reused token still authenticates")
+        XCTAssertEqual(try mode(of: tokenPath), 0o600)
+
+        let logPath = home + "/Library/Logs/oab-instance-mcp/agent.log"
+        if let log = try? String(contentsOfFile: logPath, encoding: .utf8) {
+            XCTAssertFalse(log.contains(token), "the token never reaches the log")
+        }
+    }
 }
