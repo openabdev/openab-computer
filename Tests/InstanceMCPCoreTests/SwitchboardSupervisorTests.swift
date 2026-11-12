@@ -368,12 +368,12 @@ final class SwitchboardStatusTests: XCTestCase {
         let title = s.title { _ in "09:13:20" }
         XCTAssertTrue(title.contains("replaced by another daemon"), title)
         XCTAssertTrue(title.contains("last close 4002 at 09:13:20"), title)
-        XCTAssertTrue(title.contains("computer Test Mac"), title)
+        XCTAssertTrue(title.contains("this Mac Test Mac"), title)
     }
 
     func testTheTitleNamesTheProfileAndNeverCarriesASecret() {
         let title = make(.attached).title { _ in "t" }
-        XCTAssertEqual(title, "Switchboard: connected as observe · computer Test Mac")
+        XCTAssertEqual(title, "Switchboard: connected as observe · this Mac Test Mac")
         XCTAssertFalse(title.lowercased().contains("secret"))
     }
 

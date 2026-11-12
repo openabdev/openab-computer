@@ -74,8 +74,13 @@ public struct SwitchboardStartup: Equatable, Sendable {
     }
 
     /// The config a process dials with, and why. `flagsGiven` says whether any switchboard flag was passed.
+    /// `unsealed` says the saved files exist but their digest marker does not match, so they were
+    /// changed outside the menu bar and are not dialled. The operator is told once at startup.
     public static func resolve(saved: SwitchboardConfig?, flags: SwitchboardConfig?,
-                               flagsGiven: Bool) -> SwitchboardStartup {
+                               flagsGiven: Bool, unsealed: Bool = false) -> SwitchboardStartup {
+        let unsealedWarning = unsealed
+            ? "switchboard: saved switchboard files were changed outside the menu bar and are ignored; Configure… in the menu bar saves them again"
+            : nil
         if let saved {
             let warning = flagsGiven
                 ? "switchboard: saved switchboard files override the launch flags for this run; the LaunchAgent flags are not used"
@@ -83,13 +88,13 @@ public struct SwitchboardStartup: Equatable, Sendable {
             return SwitchboardStartup(mode: .saved, config: saved, warning: warning)
         }
         if let flags {
-            return SwitchboardStartup(mode: .flags, config: flags, warning: nil)
+            return SwitchboardStartup(mode: .flags, config: flags, warning: unsealedWarning)
         }
         if flagsGiven {
             return SwitchboardStartup(mode: .disabled, config: nil,
                                       warning: "switchboard disabled: the flagged secret file is unreadable and no config is saved; the menu bar can configure it, or re-run the installer to clear the LaunchAgent flags")
         }
-        return SwitchboardStartup(mode: .none, config: nil, warning: nil)
+        return SwitchboardStartup(mode: .none, config: nil, warning: unsealedWarning)
     }
 }
 
@@ -151,21 +156,39 @@ public struct SwitchboardConfigStore: Sendable {
     public var urlFile: URL { directory.appendingPathComponent("switchboard.url") }
     public var secretFile: URL { directory.appendingPathComponent("switchboard.secret") }
     public var profileFile: URL { directory.appendingPathComponent("switchboard.profile") }
-    /// Written by `save` after the three files, holding a digest of their contents. `load`
-    /// trusts the files only while the digest still matches, so a hand edit is ignored
-    /// until the menu bar saves again. The installer never reads it.
+    /// Written by `save` after the three files, holding a digest of the URL and profile. `inspect`
+    /// trusts the URL and profile only while the digest still matches, so a hand edit to either
+    /// is ignored until the menu bar saves again. The secret is left out on purpose: rotating it
+    /// by hand is documented and must not drop the saved config. The installer never reads it.
     public var markerFile: URL { directory.appendingPathComponent("switchboard.menu-digest") }
 
-    /// The saved config, or nil unless the URL and the secret are usable and the files
-    /// were last written by `save` (the digest matches).
-    public func load() -> SwitchboardConfig? {
+    /// What the saved files hold. `unsealed` means the URL file exists but the digest does not
+    /// match, so the files were changed outside the menu bar and are not dialled.
+    public enum Loaded: Equatable, Sendable {
+        case saved(SwitchboardConfig)
+        case absent
+        case unsealed
+
+        public var config: SwitchboardConfig? {
+            if case .saved(let c) = self { return c }
+            return nil
+        }
+        public var isUnsealed: Bool { self == .unsealed }
+    }
+
+    public func inspect() -> Loaded {
         guard let text = firstLine(urlFile), let url = try? Switchboard.validate(text),
-              let secret = readSecret() else { return nil }
+              let secret = readSecret() else { return .absent }
         let profileLine = firstLine(profileFile) ?? ""
-        guard firstLine(markerFile) == Self.digest(url: text, secret: secret, profile: profileLine) else { return nil }
+        guard firstLine(markerFile) == Self.digest(url: text, profile: profileLine) else { return .unsealed }
         let p = savedProfile()
-        return SwitchboardConfig(url: url, secret: secret, profile: p.profile,
-                                 requestedProfile: p.requested, profileWarning: p.warning)
+        return .saved(SwitchboardConfig(url: url, secret: secret, profile: p.profile,
+                                        requestedProfile: p.requested, profileWarning: p.warning))
+    }
+
+    /// The saved config, or nil unless `inspect` returns `.saved`.
+    public func load() -> SwitchboardConfig? {
+        inspect().config
     }
 
     public func secretState() -> SecretState {
@@ -222,13 +245,12 @@ public struct SwitchboardConfigStore: Sendable {
     /// tests use it to seal files they wrote by hand.
     func writeMarker() throws {
         let url = firstLine(urlFile) ?? ""
-        let secret = readSecret() ?? ""
         let profile = firstLine(profileFile) ?? ""
-        try writeSecure(Self.digest(url: url, secret: secret, profile: profile), to: markerFile)
+        try writeSecure(Self.digest(url: url, profile: profile), to: markerFile)
     }
 
-    static func digest(url: String, secret: String, profile: String) -> String {
-        let input = "url=\(url)\nsecret=\(secret)\nprofile=\(profile)\n"
+    static func digest(url: String, profile: String) -> String {
+        let input = "url=\(url)\nprofile=\(profile)\n"
         return SHA256.hash(data: Data(input.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 

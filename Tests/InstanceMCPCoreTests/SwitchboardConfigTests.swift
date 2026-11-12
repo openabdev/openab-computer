@@ -176,6 +176,39 @@ final class SwitchboardFilesTests: XCTestCase {
         XCTAssertNil(store.load(), "files the menu bar did not write are not trusted")
     }
 
+    func testRotatingTheSecretByHandKeepsTheSavedURLAndProfile() throws {
+        try store.save(edit(profile: .observe))
+        try "rotated-by-hand\n".write(to: store.secretFile, atomically: true, encoding: .utf8)
+
+        let loaded = try XCTUnwrap(store.load(), "a hand secret rotation must not drop the saved config")
+        XCTAssertEqual(loaded.url.host, "switchboard.example.test")
+        XCTAssertEqual(loaded.profile, .observe)
+        XCTAssertEqual(loaded.secret, "rotated-by-hand")
+    }
+
+    func testAHandEditedProfileIsUnsealedAndStartupSaysSo() throws {
+        try store.save(edit(profile: .observe))
+        try "owner\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+
+        let inspected = store.inspect()
+        XCTAssertEqual(inspected, .unsealed)
+        XCTAssertTrue(inspected.isUnsealed)
+
+        let alone = SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false, unsealed: true)
+        XCTAssertEqual(alone.mode, .none, "an unsealed file is never dialled")
+        XCTAssertTrue(alone.warning?.contains("changed outside the menu bar") == true)
+
+        let flagged = SwitchboardConfig(url: URL(string: goodURL)!, secret: "b", profile: .observe)
+        let withFlags = SwitchboardStartup.resolve(saved: nil, flags: flagged, flagsGiven: true, unsealed: true)
+        XCTAssertEqual(withFlags.mode, .flags, "the launch flags apply while the saved files are ignored")
+        XCTAssertTrue(withFlags.warning?.contains("changed outside the menu bar") == true)
+    }
+
+    func testAbsentFilesAreNotReportedAsUnsealed() {
+        XCTAssertEqual(store.inspect(), .absent)
+        XCTAssertNil(SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false, unsealed: false).warning)
+    }
+
     func testSavedFilesApplyOnlyForTheInstallerLayoutOrAMenuBarWithNoFlags() {
         let store = self.store
         // Headless, no flags: never dials from saved files.

@@ -249,14 +249,16 @@ let switchboardAllowSecure = opts.switchboardAllowSecureSetValue
 let switchboardFlagFile: URL? = opts.switchboardSecretFile.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
 let switchboardSavedApply = SwitchboardStartup.savedFilesApply(
     flagSecretFile: switchboardFlagFile, menuBar: opts.menuBar, store: switchboardStore)
+let switchboardSaved: SwitchboardConfigStore.Loaded = switchboardSavedApply ? switchboardStore.inspect() : .absent
 let switchboardStartup = SwitchboardStartup.resolve(
-    saved: switchboardSavedApply ? switchboardStore.load() : nil,
+    saved: switchboardSaved.config,
     flags: switchboardTarget.map {
         SwitchboardConfig(url: $0.url, secret: $0.secret, profile: opts.switchboardProfile,
                           requestedProfile: opts.switchboardRequestedProfile,
                           profileWarning: opts.switchboardRequestedProfile == nil ? nil : ToolProfile.retiredWarning)
     },
-    flagsGiven: opts.switchboard != nil)
+    flagsGiven: opts.switchboard != nil,
+    unsealed: switchboardSaved.isUnsealed)
 if let warning = switchboardStartup.warning { log(warning) }
 // The profile mapping is logged and audited for whichever source won (#59).
 if let cfg = switchboardStartup.config, let warning = cfg.profileWarning {

@@ -76,7 +76,7 @@ public struct SwitchboardStatus: Equatable, Sendable {
         }
     }
 
-    /// One line for the menu, e.g. `Switchboard: connected as observe · computer X`.
+    /// One line for the menu, e.g. `Switchboard: connected as observe · this Mac X`.
     /// `timeText` formats the last close time, so tests pin the clock. `now` sets the
     /// countdown while backing off.
     public func title(now: Date = Date(), timeText: (Date) -> String) -> String {
@@ -97,7 +97,7 @@ public struct SwitchboardStatus: Equatable, Sendable {
             let code = close.code.map(String.init) ?? (close.handshakeStatus.map { "HTTP \($0)" } ?? "error")
             parts.append("last close \(code) at \(timeText(close.at))")
         }
-        if kind != .notConfigured && kind != .disabled { parts.append("computer \(computer)") }
+        if kind != .notConfigured && kind != .disabled { parts.append("this Mac \(computer)") }
         return parts.joined(separator: " · ")
     }
 }
@@ -176,7 +176,7 @@ public actor SwitchboardSupervisor {
 
     /// Record what startup decided, so the menu can show it. Called once at launch.
     public func applyStartup(_ startup: SwitchboardStartup) {
-        note = startup.mode == .saved ? startup.warning : nil
+        note = startup.mode == .disabled ? nil : startup.warning
         disabledReason = startup.mode == .disabled ? startup.warning : nil
         notify()
     }
