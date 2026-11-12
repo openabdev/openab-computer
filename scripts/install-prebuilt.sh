@@ -34,7 +34,8 @@ EXPECT_TEAM="${EXPECT_TEAM:-6LPQNY95AQ}"
 HOME_DIR="${INSTALL_HOME:-$HOME}"
 BASE="$HOME_DIR/.local/oab-instance-mcp"
 APP="$BASE/oab-instance-mcp.app"
-TOKEN_FILE="$HOME_DIR/.config/oab-instance-mcp/token"
+TOKEN_FILE="$HOME_DIR/.config/oab-computer/token"
+LEGACY_TOKEN_FILE="$HOME_DIR/.config/oab-instance-mcp/token"
 PLIST="$HOME_DIR/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME_DIR/Library/Logs/oab-instance-mcp"
 UID_=$(id -u)
@@ -129,6 +130,13 @@ fi
   [ "$acquired" = 1 ] || { echo "installer: timed out waiting for token lock" >&2; exit 70; }
   TMP_TOKEN="$LOCK/token"
   trap 'rm -rf "$LOCK"' EXIT
+  # Copy the 0.11.0 token when this path has none. cp, not mv: the installed 0.11.0 agent keeps reading its file.
+  if [ ! -s "$TOKEN_FILE" ] && [ -s "$LEGACY_TOKEN_FILE" ]; then
+    cp "$LEGACY_TOKEN_FILE" "$TMP_TOKEN"
+    chmod 600 "$TMP_TOKEN"
+    mv "$TMP_TOKEN" "$TOKEN_FILE"
+    echo "installer: token copied from $LEGACY_TOKEN_FILE (the old file is left in place)" >&2
+  fi
   if [ ! -s "$TOKEN_FILE" ]; then
     ( umask 077; /usr/bin/openssl rand -hex 32 >"$TMP_TOKEN" )
     chmod 600 "$TMP_TOKEN"

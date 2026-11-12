@@ -13,9 +13,15 @@ public enum FirstRunSetup {
         return NSHomeDirectory()
     }
 
-    /// Where the no-flag launch keeps its bearer token: the installer's token file. The installed agent and the
-    /// app therefore share one token, and clients need to copy only one.
+    /// Where the app and the 0.12 installer keep the bearer token: ~/.config/oab-computer/token (mode 600). On the
+    /// first run the app copies an existing token from `legacyTokenPath` here, so the token does not rotate.
     public static func tokenPath(home: String) -> String {
+        home + "/.config/oab-computer/token"
+    }
+
+    /// The token path used by the 0.11.0 installer and the installed agent. It is copied from, never moved, so the
+    /// installed agent keeps working until its owner upgrades.
+    public static func legacyTokenPath(home: String) -> String {
         home + "/.config/oab-instance-mcp/token"
     }
 
@@ -99,8 +105,10 @@ public enum FirstRunSetup {
     /// login. A missing login is not an error: the launch continues with the token alone and says so.
     public static func prepare(home: String, detectLogin: () -> String? = { FirstRunSetup.detectTailscaleLogin() }) throws -> Plan {
         let path = tokenPath(home: home)
-        let made = try loadOrCreateToken(at: path)
-        var lines = ["no-flag launch: token file \(path) \(made.created ? "created" : "reused") (mode 600; token not logged)"]
+        let legacy = legacyTokenPath(home: home)
+        let made = try loadOrCreateToken(at: path, legacyPath: legacy)
+        let state = made.copied ? "copied from \(legacy)" : (made.created ? "created" : "reused")
+        var lines = ["no-flag launch: token file \(path) \(state) (mode 600; token not logged)"]
         if let login = detectLogin() {
             lines.append("no-flag launch: Tailscale login detected, applied as --allow-login")
             return Plan(tokenPath: path, tokenCreated: made.created, allowLogin: login, notice: nil, logLines: lines)
@@ -109,11 +117,12 @@ public enum FirstRunSetup {
         return Plan(tokenPath: path, tokenCreated: made.created, allowLogin: nil, notice: tokenOnlyNotice, logLines: lines)
     }
 
-    /// Returns the token at `path`, creating it when the file is missing or empty. The format matches
-    /// scripts/install-prebuilt.sh: `openssl rand -hex 32` (64 hex characters and a newline), mode 600.
-    /// The token is returned to the caller only; nothing here prints it.
-    /// - Returns: the token and whether this call created the file.
-    public static func loadOrCreateToken(at path: String) throws -> (token: String, created: Bool) {
+    /// Returns the token at `path`. When the file is missing or empty, copies the token at `legacyPath` if that
+    /// holds one, and otherwise creates a new token. The created format matches scripts/install-prebuilt.sh:
+    /// `openssl rand -hex 32` (64 hex characters and a newline), mode 600. Nothing here prints the token.
+    /// - Returns: the token; `created` when this call generated it; `copied` when it came from `legacyPath`.
+    public static func loadOrCreateToken(at path: String, legacyPath: String? = nil)
+        throws -> (token: String, created: Bool, copied: Bool) {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
@@ -132,7 +141,23 @@ public enum FirstRunSetup {
         // Re-read under the lock: a launch that lost the race reads the winner's token and never replaces it.
         if let existing = try readToken(at: path) {
             try setMode600(path)
-            return (existing, false)
+            return (existing, false, false)
+        }
+
+        // Copy the 0.11.0 token. `copyItem` is a copy, not a move: the old file stays for the installed agent.
+        if let legacy = legacyPath, let inherited = try readToken(at: legacy) {
+            let tmp = lock + "/token"
+            do {
+                try FileManager.default.copyItem(atPath: legacy, toPath: tmp)
+            } catch {
+                throw FirstRunError.io("cannot copy the token from \(legacy) to \(path): \(error.localizedDescription)")
+            }
+            try setMode600(tmp)
+            guard rename(tmp, path) == 0 else {
+                throw FirstRunError.io("cannot move the copied token into place at \(path): errno \(errno)")
+            }
+            try setMode600(path)
+            return (inherited, false, true)
         }
 
         var bytes = [UInt8](repeating: 0, count: 32)
@@ -154,7 +179,7 @@ public enum FirstRunSetup {
             throw FirstRunError.io("cannot move the token into place at \(path): errno \(errno)")
         }
         try setMode600(path)
-        return (token, true)
+        return (token, true, false)
     }
 
     /// The lock directory the installer uses for the token file: "$TOKEN_FILE.lock".

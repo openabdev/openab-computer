@@ -29,8 +29,10 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertFalse(FirstRunSetup.isNoFlagLaunch(arguments: ["--token-file", "/tmp/t", "--menu-bar"]))
     }
 
-    func testTokenPathIsTheInstallersTokenFile() {
+    func testTokenPathIsTheAppTokenFileAndTheOldPathIsTheLegacyOne() {
         XCTAssertEqual(FirstRunSetup.tokenPath(home: "/Users/x"),
+                       "/Users/x/.config/oab-computer/token")
+        XCTAssertEqual(FirstRunSetup.legacyTokenPath(home: "/Users/x"),
                        "/Users/x/.config/oab-instance-mcp/token")
     }
 
@@ -96,6 +98,41 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertFalse(plan.logLines.joined(separator: "\n").contains(token))
     }
 
+    private func writeToken(_ token: String, at path: String, mode: mode_t) throws {
+        try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                withIntermediateDirectories: true)
+        try (token + "\n").write(toFile: path, atomically: false, encoding: .utf8)
+        XCTAssertEqual(chmod(path, mode), 0)
+    }
+
+    func testOldTokenIsCopiedOnFirstRunAndTheOldFileIsKept() throws {
+        let old = String(repeating: "a", count: 64)
+        let legacy = FirstRunSetup.legacyTokenPath(home: home)
+        try writeToken(old, at: legacy, mode: 0o644)
+
+        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertEqual(plan.tokenPath, FirstRunSetup.tokenPath(home: home))
+        XCTAssertFalse(plan.tokenCreated, "a copied token is not a new one")
+        XCTAssertEqual(try String(contentsOfFile: plan.tokenPath, encoding: .utf8), old + "\n",
+                       "the 0.11.0 token is copied byte for byte")
+        XCTAssertEqual(try mode(of: plan.tokenPath), 0o600)
+        XCTAssertEqual(try String(contentsOfFile: legacy, encoding: .utf8), old + "\n",
+                       "the 0.11.0 file is copied, not moved, so the installed agent keeps working")
+        XCTAssertTrue(plan.logLines.contains { $0.contains("copied from \(legacy)") })
+        XCTAssertFalse(plan.logLines.joined(separator: "\n").contains(old), "the token is not logged")
+    }
+
+    func testExistingNewTokenIsNotReplacedByTheOldOne() throws {
+        let path = FirstRunSetup.tokenPath(home: home)
+        let current = String(repeating: "b", count: 64)
+        try writeToken(current, at: path, mode: 0o600)
+        try writeToken(String(repeating: "a", count: 64), at: FirstRunSetup.legacyTokenPath(home: home), mode: 0o600)
+
+        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), current + "\n")
+        XCTAssertTrue(plan.logLines.contains { $0.contains("reused") })
+    }
+
     func testExistingTokenIsReusedEvenWhenItsModeWasLoosened() throws {
         let path = FirstRunSetup.tokenPath(home: home)
         let first = try FirstRunSetup.loadOrCreateToken(at: path)
@@ -157,7 +194,7 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertEqual(mkdir(lock, 0o777), 0, "the installer's lock is taken first")
 
         let outcome = NSLock()
-        var result: (token: String, created: Bool)?
+        var result: (token: String, created: Bool, copied: Bool)?
         let finished = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             let made = try? FirstRunSetup.loadOrCreateToken(at: path)

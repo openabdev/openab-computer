@@ -47,12 +47,19 @@ if INSTALL_HOME="$HOME1" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 \
   exit 1
 fi
 
+# A 0.11.0 install keeps its token at the old path. The installer must copy that token, not rotate it.
+mkdir -p "$HOME1/.config/oab-instance-mcp"
+openssl rand -hex 32 >"$HOME1/.config/oab-instance-mcp/token"
+chmod 600 "$HOME1/.config/oab-instance-mcp/token"
+LEGACY_SEED=$(cat "$HOME1/.config/oab-instance-mcp/token")
 ALLOW_UNSIGNED=1 INSTALL_HOME="$HOME1" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 TEST_WITH_UPSTREAM=1 \
   "$ROOT/scripts/install-prebuilt.sh" "$APP" --allow-login test@example.invalid >/dev/null
 INSTALLED="$HOME1/.local/oab-instance-mcp/oab-instance-mcp.app"
 PLIST="$HOME1/Library/LaunchAgents/dev.openab.instance-mcp.plist"
-TOKEN="$HOME1/.config/oab-instance-mcp/token"
+TOKEN="$HOME1/.config/oab-computer/token"
 [ -d "$INSTALLED" ] && [ -f "$PLIST" ] && [ -s "$TOKEN" ]
+[ "$(cat "$TOKEN")" = "$LEGACY_SEED" ] # copied from the 0.11.0 path
+[ "$(cat "$HOME1/.config/oab-instance-mcp/token")" = "$LEGACY_SEED" ] # the old file is left in place
 cmp "$APP/Contents/MacOS/oab-instance-mcp" "$INSTALLED/Contents/MacOS/oab-instance-mcp"
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INSTALLED/Contents/Info.plist")" = dev.openab.instance-mcp ]
 [ "$(display_name "$INSTALLED")" = "OpenAB Computer" ]

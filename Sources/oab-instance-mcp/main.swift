@@ -40,7 +40,8 @@ func usage() -> Never {
                         [--insecure-local] [--quiet] [--menu-bar] [--public-url <https://…/mcp>]
 
     With no arguments (a Finder launch): the menu bar app and the backend on 127.0.0.1:8795/mcp,
-    with a bearer token at ~/.config/oab-instance-mcp/token (the installer's token; created on first run)
+    with a bearer token at ~/.config/oab-computer/token (created on first run, or copied from the 0.11.0 token
+    at ~/.config/oab-instance-mcp/token)
     and the Tailscale login when `tailscale status` reports one. It exits with a message if port 8795 is in use.
 
     Auth (at least one required unless --insecure-local):
@@ -138,8 +139,9 @@ while !args.isEmpty {
     }
 }
 
-// No flags: the menu bar app with the installer's token file (~/.config/oab-instance-mcp/token), created on first
-// run, and the Tailscale login if one is detected. Without a login the launch continues with the token alone.
+// No flags: the menu bar app with the bearer token file (~/.config/oab-computer/token), created on first
+// run or copied from the 0.11.0 token, and the Tailscale login if one is detected. Without a login the launch
+// continues with the token alone.
 // Flag launches never reach this block, so their behavior and the installer's path are unchanged.
 /// Writes the reason to stderr (the agent log, for a no-flag launch) and shows it in an alert, then the caller exits.
 func showFirstRunAlert(_ message: String) {
