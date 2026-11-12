@@ -454,12 +454,15 @@ for each permission and re-tests when the app becomes active or the user clicks 
 never polls screenshot or triggers permission prompts by itself. The icon fills briefly on each
 tool call.
 
-When a switchboard is configured the menu also shows:
+With `--menu-bar`, the menu also shows a switchboard section and the reverse-attach grant list. The
+switchboard section appears in every menu bar process and reads "not configured" until a switchboard
+is saved. The setup is described in [Serving a switchboard](#serving-a-switchboard---switchboard),
+and the profiles in [docs/tool-profiles.md](docs/tool-profiles.md). The menu offers:
 
 - **Switchboard status:** connected (with its profile), dialling, backing off (with the seconds
   until the next try), or stopped, plus the last close code and time and this computer's name.
-  A startup note appears when saved files override the launch flags, and a disabled state appears
-  when the flagged secret is unreadable.
+  A startup note appears when saved files override the launch flags (their URL or profile differs),
+  and a disabled state appears when the flagged secret is unreadable.
 - **Configure…:** the URL, the secret and the profile. The secret field is never shown back; the
   dialog only says whether one is saved. Leave it blank to keep the saved secret. The profile
   offers `observe` (the default) and `owner`. Choosing `owner` asks for confirmation first, because

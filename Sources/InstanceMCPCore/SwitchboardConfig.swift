@@ -83,7 +83,10 @@ public struct SwitchboardStartup: Equatable, Sendable {
             ? "switchboard: saved switchboard files were changed outside the menu bar and are ignored; Configure… in the menu bar saves them again"
             : nil }
         if let saved {
-            let warning = flagsGiven
+            // Warn only when the saved URL or profile differs from the flags. An installer re-run that
+            // writes the same values, or a flagged secret file that is unreadable, is reported as before.
+            let overrides = flags.map { saved.url != $0.url || saved.profile != $0.profile } ?? flagsGiven
+            let warning = flagsGiven && overrides
                 ? "switchboard: saved switchboard files override the launch flags for this run; the LaunchAgent flags are not used"
                 : nil
             return SwitchboardStartup(mode: .saved, config: saved, warning: warning)

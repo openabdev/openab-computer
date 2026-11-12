@@ -311,6 +311,17 @@ final class SwitchboardFilesTests: XCTestCase {
         XCTAssertFalse(s.warning?.contains("secret") == true, "the warning must not carry secret material")
     }
 
+    func testASavedFileWithTheSameURLAndProfileAsTheFlagsIsSilent() {
+        // An installer re-run writes the flag values back to disk: nothing overrides, so nothing is logged.
+        let saved = SwitchboardConfig(url: URL(string: goodURL)!, secret: "a", profile: .observe)
+        let flags = SwitchboardConfig(url: URL(string: goodURL)!, secret: "b", profile: .observe)
+
+        let s = SwitchboardStartup.resolve(saved: saved, flags: flags, flagsGiven: true)
+
+        XCTAssertEqual(s.mode, .saved)
+        XCTAssertNil(s.warning)
+    }
+
     func testAnUnreadableFlaggedSecretWithNothingSavedStartsWithTheSwitchboardOff() {
         // The forget case: the plist still has flags, their secret file is gone, nothing is saved.
         // The daemon keeps /mcp and /attach up, so this must not be an exit.

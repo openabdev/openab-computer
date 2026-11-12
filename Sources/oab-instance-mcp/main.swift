@@ -149,12 +149,14 @@ if let raw = opts.switchboard {
         fputs("--switchboard needs --switchboard-secret-file\n", stderr); exit(64)
     }
     let file = URL(fileURLWithPath: (f as NSString).expandingTildeInPath)
-    // An unreadable secret file does not exit: launchd would restart a refusing daemon
-    // forever and take /mcp and /attach down with it. The switchboard stays off unless
-    // a saved config exists (SwitchboardStartup logs why).
+    // An unreadable secret file does not exit under the menu bar: launchd would restart a refusing
+    // daemon forever and take /mcp and /attach down with it. The switchboard stays off unless
+    // a saved config exists (SwitchboardStartup logs why). A headless process still exits 66.
     if let s = try? String(contentsOf: file, encoding: .utf8),
        !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         switchboardTarget = (url, file, s.trimmingCharacters(in: .whitespacesAndNewlines))
+    } else if !opts.menuBar {
+        fputs("cannot read --switchboard-secret-file \(f), or it is empty\n", stderr); exit(66)
     }
 } else if opts.switchboardSecretFile != nil {
     fputs("--switchboard-secret-file needs --switchboard\n", stderr); exit(64)

@@ -51,6 +51,21 @@ final class FakeFactory: @unchecked Sendable {
     }
 }
 
+/// Collects every line the supervisor logs, for the no-secret-in-logs test.
+final class LogSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+
+    func append(_ line: String) {
+        lock.lock(); lines.append(line); lock.unlock()
+    }
+
+    var all: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return lines
+    }
+}
+
 final class SwitchboardSupervisorTests: XCTestCase {
     private var dir: URL!
     private var fakes: FakeFactory!
@@ -261,6 +276,30 @@ final class SwitchboardSupervisorTests: XCTestCase {
         XCTAssertEqual(code, 4005)
     }
 
+    func testNoLogLineStatusTitleOrNoteCarriesTheSecret() async throws {
+        let first = "first-distinct-secret-7f3a9"
+        let second = "second-distinct-secret-c81d0"
+        let sink = LogSink()
+        let sup = SwitchboardSupervisor(store: store, computer: "Test Mac", factory: fakes.factory,
+                                        log: { sink.append($0) })
+
+        _ = try await sup.save(edit(secret: first))
+        await fakes.made[0].emit(.attached)
+        try await waitFor(sup) { $0.kind == .connected }
+        _ = try await sup.save(edit(secret: second))
+        _ = try await sup.save(edit(url: "wss://other.example.test/vm/attach"))
+        await sup.reconnect()
+        try await sup.forget(confirmed: true)
+
+        let status = await sup.status
+        let shown = [status.title { _ in "t" }, status.note ?? ""]
+        XCTAssertFalse(sink.all.isEmpty, "the capture must see the supervisor's lines")
+        for text in sink.all + shown {
+            XCTAssertFalse(text.contains(first), text)
+            XCTAssertFalse(text.contains(second), text)
+        }
+    }
+
     func testForgetWithoutConfirmationChangesNothing() async throws {
         let sup = supervisor()
         try await configured(sup)
@@ -291,7 +330,8 @@ final class SwitchboardSupervisorTests: XCTestCase {
         let sup = supervisor()
         try await configured(sup)
         let saved = try XCTUnwrap(store.load())
-        await sup.applyStartup(SwitchboardStartup.resolve(saved: saved, flags: saved, flagsGiven: true))
+        let flags = SwitchboardConfig(url: URL(string: "wss://flag.example.test/vm/attach")!, secret: "x", profile: .observe)
+        await sup.applyStartup(SwitchboardStartup.resolve(saved: saved, flags: flags, flagsGiven: true))
 
         let note = await sup.status.note
         XCTAssertNotNil(note)
@@ -316,7 +356,8 @@ final class SwitchboardSupervisorTests: XCTestCase {
         let sup = supervisor()
         try await configured(sup)
         let saved = try XCTUnwrap(store.load())
-        await sup.applyStartup(SwitchboardStartup.resolve(saved: saved, flags: saved, flagsGiven: true))
+        let flags = SwitchboardConfig(url: URL(string: "wss://flag.example.test/vm/attach")!, secret: "x", profile: .observe)
+        await sup.applyStartup(SwitchboardStartup.resolve(saved: saved, flags: flags, flagsGiven: true))
         let before = await sup.status.note
         XCTAssertNotNil(before)
 
