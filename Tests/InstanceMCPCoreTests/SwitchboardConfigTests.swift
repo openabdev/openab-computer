@@ -191,22 +191,65 @@ final class SwitchboardFilesTests: XCTestCase {
         try "owner\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
 
         let inspected = store.inspect()
-        XCTAssertEqual(inspected, .unsealed)
         XCTAssertTrue(inspected.isUnsealed)
+        XCTAssertEqual(inspected.unsealed, .init(url: goodURL, profile: "owner"))
 
-        let alone = SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false, unsealed: true)
+        let alone = SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false, unsealed: inspected.unsealed)
         XCTAssertEqual(alone.mode, .none, "an unsealed file is never dialled")
         XCTAssertTrue(alone.warning?.contains("changed outside the menu bar") == true)
 
         let flagged = SwitchboardConfig(url: URL(string: goodURL)!, secret: "b", profile: .observe)
-        let withFlags = SwitchboardStartup.resolve(saved: nil, flags: flagged, flagsGiven: true, unsealed: true)
+        let withFlags = SwitchboardStartup.resolve(saved: nil, flags: flagged, flagsGiven: true, unsealed: inspected.unsealed)
         XCTAssertEqual(withFlags.mode, .flags, "the launch flags apply while the saved files are ignored")
         XCTAssertTrue(withFlags.warning?.contains("changed outside the menu bar") == true)
     }
 
     func testAbsentFilesAreNotReportedAsUnsealed() {
         XCTAssertEqual(store.inspect(), .absent)
-        XCTAssertNil(SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false, unsealed: false).warning)
+        XCTAssertNil(SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false, unsealed: nil).warning)
+    }
+
+    func testInstallerLayoutWithoutAMarkerIsAbsentAndSilent() throws {
+        // The installer's files, written by hand, with the flags carrying the same values.
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try (goodURL + "\n").write(to: store.urlFile, atomically: true, encoding: .utf8)
+        try "observe\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        try "s3cret\n".write(to: store.secretFile, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(store.inspect(), .absent)
+        let flagged = SwitchboardConfig(url: URL(string: goodURL)!, secret: "s3cret", profile: .observe)
+        let s = SwitchboardStartup.resolve(saved: nil, flags: flagged, flagsGiven: true, unsealed: store.inspect().unsealed)
+        XCTAssertEqual(s.mode, .flags)
+        XCTAssertNil(s.warning, "no marker means no false 'changed outside the menu bar' warning")
+    }
+
+    func testMismatchedMarkerWhoseValuesMatchTheFlagsIsSilent() throws {
+        // A hand edit that names the flagged settings again: `desktop` maps to observe, the same as the flag.
+        try store.save(edit(profile: .observe))
+        try "desktop\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        let inspected = store.inspect()
+        XCTAssertTrue(inspected.isUnsealed)
+
+        let flagged = SwitchboardConfig(url: URL(string: goodURL)!, secret: "b", profile: .observe,
+                                        requestedProfile: "desktop", profileWarning: ToolProfile.retiredWarning)
+        let s = SwitchboardStartup.resolve(saved: nil, flags: flagged, flagsGiven: true, unsealed: inspected.unsealed)
+        XCTAssertEqual(s.mode, .flags)
+        XCTAssertNil(s.warning, "equal values are not reported; the profile warning stays on the flagged config")
+        XCTAssertEqual(s.config?.profileWarning, ToolProfile.retiredWarning)
+    }
+
+    func testMalformedURLHandEditIsReportedNotSilentlyIgnored() throws {
+        try store.save(edit(profile: .observe))
+        try "not a websocket url\n".write(to: store.urlFile, atomically: true, encoding: .utf8)
+
+        let inspected = store.inspect()
+        XCTAssertTrue(inspected.isUnsealed, "the digest is checked before the URL is parsed")
+        XCTAssertEqual(inspected.unsealed?.url, "not a websocket url")
+
+        let flagged = SwitchboardConfig(url: URL(string: goodURL)!, secret: "b", profile: .observe)
+        let s = SwitchboardStartup.resolve(saved: nil, flags: flagged, flagsGiven: true, unsealed: inspected.unsealed)
+        XCTAssertEqual(s.mode, .flags)
+        XCTAssertTrue(s.warning?.contains("changed outside the menu bar") == true)
     }
 
     func testSavedFilesApplyOnlyForTheInstallerLayoutOrAMenuBarWithNoFlags() {

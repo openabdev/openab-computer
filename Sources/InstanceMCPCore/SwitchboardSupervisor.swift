@@ -167,11 +167,14 @@ public actor SwitchboardSupervisor {
     static let flagsNote = "dialling from this process's launch flags; the saved switchboard files are not used here"
 
     public var status: SwitchboardStatus {
-        SwitchboardStatus.make(state: state, lastClose: lastClose, configured: config != nil,
-                               profile: config?.profile, computer: computer,
-                               disabledReason: disabledReason,
-                               note: note ?? config?.profileWarning ?? (managesSaved ? nil : Self.flagsNote),
-                               redialAt: redialAt, managesSaved: managesSaved)
+        // Show every line that applies: the startup note, the profile warning of the config in use, and
+        // the flags note for a process that cannot edit the saved files.
+        let parts = [note, config?.profileWarning, managesSaved ? nil : Self.flagsNote].compactMap { $0 }
+        return SwitchboardStatus.make(state: state, lastClose: lastClose, configured: config != nil,
+                                      profile: config?.profile, computer: computer,
+                                      disabledReason: disabledReason,
+                                      note: parts.isEmpty ? nil : parts.joined(separator: " "),
+                                      redialAt: redialAt, managesSaved: managesSaved)
     }
 
     /// Record what startup decided, so the menu can show it. Called once at launch.
@@ -209,6 +212,8 @@ public actor SwitchboardSupervisor {
         guard managesSaved else { throw SwitchboardConfigStore.Failure.notManaged }
         let before = config
         try store.save(edit)
+        // The startup note described the files as they were before this save, so it no longer applies.
+        note = nil
         guard let after = store.load() else {
             throw SwitchboardConfigStore.Failure.io("saved files do not form a complete config")
         }
@@ -253,6 +258,7 @@ public actor SwitchboardSupervisor {
         state = nil
         lastClose = nil
         disabledReason = nil
+        note = nil
         log("switchboard: forgotten; the installer must be re-run to clear the launch flags")
         notify()
     }

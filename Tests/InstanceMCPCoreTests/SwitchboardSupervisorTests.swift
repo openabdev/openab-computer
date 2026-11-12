@@ -297,6 +297,49 @@ final class SwitchboardSupervisorTests: XCTestCase {
         XCTAssertNotNil(note)
     }
 
+    func testASaveAfterAnUnsealedStartupClearsTheStaleNote() async throws {
+        try store.save(edit(secret: "s3cret"))
+        try "owner\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        let sup = supervisor()
+        await sup.applyStartup(SwitchboardStartup.resolve(saved: nil, flags: nil, flagsGiven: false,
+                                                          unsealed: store.inspect().unsealed))
+        let warned = await sup.status.note
+        XCTAssertTrue(warned?.contains("changed outside the menu bar") == true)
+
+        _ = try await sup.save(edit(profile: .observe))
+
+        let note = await sup.status.note
+        XCTAssertNil(note, "the startup note described the files before this save")
+    }
+
+    func testForgetAfterAnOverrideClearsTheNote() async throws {
+        let sup = supervisor()
+        try await configured(sup)
+        let saved = try XCTUnwrap(store.load())
+        await sup.applyStartup(SwitchboardStartup.resolve(saved: saved, flags: saved, flagsGiven: true))
+        let before = await sup.status.note
+        XCTAssertNotNil(before)
+
+        try await sup.forget(confirmed: true)
+
+        let note = await sup.status.note
+        XCTAssertNil(note)
+    }
+
+    func testAStartupNoteAndTheProfileWarningAreBothShown() async throws {
+        try store.save(edit(secret: "s3cret"))
+        try "desktop\n".write(to: store.profileFile, atomically: true, encoding: .utf8)
+        try store.writeMarker()
+        let sup = supervisor()
+        let cfg = try XCTUnwrap(store.load())
+        await sup.applyStartup(SwitchboardStartup(mode: .saved, config: cfg, warning: "override note"))
+        await sup.start(cfg)
+
+        let note = await sup.status.note
+        XCTAssertTrue(note?.contains("override note") == true)
+        XCTAssertTrue(note?.contains(ToolProfile.retiredWarning) == true)
+    }
+
     func testAProcessDialingFromFlagsCannotEditOrForgetTheSavedFiles() async throws {
         try store.save(edit(secret: "saved-secret"))
         let flagged = SwitchboardSupervisor(store: store, computer: "Test Mac", managesSaved: false, factory: fakes.factory)

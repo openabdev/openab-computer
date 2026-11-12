@@ -258,7 +258,7 @@ let switchboardStartup = SwitchboardStartup.resolve(
                           profileWarning: opts.switchboardRequestedProfile == nil ? nil : ToolProfile.retiredWarning)
     },
     flagsGiven: opts.switchboard != nil,
-    unsealed: switchboardSaved.isUnsealed)
+    unsealed: switchboardSaved.unsealed)
 if let warning = switchboardStartup.warning { log(warning) }
 // The profile mapping is logged and audited for whichever source won (#59).
 if let cfg = switchboardStartup.config, let warning = cfg.profileWarning {

@@ -74,13 +74,14 @@ public struct SwitchboardStartup: Equatable, Sendable {
     }
 
     /// The config a process dials with, and why. `flagsGiven` says whether any switchboard flag was passed.
-    /// `unsealed` says the saved files exist but their digest marker does not match, so they were
-    /// changed outside the menu bar and are not dialled. The operator is told once at startup.
+    /// `unsealed` is set when the saved files carry a digest marker that does not match, so they were
+    /// changed outside the menu bar and are not dialled. The warning is given only when those values
+    /// differ from the launch flags, so an installer that wrote the same values is not reported.
     public static func resolve(saved: SwitchboardConfig?, flags: SwitchboardConfig?,
-                               flagsGiven: Bool, unsealed: Bool = false) -> SwitchboardStartup {
-        let unsealedWarning = unsealed
+                               flagsGiven: Bool, unsealed: SwitchboardConfigStore.Unsealed? = nil) -> SwitchboardStartup {
+        let unsealedWarning = unsealed.flatMap { differs($0, from: flags)
             ? "switchboard: saved switchboard files were changed outside the menu bar and are ignored; Configure… in the menu bar saves them again"
-            : nil
+            : nil }
         if let saved {
             let warning = flagsGiven
                 ? "switchboard: saved switchboard files override the launch flags for this run; the LaunchAgent flags are not used"
@@ -91,10 +92,20 @@ public struct SwitchboardStartup: Equatable, Sendable {
             return SwitchboardStartup(mode: .flags, config: flags, warning: unsealedWarning)
         }
         if flagsGiven {
+            let disabled = "switchboard disabled: the flagged secret file is unreadable and no config is saved; the menu bar can configure it, or re-run the installer to clear the LaunchAgent flags"
             return SwitchboardStartup(mode: .disabled, config: nil,
-                                      warning: "switchboard disabled: the flagged secret file is unreadable and no config is saved; the menu bar can configure it, or re-run the installer to clear the LaunchAgent flags")
+                                      warning: [unsealedWarning, disabled].compactMap { $0 }.joined(separator: " "))
         }
         return SwitchboardStartup(mode: .none, config: nil, warning: unsealedWarning)
+    }
+
+    /// Whether hand-changed files name a URL or profile other than the launch flags. Equal values
+    /// mean the flags already dial the same settings. A malformed URL or unknown profile always differs.
+    static func differs(_ u: SwitchboardConfigStore.Unsealed, from flags: SwitchboardConfig?) -> Bool {
+        guard let flags else { return true }
+        let url = u.url.flatMap { try? Switchboard.validate($0) }
+        let profile = u.profile.flatMap { ToolProfile.resolve(requested: $0)?.profile }
+        return url != flags.url || profile != flags.profile
     }
 }
 
@@ -162,25 +173,43 @@ public struct SwitchboardConfigStore: Sendable {
     /// by hand is documented and must not drop the saved config. The installer never reads it.
     public var markerFile: URL { directory.appendingPathComponent("switchboard.menu-digest") }
 
-    /// What the saved files hold. `unsealed` means the URL file exists but the digest does not
-    /// match, so the files were changed outside the menu bar and are not dialled.
+    /// The URL and profile as the files now read, kept for comparison with the launch flags.
+    public struct Unsealed: Equatable, Sendable {
+        public let url: String?
+        public let profile: String?
+    }
+
+    /// What the saved files hold. `unsealed` means a digest marker exists and does not match the
+    /// URL and profile, so the files were changed outside the menu bar and are not dialled.
     public enum Loaded: Equatable, Sendable {
         case saved(SwitchboardConfig)
         case absent
-        case unsealed
+        case unsealed(Unsealed)
 
         public var config: SwitchboardConfig? {
             if case .saved(let c) = self { return c }
             return nil
         }
-        public var isUnsealed: Bool { self == .unsealed }
+        public var unsealed: Unsealed? {
+            if case .unsealed(let u) = self { return u }
+            return nil
+        }
+        public var isUnsealed: Bool { unsealed != nil }
     }
 
     public func inspect() -> Loaded {
-        guard let text = firstLine(urlFile), let url = try? Switchboard.validate(text),
+        // No marker: the files were written by hand or by the installer, not saved by the menu. They
+        // are not trusted here, and the launch flags carry the installer's values, so nothing is reported.
+        guard let marker = firstLine(markerFile) else { return .absent }
+        // The digest is checked before the URL is parsed or the secret read, so a malformed hand edit
+        // is reported as unsealed rather than silently ignored.
+        let urlText = firstLine(urlFile)
+        let profileText = firstLine(profileFile)
+        guard marker == Self.digest(url: urlText ?? "", profile: profileText ?? "") else {
+            return .unsealed(Unsealed(url: urlText, profile: profileText))
+        }
+        guard let text = urlText, let url = try? Switchboard.validate(text),
               let secret = readSecret() else { return .absent }
-        let profileLine = firstLine(profileFile) ?? ""
-        guard firstLine(markerFile) == Self.digest(url: text, profile: profileLine) else { return .unsealed }
         let p = savedProfile()
         return .saved(SwitchboardConfig(url: url, secret: secret, profile: p.profile,
                                         requestedProfile: p.requested, profileWarning: p.warning))
