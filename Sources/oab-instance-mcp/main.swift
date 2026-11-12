@@ -4,7 +4,7 @@ import CoreGraphics
 import Foundation
 import InstanceMCPCore
 
-let version = "0.11.0"
+let version = "0.12.0"
 
 struct Options {
     var host = "127.0.0.1"
@@ -38,6 +38,10 @@ func usage() -> Never {
     USAGE: oab-instance-mcp [--host 127.0.0.1] [--port 8795] [--path /mcp]
                         [--allow-login <email>]... [--token <str> | --token-file <path>]
                         [--insecure-local] [--quiet] [--menu-bar] [--public-url <https://…/mcp>]
+
+    With no arguments (a Finder launch): the menu bar app and the backend on 127.0.0.1:8795/mcp,
+    with a bearer token at ~/Library/Application Support/oab-instance-mcp/token (created on first run)
+    and the Tailscale login when `tailscale status` reports one.
 
     Auth (at least one required unless --insecure-local):
       --allow-login   Tailscale login (from `tailscale serve`'s Tailscale-User-Login header). Repeatable.
@@ -83,6 +87,9 @@ func usage() -> Never {
 
 var opts = Options()
 var args = Array(CommandLine.arguments.dropFirst())
+// A launch with no flags takes the first-run path below. Its arguments are cleared so the flag loop does nothing.
+let firstRunLaunch = FirstRunSetup.isNoFlagLaunch(arguments: args)
+if firstRunLaunch { args = [] }
 func next(_ flag: String) -> String {
     guard !args.isEmpty else { fputs("missing value for \(flag)\n", stderr); usage() }
     return args.removeFirst()
@@ -128,6 +135,31 @@ while !args.isEmpty {
     case "--version": print(version); exit(0)
     case "-h", "--help": usage()
     default: fputs("unknown flag \(a)\n", stderr); usage()
+    }
+}
+
+// No flags: the menu bar app with the token file under Application Support, created on first run, and the
+// Tailscale login if one is detected. Without a login the launch continues with the token alone.
+// Flag launches never reach this block, so their behavior and the installer's path are unchanged.
+var firstRunNotice: String? = nil
+var firstRunLines: [String] = []
+if firstRunLaunch {
+    opts.menuBar = true
+    let path = FirstRunSetup.tokenPath(home: NSHomeDirectory())
+    do {
+        let made = try FirstRunSetup.loadOrCreateToken(at: path)
+        opts.tokenFile = path
+        firstRunLines.append("no-flag launch: token file \(path) \(made.created ? "created" : "reused") (mode 600; token not logged)")
+    } catch {
+        fputs("no-flag launch: cannot prepare the token file at \(path): \(error)\n", stderr)
+        exit(73)
+    }
+    if let login = FirstRunSetup.detectTailscaleLogin() {
+        opts.allowLogins.insert(login)
+        firstRunLines.append("no-flag launch: Tailscale login detected, applied as --allow-login")
+    } else {
+        firstRunNotice = FirstRunSetup.tokenOnlyNotice
+        firstRunLines.append("no-flag launch: \(FirstRunSetup.tokenOnlyNotice)")
     }
 }
 
@@ -234,6 +266,7 @@ log("oab-instance-mcp \(version) starting on http://\(opts.host):\(opts.port)\(o
     "screen_recording=\(startupPermissions.screenRecording.isGranted) " +
     "accessibility=\(startupPermissions.accessibility.isGranted) " +
     "full_disk_access=\(startupPermissions.fullDiskAccess.isGranted)")
+for line in firstRunLines { log(line) }
 http.start()
 if let attachManager {
     Task {
@@ -305,7 +338,7 @@ if opts.menuBar {
     let publicURL = opts.publicURL ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     statusItem = MainActor.assumeIsolated {
         StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
-                             attach: attachManager, switchboard: switchboardSupervisor)
+                             attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice)
     }
     Task {
         await switchboardSupervisor.setOnChange { s in

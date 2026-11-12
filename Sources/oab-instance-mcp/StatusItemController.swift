@@ -15,6 +15,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let launchdLabel = "dev.openab.instance-mcp"
     private let logPath: String
     private let token: String?
+    /// Shown in the menu when the no-flag launch found no Tailscale login (token-only auth).
+    private let notice: String?
     private let defaults: UserDefaults
     private let store: SetupWizardStore
     private var permissionSetupWindow: PermissionSetupWindowController?
@@ -44,11 +46,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     init(version: String, url: String, logPath: String, token: String? = nil,
          defaults: UserDefaults = .standard, attach: AttachManager? = nil,
-         switchboard: SwitchboardSupervisor? = nil) {
+         switchboard: SwitchboardSupervisor? = nil, notice: String? = nil) {
         self.version = version
         self.url = url
         self.logPath = logPath
         self.token = token
+        self.notice = notice
         self.defaults = defaults
         self.store = SetupWizardStore(defaults: defaults)
         self.attach = attach
@@ -162,6 +165,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(label(url, action: #selector(copyURL), tip: "Click to copy"))
         if let token, !token.isEmpty {
             menu.addItem(label("Token: \(Self.mask(token))", action: #selector(copyToken), tip: "Click to copy the bearer token"))
+        }
+        if let notice {
+            menu.addItem(label(notice))
         }
         menu.addItem(.separator())
 
