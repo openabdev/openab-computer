@@ -352,9 +352,10 @@ oab-instance-mcp --token-file ~/.config/oab-instance-mcp/token \
   headless process with no switchboard flags never dials from saved files. A process given explicit
   flags for another secret file dials those flags, and its menu cannot edit the saved files. When
   saved files apply, the daemon logs one line saying so.
-- **Unreadable secret:** if the flagged secret file is missing and nothing is saved, the daemon
-  starts with the switchboard off and logs why. It keeps serving `/mcp` and `/attach`. It does not
-  exit. Configure the switchboard from the menu bar or re-run the installer.
+- **Unreadable secret:** if the flagged secret file is missing and nothing is saved, a `--menu-bar`
+  process starts with the switchboard off and logs why. It keeps serving `/mcp` and `/attach`, and
+  it does not exit. A headless process (no `--menu-bar`) exits with status 66, as before. Configure
+  the switchboard from the menu bar or re-run the installer.
 - **Exiting:** the HTTP endpoint keeps serving after the switchboard attach stops. To dial again
   after a `4002` or `4003`, choose **Reconnect** in the menu bar, or restart the process.
 
