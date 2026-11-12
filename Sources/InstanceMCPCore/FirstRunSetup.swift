@@ -5,6 +5,14 @@ import Security
 /// The launch with no flags (a double-click in Finder): menu bar app plus the loopback backend, with a
 /// bearer token created on first run. Launches with flags never reach this code path.
 public enum FirstRunSetup {
+    /// The home directory the no-flag launch writes under: HOME when a launch sets it, otherwise the account
+    /// home. A Finder launch sets HOME to the user's home, so users get the same path as before. The test sets
+    /// HOME to an isolated directory, because NSHomeDirectory() ignores HOME on macOS.
+    public static func homeDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        if let home = environment["HOME"], !home.isEmpty { return home }
+        return NSHomeDirectory()
+    }
+
     /// Where the no-flag launch keeps its bearer token: the installer's token file. The installed agent and the
     /// app therefore share one token, and clients need to copy only one.
     public static func tokenPath(home: String) -> String {
@@ -79,14 +87,19 @@ public enum FirstRunSetup {
         let dir = (path as NSString).deletingLastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
 
-        // Serialize first launches with an exclusive flock on a sibling lock file. Each launch re-reads the
-        // token under the lock, so a launch that lost the race reads the winner's token and never replaces it.
-        // flock is per open file description, so threads in one process serialize too.
-        let lockFd = open("\(dir)/.first-run.lock", O_RDWR | O_CREAT, 0o600)
-        guard lockFd >= 0 else { throw FirstRunError.io("cannot open the first-run lock in \(dir): errno \(errno)") }
-        defer { close(lockFd) }
-        guard flock(lockFd, LOCK_EX) == 0 else { throw FirstRunError.io("cannot lock \(dir): errno \(errno)") }
+        // The same lock as scripts/install-prebuilt.sh: an atomic mkdir on "<token>.lock", tried 50 times 0.1 s
+        // apart, removed on exit. Sharing this lock (not a private one) means a first no-flag launch and an
+        // installer run cannot both see a missing token and rotate it under each other.
+        let lock = lockPath(for: path)
+        var acquired = false
+        for _ in 0..<50 {
+            if mkdir(lock, 0o777) == 0 { acquired = true; break }
+            usleep(100_000)
+        }
+        guard acquired else { throw FirstRunError.io("timed out waiting for the token lock at \(lock)") }
+        defer { try? FileManager.default.removeItem(atPath: lock) }
 
+        // Re-read under the lock: a launch that lost the race reads the winner's token and never replaces it.
         if let existing = try readToken(at: path) {
             try setMode600(path)
             return (existing, false)
@@ -98,22 +111,25 @@ public enum FirstRunSetup {
         }
         let token = bytes.map { String(format: "%02x", $0) }.joined()
 
-        // Write a sibling temp file created at mode 600, then rename it over the target (the file is missing or
-        // empty here, under the lock). A reader never sees a partial token, and the file is never readable by
-        // other users.
-        let tmp = "\(dir)/.token.\(getpid()).\(UUID().uuidString).tmp"
+        // Write the temp file inside the lock directory, at mode 600, then rename it over the target, as the
+        // installer does with "$LOCK/token". A reader never sees a partial token, and other users never read it.
+        let tmp = lock + "/token"
         let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0o600)
-        guard fd >= 0 else { throw FirstRunError.io("cannot create \(tmp): errno \(errno)") }
+        guard fd >= 0 else { throw FirstRunError.io("cannot create the temp token in \(lock): errno \(errno)") }
         let line = Array((token + "\n").utf8)
         let written = line.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
         close(fd)
-        defer { unlink(tmp) }
         guard written == line.count else { throw FirstRunError.io("short write to \(tmp)") }
         guard rename(tmp, path) == 0 else {
             throw FirstRunError.io("cannot move the token into place at \(path): errno \(errno)")
         }
         try setMode600(path)
         return (token, true)
+    }
+
+    /// The lock directory the installer uses for the token file: "$TOKEN_FILE.lock".
+    static func lockPath(for tokenPath: String) -> String {
+        tokenPath + ".lock"
     }
 
     /// The login the installer passes to --allow-login. It reads the same fields from

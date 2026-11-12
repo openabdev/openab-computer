@@ -144,9 +144,48 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertEqual(tokens.count, 16, "every racing launch succeeds")
         XCTAssertEqual(Set(tokens).count, 1, "every racing launch uses the same token")
         XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), (tokens.first ?? "") + "\n")
-        let leftovers = try FileManager.default.contentsOfDirectory(atPath: (path as NSString).deletingLastPathComponent)
-            .filter { $0.hasPrefix(".token.") }
-        XCTAssertEqual(leftovers, [], "no temp files are left behind")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path + ".lock"), "the lock directory is removed")
+    }
+
+    /// The installer and the no-flag launch must use one lock. While an installer run holds "token.lock", a first
+    /// launch waits and writes nothing; when the installer releases it, the launch reuses the installer's token.
+    func testFirstRunWaitsForTheInstallersTokenLockAndReusesItsToken() throws {
+        let path = FirstRunSetup.tokenPath(home: home)
+        try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                withIntermediateDirectories: true)
+        let lock = path + ".lock"
+        XCTAssertEqual(mkdir(lock, 0o777), 0, "the installer's lock is taken first")
+
+        let outcome = NSLock()
+        var result: (token: String, created: Bool)?
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let made = try? FirstRunSetup.loadOrCreateToken(at: path)
+            outcome.lock()
+            result = made
+            outcome.unlock()
+            finished.signal()
+        }
+
+        usleep(400_000)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path), "the first launch writes nothing while the lock is held")
+
+        // The installer's own protocol: write "$LOCK/token", move it into place, then remove the lock directory.
+        let installerToken = String(repeating: "ab", count: 32)
+        XCTAssertTrue(FileManager.default.createFile(atPath: lock + "/token",
+                                                     contents: Data((installerToken + "\n").utf8),
+                                                     attributes: [.posixPermissions: 0o600]))
+        XCTAssertEqual(rename(lock + "/token", path), 0)
+        XCTAssertEqual(rmdir(lock), 0)
+
+        XCTAssertEqual(finished.wait(timeout: .now() + 10), .success, "the waiting launch proceeds once the lock is free")
+        outcome.lock()
+        let made = result
+        outcome.unlock()
+        XCTAssertEqual(made?.token, installerToken, "the launch uses the installer's token")
+        XCTAssertEqual(made?.created, false)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), installerToken + "\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: lock), "the launch leaves no lock directory behind")
     }
 
     func testTailscaleLoginIsReadTheSameWayTheInstallerReadsIt() {
@@ -263,32 +302,48 @@ final class FirstRunSetupTests: XCTestCase {
         child.waitUntilExit()
     }
 
-    func testNoArgumentLaunchCreatesTokenAndServesMCPOnTheDefaultPort() throws {
-        let binary = try builtBinary()
-        // The no-flag launch always binds the default port, so the test cannot pick another one.
-        guard !FirstRunSetup.isPortInUse(host: "127.0.0.1", port: 8795) else {
-            throw XCTSkip("127.0.0.1:8795 is in use, so the no-flag launch cannot bind its default port")
+    /// Names the process listening on 127.0.0.1:8795, as lsof reports it.
+    private func holderOfDefaultPort() -> String {
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-nP", "-iTCP:8795", "-sTCP:LISTEN", "-Fpc"]
+        let out = Pipe()
+        lsof.standardOutput = out
+        lsof.standardError = FileHandle.nullDevice
+        guard (try? lsof.run()) != nil else { return "an unknown process" }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        lsof.waitUntilExit()
+        var pid = "", command = ""
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+            if line.hasPrefix("p"), pid.isEmpty { pid = String(line.dropFirst()) }
+            if line.hasPrefix("c"), command.isEmpty { command = String(line.dropFirst()) }
         }
+        return command.isEmpty ? "an unknown process" : "\(command) (pid \(pid))"
+    }
 
-        // The child takes its home from HOME. Point this process at the isolated home and check that
-        // NSHomeDirectory() follows it, so the launch cannot write the token into the real home.
-        let original = ProcessInfo.processInfo.environment["HOME"]
-        setenv("HOME", home, 1)
-        defer {
-            if let original { setenv("HOME", original, 1) } else { unsetenv("HOME") }
-        }
-        guard NSHomeDirectory() == home else {
-            XCTFail("NSHomeDirectory() ignores HOME, so an isolated no-flag launch cannot be tested here")
+    func testNoArgumentLaunchCreatesTokenAndServesMCP() throws {
+        let binary = try builtBinary()
+        // The no-flag launch binds the default port only. If something else holds it, the test fails and names
+        // that process. It does not skip, unless OAB_TEST_SKIP_BUSY_DEFAULT_PORT=1 is set explicitly (for example on
+        // a machine that knowingly runs the installed agent). The test never stops the process holding the port.
+        if FirstRunSetup.isPortInUse(host: "127.0.0.1", port: 8795) {
+            let holder = holderOfDefaultPort()
+            if ProcessInfo.processInfo.environment["OAB_TEST_SKIP_BUSY_DEFAULT_PORT"] == "1" {
+                throw XCTSkip("127.0.0.1:8795 is held by \(holder); skipped because OAB_TEST_SKIP_BUSY_DEFAULT_PORT=1")
+            }
+            XCTFail("127.0.0.1:8795 is held by \(holder), so the no-argument launch cannot bind its default port. " +
+                    "Stop that process and run the test again.")
             return
         }
+        let port: UInt16 = 8795
 
         let tokenPath = FirstRunSetup.tokenPath(home: home)
-        let url = URL(string: "http://127.0.0.1:8795/mcp")!
+        let url = URL(string: "http://127.0.0.1:\(port)/mcp")!
 
         let first = try launchWithoutArguments(binary)
         defer { stop(first) }
         XCTAssertEqual(waitForStatus(of: url, bearer: nil), 401,
-                       "the no-flag launch serves /mcp on 127.0.0.1:8795 and refuses a request without a bearer")
+                       "the no-flag launch serves /mcp on 127.0.0.1 and refuses a request without a bearer")
         XCTAssertEqual(try mode(of: tokenPath), 0o600, "the first launch creates the token file at mode 600")
         let token = try String(contentsOfFile: tokenPath, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -297,7 +352,7 @@ final class FirstRunSetupTests: XCTestCase {
         stop(first)
 
         // Wait for the port to free before the second launch.
-        for _ in 0..<50 where FirstRunSetup.isPortInUse(host: "127.0.0.1", port: 8795) { usleep(100_000) }
+        for _ in 0..<50 where FirstRunSetup.isPortInUse(host: "127.0.0.1", port: port) { usleep(100_000) }
 
         let second = try launchWithoutArguments(binary)
         defer { stop(second) }

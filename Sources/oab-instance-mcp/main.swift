@@ -159,7 +159,7 @@ if firstRunLaunch {
         exit(75)
     }
     do {
-        let plan = try FirstRunSetup.prepare(home: NSHomeDirectory())
+        let plan = try FirstRunSetup.prepare(home: FirstRunSetup.homeDirectory())
         opts.tokenFile = plan.tokenPath
         if let login = plan.allowLogin { opts.allowLogins.insert(login) }
         firstRunNotice = plan.notice
