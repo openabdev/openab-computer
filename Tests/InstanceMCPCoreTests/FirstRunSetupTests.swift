@@ -377,7 +377,8 @@ final class FirstRunSetupTests: XCTestCase {
             XCTAssertTrue(logSince(beforeToken).contains("deny GET /mcp from local: no Tailscale identity on request"),
                           "\(label): the refusal is the missing Tailscale identity, after the bearer check passed")
         } else {
-            XCTAssertNotEqual(code, 401, "\(label) is accepted")
+            XCTAssertNotEqual(code, 0, "\(label): the request got an HTTP response")
+            XCTAssertEqual(code, 405, "\(label) is accepted: GET /mcp answers 405, not 401")
         }
     }
 
