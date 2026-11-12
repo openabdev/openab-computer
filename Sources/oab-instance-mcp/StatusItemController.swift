@@ -99,8 +99,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     /// Every 30 seconds: read Screen Recording and Accessibility with preflight calls only (no prompt, no
-    /// capture, no Full Disk Access probe). Records that core was once granted and flags a later revocation in
-    /// the status item tooltip. It does not open the window; the menu shows "Setup incomplete" on next open.
+    /// capture, no Full Disk Access probe). Records that core was once granted, flags a later revocation in the
+    /// status item tooltip, and pushes the two core results to the wizard if it is open. It never opens the window.
+    /// With the window closed, the menu shows "Setup incomplete" on next open.
     private func startCoreWatch() {
         let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tickCoreWatch() }
@@ -116,6 +117,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         item.button?.toolTip = revoked
             ? "OpenAB Computer \(version) · \(WizardCopy.setupIncomplete)"
             : "OpenAB Computer \(version)"
+        if permissionSetupWindow?.isWindowVisible == true {
+            permissionSetupWindow?.refreshCore(current)
+        }
     }
     private static func icon(active: Bool) -> NSImage? {
         let name = active ? "desktopcomputer.and.arrow.down.fill" : "desktopcomputer.and.arrow.down"

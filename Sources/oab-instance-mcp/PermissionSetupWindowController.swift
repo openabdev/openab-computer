@@ -8,7 +8,8 @@ import InstanceMCPCore
 ///
 /// Allow calls the system request API for that permission, re-tests, and opens the matching System Settings
 /// pane when the permission is still not granted. The window never captures a screenshot and never polls on
-/// its own. It re-tests on app activation, on Check Again, and on the menu bar's revocation watch.
+/// its own. It re-tests on app activation and on Check Again. While it is open, the menu bar's 30-second
+/// revocation watch also pushes the two core results to it (`refreshCore`).
 @MainActor
 final class PermissionSetupWindowController: NSWindowController {
     private final class RowControls {
@@ -32,6 +33,10 @@ final class PermissionSetupWindowController: NSWindowController {
     private let revocationLabel = NSTextField(wrappingLabelWithString: "")
     private let adHocCoreLabel = NSTextField(wrappingLabelWithString: WizardCopy.adHocBanner)
     private let adHocOptionalLabel = NSTextField(wrappingLabelWithString: WizardCopy.adHocBanner)
+    private let coreNoticeLabel = NSTextField(wrappingLabelWithString: "")
+    private let optionalNoticeLabel = NSTextField(wrappingLabelWithString: "")
+    /// Set when macOS refused a Settings deep link. Shows the manual path until the next successful open or return.
+    private var paneNotice: String?
     private let continueButton = NSButton(title: "Continue", target: nil, action: nil)
     private let optionalFooterButton = NSButton(title: "Skip", target: nil, action: nil)
     private var rows: [PermissionKind: RowControls] = [:]
@@ -47,7 +52,11 @@ final class PermissionSetupWindowController: NSWindowController {
 
     init(store: SetupWizardStore) {
         self.store = store
-        self.adHoc = WizardModel.adHocBannerVisible(teamIdentifier: SigningIdentity.teamIdentifier())
+        let signing = SigningIdentity.lookup()
+        if case let .failed(status) = signing {
+            log("permission setup: could not read the code signature (OSStatus \(status)); ad-hoc banner hidden")
+        }
+        self.adHoc = WizardModel.adHocBannerVisible(signing: signing)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 650, height: 620),
             styleMask: [.titled, .closable],
@@ -93,6 +102,12 @@ final class PermissionSetupWindowController: NSWindowController {
         refresh(with: PermissionProbe.current())
     }
 
+    /// Called by the menu bar's revocation watch while the window is open. Takes only the two core results and keeps
+    /// the last Full Disk Access value, so the watch never probes Full Disk Access.
+    func refreshCore(_ core: PermissionSnapshot) {
+        refresh(with: CoreWatch.merged(core, into: snapshot))
+    }
+
     private func refresh(with current: PermissionSnapshot) {
         snapshot = current
 
@@ -110,9 +125,23 @@ final class PermissionSetupWindowController: NSWindowController {
 
         for kind in PermissionKind.allCases { applyRow(kind, state: current[kind]) }
         applyFooters(current)
+        setLabel(coreNoticeLabel, paneNotice)
+        setLabel(optionalNoticeLabel, paneNotice)
 
         corePage.isHidden = page != .core
         optionalPage.isHidden = page != .optional
+    }
+
+    /// Opens one System Settings pane. When macOS refuses the URL, the window shows the manual path and logs it.
+    private func openPane(_ kind: PermissionKind) {
+        if NSWorkspace.shared.open(kind.settingsURL) {
+            paneNotice = nil
+        } else {
+            paneNotice = WizardCopy.manualPaneNotice(pane: kind.rowTitle)
+            log("permission setup: could not open \(kind.settingsURL.absoluteString)")
+        }
+        setLabel(coreNoticeLabel, paneNotice)
+        setLabel(optionalNoticeLabel, paneNotice)
     }
 
     private func applyRow(_ kind: PermissionKind, state: PermissionState) {
@@ -153,6 +182,7 @@ final class PermissionSetupWindowController: NSWindowController {
 
     private func markReturned() {
         returned.formUnion(requested)
+        paneNotice = nil
     }
 
     private func setLabel(_ label: NSTextField, _ text: String?) {
@@ -177,7 +207,7 @@ final class PermissionSetupWindowController: NSWindowController {
         let current = PermissionProbe.current()
         refresh(with: current)
         if current[kind] != .granted {
-            NSWorkspace.shared.open(kind.settingsURL)
+            openPane(kind)
         }
     }
 
@@ -192,7 +222,7 @@ final class PermissionSetupWindowController: NSWindowController {
         guard let kind = kind(for: sender) else { return }
         switch rowStates[kind].map(WizardModel.rowButton(for:)) {
         case .openSettings?:
-            NSWorkspace.shared.open(kind.settingsURL)
+            openPane(kind)
         case .restart?:
             exit(0) // TODO(Q3): KeepAlive restarts the agent. Confirm that restarting clears a stale denial on macOS 15 and 26.
         case .allowed?:
@@ -256,6 +286,8 @@ final class PermissionSetupWindowController: NSWindowController {
         corePage.addArrangedSubview(headline(WizardCopy.corePageTitle, subtitle: WizardCopy.corePageSubtitle))
         corePage.addArrangedSubview(row(for: .screenRecording))
         corePage.addArrangedSubview(row(for: .accessibility))
+        configureNotice(coreNoticeLabel)
+        corePage.addArrangedSubview(coreNoticeLabel)
         corePage.addArrangedSubview(note(WizardCopy.corePageNote))
 
         continueButton.target = self
@@ -271,6 +303,8 @@ final class PermissionSetupWindowController: NSWindowController {
         optionalPage.addArrangedSubview(adHocOptionalLabel)
         optionalPage.addArrangedSubview(headline(WizardCopy.optionalPageTitle, subtitle: WizardCopy.optionalPageSubtitle))
         optionalPage.addArrangedSubview(row(for: .fullDiskAccess))
+        configureNotice(optionalNoticeLabel)
+        optionalPage.addArrangedSubview(optionalNoticeLabel)
         optionalPage.addArrangedSubview(note(WizardCopy.optionalPageNote))
 
         optionalFooterButton.target = self
@@ -293,6 +327,13 @@ final class PermissionSetupWindowController: NSWindowController {
         stack.alignment = .leading
         stack.spacing = 6
         return stack
+    }
+
+    private func configureNotice(_ label: NSTextField) {
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textColor = .systemOrange
+        label.maximumNumberOfLines = 0
+        label.isHidden = true
     }
 
     private func note(_ text: String) -> NSTextField {

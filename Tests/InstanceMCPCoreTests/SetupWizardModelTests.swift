@@ -150,10 +150,22 @@ final class RevocationWatchTests: XCTestCase {
 }
 
 final class WizardBannerAndStoreTests: XCTestCase {
-    func testAdHocBannerShowsOnlyWithoutATeamIdentifier() {
-        XCTAssertTrue(WizardModel.adHocBannerVisible(teamIdentifier: nil))
-        XCTAssertTrue(WizardModel.adHocBannerVisible(teamIdentifier: ""))
-        XCTAssertFalse(WizardModel.adHocBannerVisible(teamIdentifier: "6LPQNY95AQ"))
+    func testAdHocBannerShowsOnlyForASignatureWithNoTeam() {
+        XCTAssertTrue(WizardModel.adHocBannerVisible(signing: .noTeam))
+        XCTAssertFalse(WizardModel.adHocBannerVisible(signing: .team("6LPQNY95AQ")))
+        XCTAssertFalse(WizardModel.adHocBannerVisible(signing: .failed(-1)), "a failed read keeps the banner off")
+    }
+
+    func testManualPaneNoticeNamesThePaneToOpen() {
+        XCTAssertEqual(WizardCopy.manualPaneNotice(pane: "Screen Recording"),
+                       "Could not open System Settings. Open it yourself: System Settings → Privacy & Security → Screen Recording.")
+    }
+
+    func testWatchMergeKeepsFullDiskAccessFromTheLastFullProbe() {
+        let last = PermissionSnapshot(screenRecording: .granted, accessibility: .granted, fullDiskAccess: .denied)
+        let core = PermissionSnapshot(screenRecording: .denied, accessibility: .granted, fullDiskAccess: .unknown)
+        let merged = CoreWatch.merged(core, into: last)
+        XCTAssertEqual(merged, PermissionSnapshot(screenRecording: .denied, accessibility: .granted, fullDiskAccess: .denied))
     }
 
     func testStoreRoundTripsBothFlags() {

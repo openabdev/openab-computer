@@ -450,8 +450,8 @@ screenshots and, once the lock engages, drops injected input.
 
 With `--menu-bar` (deploy.sh sets it) the agent shows a status item: the name "OpenAB Computer" and version, the public MCP URL
 (click to copy), a masked bearer token line (click to copy the full token), live ✓/✗/? rows for
-Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window
-that auto-shows once on first launch when anything is missing), session / call counters with the
+Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window, which opens on launch when a permission is missing and
+reopens while Screen Recording or Accessibility is still off), session / call counters with the
 last tool call, Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
 for each permission. Its Allow button calls the system permission request and re-tests, and it
 opens the pane only if the permission is still off. The window re-tests when the app becomes

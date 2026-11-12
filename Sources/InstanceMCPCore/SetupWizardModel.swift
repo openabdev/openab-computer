@@ -78,10 +78,11 @@ public enum WizardModel {
         event != .close
     }
 
-    /// The ad-hoc banner shows when the running app has no team identifier. An ad-hoc build passes the gate
-    /// on its own core grants, and the banner tells the developer that grants may not survive an update.
-    public static func adHocBannerVisible(teamIdentifier: String?) -> Bool {
-        (teamIdentifier ?? "").isEmpty
+    /// The ad-hoc banner shows only when the signature was read and has no team. An ad-hoc build passes the gate
+    /// on its own core grants, and the banner tells the developer that grants may not survive an update. A failed
+    /// read keeps the banner off, because the build's signing is then unknown.
+    public static func adHocBannerVisible(signing: SigningIdentity.Lookup) -> Bool {
+        signing == .noTeam
     }
 
     /// Shown when a core permission that was granted before is now missing. Names the first missing one.
@@ -119,6 +120,15 @@ public enum CoreWatch {
             accessibility: reader.accessibilityGranted() ? .granted : .denied,
             fullDiskAccess: .unknown
         )
+    }
+
+    /// Replaces only the two core states in `last`, keeping its Full Disk Access value. The watch never reads
+    /// Full Disk Access, so the window merges each core-only result into its last full snapshot.
+    public static func merged(_ core: PermissionSnapshot, into last: PermissionSnapshot) -> PermissionSnapshot {
+        var result = last
+        result.screenRecording = core.screenRecording
+        result.accessibility = core.accessibility
+        return result
     }
 
     /// True when a core permission was granted before and is missing now.
@@ -176,4 +186,9 @@ public enum WizardCopy {
 
     public static let checkAgain = "Check Again"
     public static let setupIncomplete = "Setup incomplete"
+
+    /// Shown when macOS refuses a Settings deep link. `pane` is the row title, for example "Screen Recording".
+    public static func manualPaneNotice(pane: String) -> String {
+        "Could not open System Settings. Open it yourself: System Settings → Privacy & Security → \(pane)."
+    }
 }
