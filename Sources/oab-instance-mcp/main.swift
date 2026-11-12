@@ -159,6 +159,10 @@ var firstRunLines: [String] = []
 var firstRunHome: String? = nil
 if firstRunLaunch {
     opts.menuBar = true
+    // Test seam for automated tests that need a free port. Unset in normal use, so a Finder launch stays on 8795.
+    if let raw = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_FIRST_RUN_PORT"], let p = UInt16(raw) {
+        opts.port = p
+    }
     let home = FirstRunSetup.homeDirectory()
     firstRunHome = home
     // Before anything else writes: a Finder launch's stderr would otherwise go to /dev/null.

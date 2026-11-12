@@ -291,12 +291,14 @@ final class FirstRunSetupTests: XCTestCase {
         return code
     }
 
-    private func launchWithoutArguments(_ binary: URL) throws -> Process {
+    private func launchWithoutArguments(_ binary: URL, port: UInt16? = nil) throws -> Process {
         // HOME isolates the token, the agent log, the grant store and the switchboard config. The wizard's saved
         // state lives in the app's UserDefaults domain, which HOME does not move: a run on a developer Mac writes
         // those two keys (hasShown and the core-granted record) for that domain.
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home
+        // Moves only the no-flag launch's port, for the free-port test. Unset means the default 8795.
+        environment["OAB_INSTANCE_MCP_FIRST_RUN_PORT"] = port.map(String.init)
         let child = Process()
         child.executableURL = binary
         child.arguments = []
@@ -332,26 +334,41 @@ final class FirstRunSetupTests: XCTestCase {
         return command.isEmpty ? "an unknown process" : "\(command) (pid \(pid))"
     }
 
+    /// A loopback port nothing is listening on, so the no-flag launch under test can bind it.
+    private func freePort() -> UInt16 {
+        for _ in 0..<100 {
+            let candidate = UInt16(40_000 + Int.random(in: 0..<20_000))
+            if !FirstRunSetup.isPortInUse(host: "127.0.0.1", port: candidate) { return candidate }
+        }
+        return 40_000
+    }
+
+    /// Whether the no-flag launch found a Tailscale login. When it did, the launch also requires that identity
+    /// (`--allow-login`), so a bearer token alone is refused. The test checks the behavior the launch has.
+    private func tailscaleLoginDetected() -> Bool {
+        let log = (try? String(contentsOfFile: FirstRunSetup.logPath(home: home), encoding: .utf8)) ?? ""
+        return log.contains("Tailscale login detected")
+    }
+
+    private func assertTokenAuthentication(url: URL, token: String, _ label: String) {
+        if tailscaleLoginDetected() {
+            XCTAssertEqual(status(of: url, bearer: token), 401,
+                           "\(label): a detected Tailscale login is also required, so the bearer alone is refused")
+        } else {
+            XCTAssertNotEqual(status(of: url, bearer: token), 401, "\(label) is accepted")
+        }
+    }
+
     func testNoArgumentLaunchCreatesTokenAndServesMCP() throws {
         let binary = try builtBinary()
-        // The no-flag launch binds the default port only. If something else holds it, the test fails and names
-        // that process. It does not skip, unless OAB_TEST_SKIP_BUSY_DEFAULT_PORT=1 is set explicitly (for example on
-        // a machine that knowingly runs the installed agent). The test never stops the process holding the port.
-        if FirstRunSetup.isPortInUse(host: "127.0.0.1", port: 8795) {
-            let holder = holderOfDefaultPort()
-            if ProcessInfo.processInfo.environment["OAB_TEST_SKIP_BUSY_DEFAULT_PORT"] == "1" {
-                throw XCTSkip("127.0.0.1:8795 is held by \(holder); skipped because OAB_TEST_SKIP_BUSY_DEFAULT_PORT=1")
-            }
-            XCTFail("127.0.0.1:8795 is held by \(holder), so the no-argument launch cannot bind its default port. " +
-                    "Stop that process and run the test again.")
-            return
-        }
-        let port: UInt16 = 8795
+        // Runs on a free port through the test seam, so a busy 8795 on a developer Mac does not affect it.
+        // The default port is checked only by testNoArgumentLaunchUsesDefaultPortWhenItIsFree.
+        let port = freePort()
 
         let tokenPath = FirstRunSetup.tokenPath(home: home)
         let url = URL(string: "http://127.0.0.1:\(port)/mcp")!
 
-        let first = try launchWithoutArguments(binary)
+        let first = try launchWithoutArguments(binary, port: port)
         defer { stop(first) }
         XCTAssertEqual(waitForStatus(of: url, bearer: nil), 401,
                        "the no-flag launch serves /mcp on 127.0.0.1 and refuses a request without a bearer")
@@ -359,19 +376,19 @@ final class FirstRunSetupTests: XCTestCase {
         let token = try String(contentsOfFile: tokenPath, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         XCTAssertEqual(token.count, 64)
-        XCTAssertNotEqual(status(of: url, bearer: token), 401, "the token created on first run is accepted")
+        assertTokenAuthentication(url: url, token: token, "the token created on first run")
         stop(first)
 
         // Wait for the port to free before the second launch.
         for _ in 0..<50 where FirstRunSetup.isPortInUse(host: "127.0.0.1", port: port) { usleep(100_000) }
 
-        let second = try launchWithoutArguments(binary)
+        let second = try launchWithoutArguments(binary, port: port)
         defer { stop(second) }
         XCTAssertEqual(waitForStatus(of: url, bearer: nil), 401, "the second no-flag launch starts too")
         XCTAssertEqual(try String(contentsOfFile: tokenPath, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines), token, "a later launch reuses the stored token")
-        XCTAssertNotEqual(status(of: url, bearer: token), 401, "the reused token still authenticates")
         XCTAssertEqual(try mode(of: tokenPath), 0o600)
+        assertTokenAuthentication(url: url, token: token, "the reused token")
 
         // A Finder launch has no LaunchAgent, so its first-run lines reach agent.log only through the stderr redirect.
         // Both launches must log what they did, and neither may log the token.
@@ -383,5 +400,19 @@ final class FirstRunSetupTests: XCTestCase {
                       "the second launch logs that it reused the token file")
         XCTAssertTrue(log.contains(FirstRunSetup.tokenOnlyNotice) || log.contains("no-flag launch: Tailscale login detected"),
                       "the Tailscale result (token-only notice or detected login) reaches the log")
+    }
+
+    /// The default-port check. It runs only where 127.0.0.1:8795 is free (a clean CI runner). Where the installed
+    /// agent holds the port it is skipped, and the skip names the holder. The test never stops that process.
+    func testNoArgumentLaunchUsesDefaultPortWhenItIsFree() throws {
+        let binary = try builtBinary()
+        if FirstRunSetup.isPortInUse(host: "127.0.0.1", port: 8795) {
+            throw XCTSkip("127.0.0.1:8795 is held by \(holderOfDefaultPort()); the default-port check runs only on a clean runner")
+        }
+        let child = try launchWithoutArguments(binary)
+        defer { stop(child) }
+        let url = URL(string: "http://127.0.0.1:8795/mcp")!
+        XCTAssertEqual(waitForStatus(of: url, bearer: nil), 401,
+                       "a launch with no arguments serves /mcp on the default port 8795")
     }
 }
