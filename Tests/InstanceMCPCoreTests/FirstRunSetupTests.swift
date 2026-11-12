@@ -33,23 +33,40 @@ final class FirstRunSetupTests: XCTestCase {
                        "/Users/x/Library/Application Support/oab-instance-mcp/token")
     }
 
-    func testFirstRunCreatesTokenWithMode600AndLaterRunReusesIt() throws {
-        let path = FirstRunSetup.tokenPath(home: home)
+    // MARK: no-flag startup (the same `prepare` call main.swift makes)
 
-        let first = try FirstRunSetup.loadOrCreateToken(at: path)
-        XCTAssertTrue(first.created)
-        XCTAssertEqual(first.token.count, 64)
-        XCTAssertTrue(first.token.allSatisfy { $0.isHexDigit && !$0.isUppercase })
-        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
-        XCTAssertEqual(try mode(of: path), 0o600)
-        let onDisk = try String(contentsOfFile: path, encoding: .utf8)
-        XCTAssertEqual(onDisk, first.token + "\n", "same format as `openssl rand -hex 32` written by the installer")
+    func testNoFlagStartupCreatesTokenWithMode600AndLaterStartupReusesIt() throws {
+        let first = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertEqual(first.tokenPath, FirstRunSetup.tokenPath(home: home))
+        XCTAssertTrue(first.tokenCreated)
+        XCTAssertEqual(try mode(of: first.tokenPath), 0o600)
+        let stored = try String(contentsOfFile: first.tokenPath, encoding: .utf8)
+        let token = stored.trimmingCharacters(in: .newlines)
+        XCTAssertEqual(token.count, 64)
+        XCTAssertTrue(token.allSatisfy { $0.isHexDigit && !$0.isUppercase })
+        XCTAssertEqual(stored, token + "\n", "same format as `openssl rand -hex 32` written by the installer")
 
-        let second = try FirstRunSetup.loadOrCreateToken(at: path)
-        XCTAssertFalse(second.created)
-        XCTAssertEqual(second.token, first.token, "a later launch reuses the stored token")
-        XCTAssertEqual(try mode(of: path), 0o600)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: (path as NSString).deletingLastPathComponent + "/.token.\(getpid()).tmp"))
+        let second = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertFalse(second.tokenCreated)
+        XCTAssertEqual(try String(contentsOfFile: second.tokenPath, encoding: .utf8), stored,
+                       "a later launch reuses the stored token")
+        XCTAssertEqual(try mode(of: second.tokenPath), 0o600)
+    }
+
+    func testNoFlagStartupWithoutTailscaleLoginSaysSoAndStillStarts() throws {
+        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertNil(plan.allowLogin)
+        XCTAssertEqual(plan.notice, FirstRunSetup.tokenOnlyNotice)
+        XCTAssertTrue(plan.logLines.contains { $0.contains(FirstRunSetup.tokenOnlyNotice) })
+    }
+
+    func testNoFlagStartupAppliesADetectedLoginAndLogsNoToken() throws {
+        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { "owner@example.com" })
+        XCTAssertEqual(plan.allowLogin, "owner@example.com")
+        XCTAssertNil(plan.notice)
+        let token = try String(contentsOfFile: plan.tokenPath, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(plan.logLines.joined(separator: "\n").contains(token))
     }
 
     func testExistingTokenIsReusedEvenWhenItsModeWasLoosened() throws {
@@ -73,6 +90,38 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertEqual(result.token.count, 64)
     }
 
+    func testUnreadableTokenFileIsNotRotated() throws {
+        let path = FirstRunSetup.tokenPath(home: home)
+        let first = try FirstRunSetup.loadOrCreateToken(at: path)
+        XCTAssertEqual(chmod(path, 0o000), 0)
+        defer { chmod(path, 0o600) }
+
+        XCTAssertThrowsError(try FirstRunSetup.loadOrCreateToken(at: path))
+        XCTAssertEqual(chmod(path, 0o600), 0)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), first.token + "\n",
+                       "a file that cannot be read is an error, not a reason to rotate the token")
+    }
+
+    /// Several first launches racing on one path must end with one token that every launch reads back.
+    /// Threads in one process share the PID, so this also covers the per-attempt temp file names.
+    func testConcurrentFirstRunsAgreeOnOneToken() throws {
+        let path = FirstRunSetup.tokenPath(home: home)
+        let lock = NSLock()
+        var tokens: [String] = []
+        DispatchQueue.concurrentPerform(iterations: 16) { _ in
+            guard let made = try? FirstRunSetup.loadOrCreateToken(at: path) else { return }
+            lock.lock()
+            tokens.append(made.token)
+            lock.unlock()
+        }
+        XCTAssertEqual(tokens.count, 16, "every racing launch succeeds")
+        XCTAssertEqual(Set(tokens).count, 1, "every racing launch uses the same token")
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), (tokens.first ?? "") + "\n")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: (path as NSString).deletingLastPathComponent)
+            .filter { $0.hasPrefix(".token.") }
+        XCTAssertEqual(leftovers, [], "no temp files are left behind")
+    }
+
     func testTailscaleLoginIsReadTheSameWayTheInstallerReadsIt() {
         let json = """
         {"Self":{"DNSName":"mac.tailb836bb.ts.net.","UserID":12345},
@@ -94,5 +143,64 @@ final class FirstRunSetupTests: XCTestCase {
 
     func testTokenOnlyNoticeNamesTheFallback() {
         XCTAssertTrue(FirstRunSetup.tokenOnlyNotice.contains("bearer token only"))
+    }
+
+    // MARK: flag launch (process level, the built `oab-instance-mcp` binary)
+
+    private func builtBinary() throws -> URL {
+        let dir = Bundle(for: FirstRunSetupTests.self).bundleURL.deletingLastPathComponent()
+        let url = dir.appendingPathComponent("oab-instance-mcp")
+        guard FileManager.default.isExecutableFile(atPath: url.path) else {
+            throw XCTSkip("oab-instance-mcp is not built next to the test bundle: \(url.path)")
+        }
+        return url
+    }
+
+    /// HTTP status of a request to `url`, or 0 when nothing answered.
+    private func status(of url: URL, bearer: String?) -> Int {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 2
+        if let bearer { request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
+        let done = DispatchSemaphore(value: 0)
+        var code = 0
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            done.signal()
+        }.resume()
+        done.wait()
+        return code
+    }
+
+    func testFlagLaunchStillServesMCPWithTheTokenFromItsFile() throws {
+        let binary = try builtBinary()
+        let tokenFile = home + "/flag-token"
+        let token = "flag-test-" + UUID().uuidString.lowercased()
+        try (token + "\n").write(toFile: tokenFile, atomically: false, encoding: .utf8)
+        let port = 40_000 + Int.random(in: 0..<20_000)
+
+        let child = Process()
+        child.executableURL = binary
+        child.arguments = ["--host", "127.0.0.1", "--port", String(port), "--token-file", tokenFile,
+                           "--no-attach", "--no-grant-persistence", "--quiet"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = home
+        child.environment = environment
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        defer {
+            child.terminate()
+            child.waitUntilExit()
+        }
+
+        let url = URL(string: "http://127.0.0.1:\(port)/mcp")!
+        var anonymous = 0
+        for _ in 0..<100 {
+            anonymous = status(of: url, bearer: nil)
+            if anonymous != 0 { break }
+            usleep(100_000)
+        }
+        XCTAssertEqual(anonymous, 401, "the flag launch answers /mcp and refuses a request without a bearer token")
+        XCTAssertNotEqual(status(of: url, bearer: token), 401, "the token from --token-file is accepted")
     }
 }

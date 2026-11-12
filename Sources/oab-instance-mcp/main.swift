@@ -145,21 +145,15 @@ var firstRunNotice: String? = nil
 var firstRunLines: [String] = []
 if firstRunLaunch {
     opts.menuBar = true
-    let path = FirstRunSetup.tokenPath(home: NSHomeDirectory())
     do {
-        let made = try FirstRunSetup.loadOrCreateToken(at: path)
-        opts.tokenFile = path
-        firstRunLines.append("no-flag launch: token file \(path) \(made.created ? "created" : "reused") (mode 600; token not logged)")
+        let plan = try FirstRunSetup.prepare(home: NSHomeDirectory())
+        opts.tokenFile = plan.tokenPath
+        if let login = plan.allowLogin { opts.allowLogins.insert(login) }
+        firstRunNotice = plan.notice
+        firstRunLines = plan.logLines
     } catch {
-        fputs("no-flag launch: cannot prepare the token file at \(path): \(error)\n", stderr)
+        fputs("no-flag launch: cannot prepare the token file: \(error)\n", stderr)
         exit(73)
-    }
-    if let login = FirstRunSetup.detectTailscaleLogin() {
-        opts.allowLogins.insert(login)
-        firstRunLines.append("no-flag launch: Tailscale login detected, applied as --allow-login")
-    } else {
-        firstRunNotice = FirstRunSetup.tokenOnlyNotice
-        firstRunLines.append("no-flag launch: \(FirstRunSetup.tokenOnlyNotice)")
     }
 }
 
