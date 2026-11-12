@@ -159,14 +159,20 @@ var firstRunLines: [String] = []
 var firstRunHome: String? = nil
 if firstRunLaunch {
     opts.menuBar = true
-    // Test seam for automated tests that need a free port. Unset in normal use, so a Finder launch stays on 8795.
-    if let raw = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_FIRST_RUN_PORT"], let p = UInt16(raw) {
-        opts.port = p
-    }
     let home = FirstRunSetup.homeDirectory()
     firstRunHome = home
     // Before anything else writes: a Finder launch's stderr would otherwise go to /dev/null.
     FirstRunSetup.redirectStderr(toLogAt: FirstRunSetup.logPath(home: home))
+    #if DEBUG
+    // Test seam, compiled into debug builds only (swift test). Release builds have no override and always use 8795.
+    if let raw = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_FIRST_RUN_PORT"] {
+        if let p = Int(raw), (1...65535).contains(p) {
+            opts.port = UInt16(p)
+        } else {
+            fputs("no-flag launch: OAB_INSTANCE_MCP_FIRST_RUN_PORT=\(raw) rejected (not 1 to 65535); using \(opts.port)\n", stderr)
+        }
+    }
+    #endif
     // Checked before any token is touched: a taken port means the installed agent is already serving.
     if FirstRunSetup.isPortInUse(host: opts.host, port: opts.port) {
         showFirstRunAlert(FirstRunSetup.portInUseMessage(host: opts.host, port: opts.port))
@@ -266,7 +272,7 @@ let server = MCPServer(
 )
 /// Every `desktop` → `observe` mapping is recorded here as well as in the log (#59).
 let auditLog = FileAuditLog(log: log)
-    let attachManager: AttachManager? = opts.attach
+let attachManager: AttachManager? = opts.attach
     ? AttachManager(server: server,
                     store: opts.persistGrants ? FileGrantStore(url: firstRunHome.map { FirstRunSetup.grantsURL(home: $0) }
                                                                  ?? FileGrantStore.defaultURL, log: log) : nil,

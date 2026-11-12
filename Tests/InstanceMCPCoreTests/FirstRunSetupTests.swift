@@ -350,12 +350,34 @@ final class FirstRunSetupTests: XCTestCase {
         return log.contains("Tailscale login detected")
     }
 
+    /// The agent log as bytes, and the text appended after `offset` bytes. Used to read the refusal reason of one request.
+    private func logBytes() -> Data {
+        (try? Data(contentsOf: URL(fileURLWithPath: FirstRunSetup.logPath(home: home)))) ?? Data()
+    }
+
+    private func logSince(_ offset: Int) -> String {
+        String(decoding: logBytes().dropFirst(offset), as: UTF8.self)
+    }
+
+    /// A wrong bearer must be refused for the "bad token" reason, read from the new log lines. The bearer check runs
+    /// first, so this holds with or without a Tailscale login. It also shows the request reached this server, not
+    /// another process on the port. A correct token must pass the bearer check. When a Tailscale login is detected,
+    /// the refusal must then be the missing identity; otherwise the token is accepted.
     private func assertTokenAuthentication(url: URL, token: String, _ label: String) {
+        let beforeWrong = logBytes().count
+        XCTAssertEqual(status(of: url, bearer: "wrong-" + UUID().uuidString.lowercased()), 401,
+                       "\(label): a wrong bearer is refused")
+        XCTAssertTrue(logSince(beforeWrong).contains("deny GET /mcp from local: bad token"),
+                      "\(label): a wrong bearer is refused for the bad-token reason")
+
+        let beforeToken = logBytes().count
+        let code = status(of: url, bearer: token)
         if tailscaleLoginDetected() {
-            XCTAssertEqual(status(of: url, bearer: token), 401,
-                           "\(label): a detected Tailscale login is also required, so the bearer alone is refused")
+            XCTAssertEqual(code, 401, "\(label): a detected Tailscale login is also required, so the bearer alone is refused")
+            XCTAssertTrue(logSince(beforeToken).contains("deny GET /mcp from local: no Tailscale identity on request"),
+                          "\(label): the refusal is the missing Tailscale identity, after the bearer check passed")
         } else {
-            XCTAssertNotEqual(status(of: url, bearer: token), 401, "\(label) is accepted")
+            XCTAssertNotEqual(code, 401, "\(label) is accepted")
         }
     }
 
