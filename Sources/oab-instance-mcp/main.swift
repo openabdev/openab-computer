@@ -141,31 +141,43 @@ while !args.isEmpty {
 // No flags: the menu bar app with the installer's token file (~/.config/oab-instance-mcp/token), created on first
 // run, and the Tailscale login if one is detected. Without a login the launch continues with the token alone.
 // Flag launches never reach this block, so their behavior and the installer's path are unchanged.
+/// Writes the reason to stderr (the agent log, for a no-flag launch) and shows it in an alert, then the caller exits.
+func showFirstRunAlert(_ message: String) {
+    fputs(message + "\n", stderr)
+    MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let alert = NSAlert()
+        alert.messageText = "OpenAB Computer did not start"
+        alert.informativeText = message
+        alert.runModal()
+    }
+}
+
 var firstRunNotice: String? = nil
 var firstRunLines: [String] = []
+/// The home directory a no-flag launch writes under; nil for flag launches, which keep their defaults.
+var firstRunHome: String? = nil
 if firstRunLaunch {
     opts.menuBar = true
+    let home = FirstRunSetup.homeDirectory()
+    firstRunHome = home
+    // Before anything else writes: a Finder launch's stderr would otherwise go to /dev/null.
+    FirstRunSetup.redirectStderr(toLogAt: FirstRunSetup.logPath(home: home))
     // Checked before any token is touched: a taken port means the installed agent is already serving.
     if FirstRunSetup.isPortInUse(host: opts.host, port: opts.port) {
-        let message = FirstRunSetup.portInUseMessage(host: opts.host, port: opts.port)
-        fputs(message + "\n", stderr)
-        MainActor.assumeIsolated {
-            _ = NSApplication.shared
-            let alert = NSAlert()
-            alert.messageText = "OpenAB Computer did not start"
-            alert.informativeText = message
-            alert.runModal()
-        }
+        showFirstRunAlert(FirstRunSetup.portInUseMessage(host: opts.host, port: opts.port))
         exit(75)
     }
     do {
-        let plan = try FirstRunSetup.prepare(home: FirstRunSetup.homeDirectory())
+        let plan = try FirstRunSetup.prepare(home: home)
         opts.tokenFile = plan.tokenPath
         if let login = plan.allowLogin { opts.allowLogins.insert(login) }
         firstRunNotice = plan.notice
         firstRunLines = plan.logLines
     } catch {
-        fputs("no-flag launch: cannot prepare the token file: \(error)\n", stderr)
+        showFirstRunAlert("Could not prepare the token file: \(error). Quit any other oab-instance-mcp that is running, " +
+                          "remove \(FirstRunSetup.lockPath(for: FirstRunSetup.tokenPath(home: home))) if it is left over from a crash, " +
+                          "then open the app again. Details are in \(FirstRunSetup.logPath(home: home)).")
         exit(73)
     }
 }
@@ -250,9 +262,10 @@ let server = MCPServer(
 )
 /// Every `desktop` → `observe` mapping is recorded here as well as in the log (#59).
 let auditLog = FileAuditLog(log: log)
-let attachManager: AttachManager? = opts.attach
+    let attachManager: AttachManager? = opts.attach
     ? AttachManager(server: server,
-                    store: opts.persistGrants ? FileGrantStore(log: log) : nil,
+                    store: opts.persistGrants ? FileGrantStore(url: firstRunHome.map { FirstRunSetup.grantsURL(home: $0) }
+                                                                 ?? FileGrantStore.defaultURL, log: log) : nil,
                     audit: auditLog,
                     log: log)
     : nil
@@ -284,7 +297,9 @@ if let attachManager {
 
 // The switchboard supervisor owns the config files and the one live dialer. Saved files
 // win over flags (SwitchboardStartup); the menu bar edits the saved files.
-let switchboardStore = SwitchboardConfigStore()
+let switchboardStore = SwitchboardConfigStore(
+    directory: firstRunHome.map { URL(fileURLWithPath: FirstRunSetup.configDirectory(home: $0)) }
+        ?? SwitchboardConfigStore.defaultDirectory)
 let switchboardAllowSecure = opts.switchboardAllowSecureSetValue
 // The secret file named by the flags, readable or not. Saved files apply only when the
 // flags name the installer's file, or when this is a menu bar process with no flags.
@@ -341,11 +356,12 @@ stop.resume()
 if opts.menuBar {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)     // no Dock icon, no main menu; status item only
-    let logPath = NSHomeDirectory() + "/Library/Logs/oab-instance-mcp/agent.log"
+    let logPath = FirstRunSetup.logPath(home: firstRunHome ?? NSHomeDirectory())
     let publicURL = opts.publicURL ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     statusItem = MainActor.assumeIsolated {
         StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
-                             attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice)
+                             attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,
+                             relaunchesOnRestart: firstRunLaunch)
     }
     Task {
         await switchboardSupervisor.setOnChange { s in

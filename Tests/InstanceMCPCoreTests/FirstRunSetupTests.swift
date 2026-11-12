@@ -211,6 +211,14 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertTrue(FirstRunSetup.tokenOnlyNotice.contains("bearer token only"))
     }
 
+    func testAgentLogIsTheFileTheMenuOpensUnderTheSameHome() {
+        XCTAssertEqual(FirstRunSetup.logPath(home: "/Users/x"),
+                       "/Users/x/Library/Logs/oab-instance-mcp/agent.log")
+        XCTAssertEqual(FirstRunSetup.grantsURL(home: "/Users/x").path,
+                       "/Users/x/Library/Application Support/oab-instance-mcp/grants.json")
+        XCTAssertEqual(FirstRunSetup.configDirectory(home: "/Users/x"), "/Users/x/.config/oab-instance-mcp")
+    }
+
     // MARK: flag launch (process level, the built `oab-instance-mcp` binary)
 
     private func builtBinary() throws -> URL {
@@ -284,6 +292,9 @@ final class FirstRunSetupTests: XCTestCase {
     }
 
     private func launchWithoutArguments(_ binary: URL) throws -> Process {
+        // HOME isolates the token, the agent log, the grant store and the switchboard config. The wizard's saved
+        // state lives in the app's UserDefaults domain, which HOME does not move: a run on a developer Mac writes
+        // those two keys (hasShown and the core-granted record) for that domain.
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home
         let child = Process()
@@ -362,9 +373,15 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertNotEqual(status(of: url, bearer: token), 401, "the reused token still authenticates")
         XCTAssertEqual(try mode(of: tokenPath), 0o600)
 
-        let logPath = home + "/Library/Logs/oab-instance-mcp/agent.log"
-        if let log = try? String(contentsOfFile: logPath, encoding: .utf8) {
-            XCTAssertFalse(log.contains(token), "the token never reaches the log")
-        }
+        // A Finder launch has no LaunchAgent, so its first-run lines reach agent.log only through the stderr redirect.
+        // Both launches must log what they did, and neither may log the token.
+        let log = try String(contentsOfFile: FirstRunSetup.logPath(home: home), encoding: .utf8)
+        XCTAssertFalse(log.contains(token), "the token never reaches the log")
+        XCTAssertTrue(log.contains("no-flag launch: token file \(tokenPath) created"),
+                      "the first launch logs that it created the token file")
+        XCTAssertTrue(log.contains("no-flag launch: token file \(tokenPath) reused"),
+                      "the second launch logs that it reused the token file")
+        XCTAssertTrue(log.contains(FirstRunSetup.tokenOnlyNotice) || log.contains("no-flag launch: Tailscale login detected"),
+                      "the Tailscale result (token-only notice or detected login) reaches the log")
     }
 }

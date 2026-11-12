@@ -19,6 +19,36 @@ public enum FirstRunSetup {
         home + "/.config/oab-instance-mcp/token"
     }
 
+    /// `~/.config/oab-instance-mcp`: the directory the installer and the installed agent read. A no-flag launch
+    /// under a given home uses it for the switchboard config as well.
+    public static func configDirectory(home: String) -> String {
+        home + "/.config/oab-instance-mcp"
+    }
+
+    /// The reverse-attach grant record under `home`: the file FileGrantStore.defaultURL names for the account.
+    public static func grantsURL(home: String) -> URL {
+        URL(fileURLWithPath: home + "/Library/Application Support/oab-instance-mcp/grants.json")
+    }
+
+    /// The agent log under `home`. The menu's Open Log item opens it, and a LaunchAgent writes it through
+    /// StandardErrorPath.
+    public static func logPath(home: String) -> String {
+        home + "/Library/Logs/oab-instance-mcp/agent.log"
+    }
+
+    /// Sends this process's stderr to `path` (append, mode 644), as a LaunchAgent's StandardErrorPath does. A Finder
+    /// launch has no LaunchAgent, and LaunchServices discards its stderr, so without this the first-run lines are lost.
+    /// Returns false when the file cannot be opened; stderr is then unchanged.
+    @discardableResult
+    public static func redirectStderr(toLogAt path: String) -> Bool {
+        try? FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                 withIntermediateDirectories: true)
+        let fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        return dup2(fd, STDERR_FILENO) >= 0
+    }
+
     /// True when another process already listens on host:port. Binds a probe socket with SO_REUSEADDR, so
     /// connections in TIME_WAIT do not count, and sends no request to the port.
     public static func isPortInUse(host: String, port: UInt16) -> Bool {
@@ -128,7 +158,7 @@ public enum FirstRunSetup {
     }
 
     /// The lock directory the installer uses for the token file: "$TOKEN_FILE.lock".
-    static func lockPath(for tokenPath: String) -> String {
+    public static func lockPath(for tokenPath: String) -> String {
         tokenPath + ".lock"
     }
 

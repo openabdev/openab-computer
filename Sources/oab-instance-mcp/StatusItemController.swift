@@ -17,6 +17,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let token: String?
     /// Shown in the menu when the no-flag launch found no Tailscale login (token-only auth).
     private let notice: String?
+    /// True for a no-flag (Finder) launch, which has no LaunchAgent to restart it after an exit.
+    private let relaunchesOnRestart: Bool
     private let defaults: UserDefaults
     private let store: SetupWizardStore
     private var permissionSetupWindow: PermissionSetupWindowController?
@@ -46,12 +48,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     init(version: String, url: String, logPath: String, token: String? = nil,
          defaults: UserDefaults = .standard, attach: AttachManager? = nil,
-         switchboard: SwitchboardSupervisor? = nil, notice: String? = nil) {
+         switchboard: SwitchboardSupervisor? = nil, notice: String? = nil, relaunchesOnRestart: Bool = false) {
         self.version = version
         self.url = url
         self.logPath = logPath
         self.token = token
         self.notice = notice
+        self.relaunchesOnRestart = relaunchesOnRestart
         self.defaults = defaults
         self.store = SetupWizardStore(defaults: defaults)
         self.attach = attach
@@ -387,7 +390,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
     }
     @objc private func restart() {
-        // KeepAlive brings us straight back; exiting is the restart.
+        // Under a LaunchAgent, KeepAlive brings us straight back; exiting is the restart.
+        guard relaunchesOnRestart, Bundle.main.bundlePath.hasSuffix(".app") else { exit(0) }
+        // A Finder launch has no LaunchAgent. A detached shell reopens the bundle once this process has exited.
+        // If the shell cannot start, keep running rather than quit with nothing to bring the app back.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; exec /usr/bin/open -n \"$0\"", Bundle.main.bundlePath]
+        guard (try? p.run()) != nil else { return }
         exit(0)
     }
     @objc private func quit() {
