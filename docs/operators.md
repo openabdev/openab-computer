@@ -19,6 +19,12 @@ written as placeholders or as "an M4 Mac mini".
 - **`tccutil reset ScreenCapture <bundle-id>` does not make the prompt appear.** After the
   first denial the system records it and further capture attempts fail silently; the grant
   has to be toggled in System Settings on the machine's own display.
+- **The setup wizard's Allow button calls the system request, and a recorded denial stays silent.**
+  `CGRequestScreenCaptureAccess()` and `AXIsProcessTrustedWithOptions` with the prompt option run only
+  when a user clicks Allow in the wizard. After an earlier denial they show no prompt, so the wizard
+  re-tests and opens the matching System Settings pane instead. Revocation is checked every 30 seconds
+  with preflight calls only (`CGPreflightScreenCaptureAccess`, `AXIsProcessTrusted`), which never prompt
+  and never capture.
 - **Display sleep = black screenshots.** An M4 Mac mini shipped with `displaysleep 3`; the first
   screenshot after a quiet spell was solid black with a cursor. `pmset -a displaysleep 0`.
 - **A stuck `osascript` is usually a consent dialog.** First AppleEvent to an app pops an

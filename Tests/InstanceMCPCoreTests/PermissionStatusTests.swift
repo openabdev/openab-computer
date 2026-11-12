@@ -65,8 +65,22 @@ final class PermissionSetupPolicyTests: XCTestCase {
         XCTAssertTrue(PermissionSetupPolicy.shouldAutoShow(hasShown: false, snapshot: missing))
     }
 
-    func testNotNowIsRespectedAcrossLaterLaunches() {
-        XCTAssertFalse(PermissionSetupPolicy.shouldAutoShow(hasShown: true, snapshot: missing))
+    func testCoreMissingShowsAfterEarlierDismissal() {
+        // A missing core permission bypasses hasShown, so closing the window early does not hide it.
+        XCTAssertTrue(PermissionSetupPolicy.shouldAutoShow(hasShown: true, snapshot: missing))
+    }
+
+    func testOptionalOnlyMissingRespectsHasShown() {
+        let fdaOnly = PermissionSnapshot(screenRecording: .granted, accessibility: .granted,
+                                         fullDiskAccess: .denied)
+        XCTAssertTrue(PermissionSetupPolicy.shouldAutoShow(hasShown: false, snapshot: fdaOnly))
+        XCTAssertFalse(PermissionSetupPolicy.shouldAutoShow(hasShown: true, snapshot: fdaOnly))
+    }
+
+    func testReopenOnActivationOnlyWhenCoreMissingAndWindowHidden() {
+        XCTAssertTrue(PermissionSetupPolicy.shouldReopenOnActivation(windowVisible: false, snapshot: missing))
+        XCTAssertFalse(PermissionSetupPolicy.shouldReopenOnActivation(windowVisible: true, snapshot: missing))
+        XCTAssertFalse(PermissionSetupPolicy.shouldReopenOnActivation(windowVisible: false, snapshot: complete))
     }
 
     func testFullyGrantedMachineNeverAutoShows() {

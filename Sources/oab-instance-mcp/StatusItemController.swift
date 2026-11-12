@@ -16,8 +16,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let logPath: String
     private let token: String?
     private let defaults: UserDefaults
-    private static let permissionSetupShownKey = "permissionSetupWizard.hasShown.v1"
+    private let store: SetupWizardStore
     private var permissionSetupWindow: PermissionSetupWindowController?
+    /// Revocation watch: 30 seconds, preflight reads only (`CoreWatch`). Runs for the life of the menu bar process.
+    private var coreWatchTimer: Timer?
+    private let coreReader = SystemCorePermissionReader()
     private let attach: AttachManager?
     private let switchboardSupervisor: SwitchboardSupervisor?
     private lazy var switchboardMenu: SwitchboardMenu? = switchboardSupervisor.map { SwitchboardMenu(supervisor: $0) }
@@ -47,6 +50,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.logPath = logPath
         self.token = token
         self.defaults = defaults
+        self.store = SetupWizardStore(defaults: defaults)
         self.attach = attach
         self.switchboardSupervisor = switchboard
         self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -56,32 +60,62 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         item.button?.toolTip = "OpenAB Computer \(version)"
         menu.delegate = self
         item.menu = menu
+        startCoreWatch()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reopenSetupIfCoreMissing() }
+        }
     }
 
-
-    /// Show once on the first launch that has anything missing. A machine that
-    /// upgraded with all grants already present is marked complete without a
-    /// window; revoking later remains visible in the menu but is never nagged.
+    /// Show on the first launch that has anything missing. A machine that already has every grant is marked
+    /// complete without a window. Missing core permissions show the wizard regardless of earlier closes.
     func showPermissionSetupIfNeeded() {
         let snapshot = PermissionProbe.current()
-        let shown = defaults.bool(forKey: Self.permissionSetupShownKey)
         if snapshot.allGranted {
-            defaults.set(true, forKey: Self.permissionSetupShownKey)
+            store.hasShown = true
             return
         }
-        if PermissionSetupPolicy.shouldAutoShow(hasShown: shown, snapshot: snapshot) {
+        if PermissionSetupPolicy.shouldAutoShow(hasShown: store.hasShown, snapshot: snapshot) {
             showPermissionSetup()
         }
     }
 
     @objc func showPermissionSetup() {
         if permissionSetupWindow == nil {
-            permissionSetupWindow = PermissionSetupWindowController { [weak self] in
-                guard let self else { return }
-                self.defaults.set(true, forKey: Self.permissionSetupShownKey)
-            }
+            permissionSetupWindow = PermissionSetupWindowController(store: store)
         }
         permissionSetupWindow?.show()
+    }
+
+    /// Reopens the wizard after the user closed it, while a core permission is still missing.
+    private func reopenSetupIfCoreMissing() {
+        let visible = permissionSetupWindow?.isWindowVisible ?? false
+        if PermissionSetupPolicy.shouldReopenOnActivation(windowVisible: visible, snapshot: PermissionProbe.current()) {
+            showPermissionSetup()
+        }
+    }
+
+    /// Every 30 seconds: read Screen Recording and Accessibility with preflight calls only (no prompt, no
+    /// capture, no Full Disk Access probe). Records that core was once granted and flags a later revocation in
+    /// the status item tooltip. It does not open the window; the menu shows "Setup incomplete" on next open.
+    private func startCoreWatch() {
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickCoreWatch() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        coreWatchTimer = timer
+    }
+
+    private func tickCoreWatch() {
+        let current = CoreWatch.poll(coreReader)
+        store.coreGrantedSeen = CoreWatch.seenAfter(previouslySeen: store.coreGrantedSeen, current: current)
+        let revoked = CoreWatch.revoked(previouslySeen: store.coreGrantedSeen, current: current)
+        item.button?.toolTip = revoked
+            ? "OpenAB Computer \(version) · \(WizardCopy.setupIncomplete)"
+            : "OpenAB Computer \(version)"
     }
     private static func icon(active: Bool) -> NSImage? {
         let name = active ? "desktopcomputer.and.arrow.down.fill" : "desktopcomputer.and.arrow.down"
@@ -128,6 +162,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         menu.addItem(label("Set Up Permissions…", action: #selector(showPermissionSetup)))
+        if SetupGate.evaluate(snapshot: permissions).blocksCore {
+            menu.addItem(label(WizardCopy.setupIncomplete))
+        }
         menu.addItem(permissionMenuItem("Screen Recording", kind: .screenRecording,
                                         state: permissions.screenRecording, action: #selector(openScreenPane)))
         menu.addItem(permissionMenuItem("Accessibility", kind: .accessibility,
@@ -328,13 +365,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return t.prefix(6) + "…" + t.suffix(4)
     }
     @objc private func openScreenPane() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        NSWorkspace.shared.open(PermissionKind.screenRecording.settingsURL)
     }
     @objc private func openAXPane() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        NSWorkspace.shared.open(PermissionKind.accessibility.settingsURL)
     }
     @objc private func openFDAPane() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+        NSWorkspace.shared.open(PermissionKind.fullDiskAccess.settingsURL)
     }
     @objc private func openLog() {
         NSWorkspace.shared.open(URL(fileURLWithPath: logPath))

@@ -1,0 +1,179 @@
+import ApplicationServices
+import CoreGraphics
+import Foundation
+
+/// Pure rules behind the permission setup wizard. The AppKit window and the menu bar only render these
+/// values. Everything here is testable without a window or TCC.
+public enum WizardPage: Equatable, Sendable {
+    case core
+    case optional
+}
+
+public enum RowState: Equatable, Sendable {
+    case notAllowed
+    /// Allow was clicked and System Settings has not been returned to yet.
+    case waiting
+    /// Returned to the app after Allow, and the permission is still denied.
+    case stillOff
+    /// Settings shows the switch on but the probe still denies. Reserved until Q3 is tested.
+    // TODO(Q3): produce this state once a Mac test shows how to detect "on in Settings, needs restart".
+    case needsRestart
+    case allowed
+    case cantTest
+}
+
+public enum RowButton: Equatable, Sendable {
+    case allow
+    case openSettings
+    case allowed
+    case restart
+}
+
+public enum FooterAction: Equatable, Sendable {
+    case continueToOptional(enabled: Bool)
+    case skip
+    case done
+}
+
+public enum WizardEvent: Equatable, Sendable {
+    case skip
+    case done
+    case close
+    case completeObserved
+}
+
+public enum WizardModel {
+    public static func rowState(state: PermissionState, requested: Bool, returnedSinceRequest: Bool) -> RowState {
+        switch state {
+        case .granted: return .allowed
+        case .unknown: return .cantTest
+        case .denied:
+            guard requested else { return .notAllowed }
+            return returnedSinceRequest ? .stillOff : .waiting
+        }
+    }
+
+    public static func rowButton(for row: RowState) -> RowButton {
+        switch row {
+        case .notAllowed, .waiting: return .allow
+        case .stillOff, .cantTest: return .openSettings
+        case .needsRestart: return .restart
+        case .allowed: return .allowed
+        }
+    }
+
+    /// Core page: Continue, enabled only when both core permissions are granted. Optional page: Skip, or Done once
+    /// Full Disk Access is granted. Skip never appears on the core page.
+    public static func footerAction(page: WizardPage, snapshot: PermissionSnapshot) -> FooterAction {
+        switch page {
+        case .core:
+            return .continueToOptional(enabled: !SetupGate.evaluate(snapshot: snapshot).blocksCore)
+        case .optional:
+            return snapshot.fullDiskAccess.isGranted ? .done : .skip
+        }
+    }
+
+    /// Completion is recorded for Skip, Done, and an observed complete state. Closing the window is not completion.
+    public static func recordsCompletion(_ event: WizardEvent) -> Bool {
+        event != .close
+    }
+
+    /// The ad-hoc banner shows when the running app has no team identifier. An ad-hoc build passes the gate
+    /// on its own core grants, and the banner tells the developer that grants may not survive an update.
+    public static func adHocBannerVisible(teamIdentifier: String?) -> Bool {
+        (teamIdentifier ?? "").isEmpty
+    }
+
+    /// Shown when a core permission that was granted before is now missing. Names the first missing one.
+    public static func revocationBanner(previouslySeen: Bool, snapshot: PermissionSnapshot) -> String? {
+        guard previouslySeen else { return nil }
+        if !snapshot.screenRecording.isGranted { return WizardCopy.revokedScreenRecording }
+        if !snapshot.accessibility.isGranted { return WizardCopy.revokedAccessibility }
+        return nil
+    }
+}
+
+/// The two core permission reads the revocation watch needs. There is no request or capture method on purpose:
+/// the watch cannot prompt the user or capture a screenshot.
+public protocol CorePermissionReading {
+    func screenRecordingGranted() -> Bool
+    func accessibilityGranted() -> Bool
+}
+
+public struct SystemCorePermissionReader: CorePermissionReading {
+    public init() {}
+
+    /// Preflight only. CGPreflightScreenCaptureAccess does not prompt and does not capture.
+    public func screenRecordingGranted() -> Bool { CGPreflightScreenCaptureAccess() }
+
+    /// Read only. AXIsProcessTrusted does not prompt.
+    public func accessibilityGranted() -> Bool { AXIsProcessTrusted() }
+}
+
+public enum CoreWatch {
+    /// Reads Screen Recording and Accessibility and nothing else. Full Disk Access is reported as `.unknown`
+    /// because this watch never probes it.
+    public static func poll(_ reader: CorePermissionReading) -> PermissionSnapshot {
+        PermissionSnapshot(
+            screenRecording: reader.screenRecordingGranted() ? .granted : .denied,
+            accessibility: reader.accessibilityGranted() ? .granted : .denied,
+            fullDiskAccess: .unknown
+        )
+    }
+
+    /// True when a core permission was granted before and is missing now.
+    public static func revoked(previouslySeen: Bool, current: PermissionSnapshot) -> Bool {
+        previouslySeen && SetupGate.evaluate(snapshot: current).blocksCore
+    }
+
+    /// Becomes true once both core permissions have been granted at least once.
+    public static func seenAfter(previouslySeen: Bool, current: PermissionSnapshot) -> Bool {
+        previouslySeen || (current.screenRecording.isGranted && current.accessibility.isGranted)
+    }
+}
+
+/// Persisted wizard state. Closing the window never sets `hasShown`.
+public struct SetupWizardStore {
+    public static let hasShownKey = "permissionSetupWizard.hasShown.v1"
+    public static let coreGrantedSeenKey = "permissionSetupWizard.coreGrantedSeen.v2"
+
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    public var hasShown: Bool {
+        get { defaults.bool(forKey: Self.hasShownKey) }
+        nonmutating set { defaults.set(newValue, forKey: Self.hasShownKey) }
+    }
+
+    public var coreGrantedSeen: Bool {
+        get { defaults.bool(forKey: Self.coreGrantedSeenKey) }
+        nonmutating set { defaults.set(newValue, forKey: Self.coreGrantedSeenKey) }
+    }
+}
+
+/// Wizard copy. "Screen Recording" is the app-facing name. "Screen & System Audio Recording" appears only
+/// in text that points the user to System Settings.
+public enum WizardCopy {
+    public static let corePageTitle = "Allow OpenAB Computer to use your computer?"
+    public static let corePageSubtitle = "Agents can see this Mac and act on it only after both permissions are on."
+    public static let corePageNote = "Both permissions are required. Without them, the screenshot, mouse, keyboard, and window-reading tools return an error instead of working. macOS requires you to turn each one on yourself in System Settings → Privacy & Security. For Screen Recording, turn on Screen & System Audio Recording. OpenAB Computer cannot turn them on for you."
+
+    public static let optionalPageTitle = "Allow OpenAB Computer to access your files and local apps?"
+    public static let optionalPageSubtitle = "Needed only for protected app data and for folders on external drives. Screenshots, mouse, keyboard, and browser tools do not need it."
+    public static let optionalPageNote = "Optional. You can turn Full Disk Access on or off in System Settings → Privacy & Security at any time."
+
+    public static let screenRecordingDetail = "Lets agents take screenshots of this Mac."
+    public static let accessibilityDetail = "Lets agents click, type, and read the controls in app windows."
+    public static let fullDiskAccessDetail = "Lets commands read Mail, Messages, Safari, and projects on external volumes such as /Volumes."
+
+    public static let revokedScreenRecording = "Screen Recording is off. Agents can't take screenshots until you turn it back on."
+    public static let revokedAccessibility = "Accessibility is off. Agents can't click, type, or read windows until you turn it back on."
+
+    public static let adHocBanner = "This build is not signed with the release certificate. macOS may drop these permissions after an update, and you will need to allow them again."
+
+    public static let checkAgain = "Check Again"
+    public static let setupIncomplete = "Setup incomplete"
+}

@@ -1,28 +1,55 @@
 import AppKit
+import ApplicationServices
+import CoreGraphics
 import InstanceMCPCore
 
-/// First-run guidance for the three optional macOS TCC capabilities. This window
-/// can open settings and test; it cannot and must not grant a permission itself.
+/// Permission setup wizard, two pages. Page 1 needs Screen Recording and Accessibility, and Continue stays
+/// disabled until both are granted. Page 2 is optional Full Disk Access with a Skip link.
 ///
-/// No timer polls TCC and no screenshot is taken automatically. That is
-/// deliberate: Connect's old screenshot polling caused one macOS permission
-/// dialog per call. Here every re-test is either the user's explicit click or the
-/// single refresh when they return from System Settings.
+/// Allow calls the system request API for that permission, re-tests, and opens the matching System Settings
+/// pane when the permission is still not granted. The window never captures a screenshot and never polls on
+/// its own. It re-tests on app activation, on Check Again, and on the menu bar's revocation watch.
 @MainActor
-final class PermissionSetupWindowController: NSWindowController, NSWindowDelegate {
-    private var statusLabels: [PermissionKind: NSTextField] = [:]
-    private var actionButtons: [PermissionKind: NSButton] = [:]
-    private let summaryLabel = NSTextField(labelWithString: "")
-    private let finishButton = NSButton(title: "Not Now", target: nil, action: nil)
-    private let testButton = NSButton(title: "Test Again", target: nil, action: nil)
-    private let onFinish: () -> Void
-    private var activationObserver: NSObjectProtocol?
-    private(set) var snapshot = PermissionProbe.current()
+final class PermissionSetupWindowController: NSWindowController {
+    private final class RowControls {
+        let box: NSBox
+        let status: NSTextField
+        let button: NSButton
+        let checkAgain: NSButton
 
-    init(onFinish: @escaping () -> Void) {
-        self.onFinish = onFinish
+        init(box: NSBox, status: NSTextField, button: NSButton, checkAgain: NSButton) {
+            self.box = box
+            self.status = status
+            self.button = button
+            self.checkAgain = checkAgain
+        }
+    }
+
+    private let store: SetupWizardStore
+    private let adHoc: Bool
+    private let corePage = NSStackView()
+    private let optionalPage = NSStackView()
+    private let revocationLabel = NSTextField(wrappingLabelWithString: "")
+    private let adHocCoreLabel = NSTextField(wrappingLabelWithString: WizardCopy.adHocBanner)
+    private let adHocOptionalLabel = NSTextField(wrappingLabelWithString: WizardCopy.adHocBanner)
+    private let continueButton = NSButton(title: "Continue", target: nil, action: nil)
+    private let optionalFooterButton = NSButton(title: "Skip", target: nil, action: nil)
+    private var rows: [PermissionKind: RowControls] = [:]
+    private var rowStates: [PermissionKind: RowState] = [:]
+    /// Kinds whose Allow was clicked in this session.
+    private var requested: Set<PermissionKind> = []
+    /// Kinds whose app was returned to after Allow.
+    private var returned: Set<PermissionKind> = []
+    private var page: WizardPage = .core
+    private var activationObserver: NSObjectProtocol?
+    private(set) var snapshot = PermissionSnapshot(screenRecording: .denied, accessibility: .denied,
+                                                  fullDiskAccess: .unknown)
+
+    init(store: SetupWizardStore) {
+        self.store = store
+        self.adHoc = WizardModel.adHocBannerVisible(teamIdentifier: SigningIdentity.teamIdentifier())
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 650, height: 510),
+            contentRect: NSRect(x: 0, y: 0, width: 650, height: 620),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -31,14 +58,16 @@ final class PermissionSetupWindowController: NSWindowController, NSWindowDelegat
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
-        window.delegate = self
         buildUI(in: window)
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
+            MainActor.assumeIsolated {
+                self?.markReturned()
+                self?.refresh()
+            }
         }
         refresh()
     }
@@ -49,7 +78,11 @@ final class PermissionSetupWindowController: NSWindowController, NSWindowDelegat
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
     }
 
+    var isWindowVisible: Bool { window?.isVisible ?? false }
+
+    /// Opens on the core page while a core permission is missing, and on the optional page otherwise.
     func show() {
+        page = SetupGate.evaluate(snapshot: PermissionProbe.current()).blocksCore ? .core : .optional
         refresh()
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
@@ -57,76 +90,232 @@ final class PermissionSetupWindowController: NSWindowController, NSWindowDelegat
     }
 
     func refresh() {
-        snapshot = PermissionProbe.current()
-        for kind in PermissionKind.allCases {
-            let state = snapshot[kind]
-            let label = statusLabels[kind]
-            label?.stringValue = state.statusText
-            label?.textColor = state.statusColor
-            let button = actionButtons[kind]
-            button?.title = state.isGranted ? "Granted" : "Open Settings"
-            button?.isEnabled = !state.isGranted
-        }
-        summaryLabel.stringValue = snapshot.allGranted
-            ? "All three permissions are ready. Agents can see, control, and access protected files on this Mac."
-            : "\(snapshot.grantedCount) of 3 ready. Grant only the capabilities you want this Mac to lend."
-        summaryLabel.textColor = snapshot.allGranted ? .systemGreen : .secondaryLabelColor
-        finishButton.title = snapshot.allGranted ? "Done" : "Not Now"
+        refresh(with: PermissionProbe.current())
     }
 
-    func windowWillClose(_ notification: Notification) { onFinish() }
+    private func refresh(with current: PermissionSnapshot) {
+        snapshot = current
+
+        // Read the stored flag before this refresh updates it, so a grant made now is not shown as a revocation.
+        let previouslySeen = store.coreGrantedSeen
+        setLabel(revocationLabel, WizardModel.revocationBanner(previouslySeen: previouslySeen, snapshot: current))
+        let seen = CoreWatch.seenAfter(previouslySeen: previouslySeen, current: current)
+        if seen != previouslySeen { store.coreGrantedSeen = seen }
+        if current.allGranted, WizardModel.recordsCompletion(.completeObserved) {
+            store.hasShown = true
+        }
+
+        // A missing core permission always returns the window to page 1.
+        if SetupGate.evaluate(snapshot: current).blocksCore { page = .core }
+
+        for kind in PermissionKind.allCases { applyRow(kind, state: current[kind]) }
+        applyFooters(current)
+
+        corePage.isHidden = page != .core
+        optionalPage.isHidden = page != .optional
+    }
+
+    private func applyRow(_ kind: PermissionKind, state: PermissionState) {
+        guard let controls = rows[kind] else { return }
+        let row = WizardModel.rowState(state: state, requested: requested.contains(kind),
+                                       returnedSinceRequest: returned.contains(kind))
+        rowStates[kind] = row
+        controls.status.stringValue = row.statusText
+        controls.status.textColor = row.statusColor
+        controls.checkAgain.isHidden = !(row == .waiting || row == .stillOff)
+
+        switch WizardModel.rowButton(for: row) {
+        case .allow:
+            controls.button.title = "Allow"
+            controls.button.isEnabled = true
+        case .openSettings:
+            controls.button.title = "Open Settings"
+            controls.button.isEnabled = true
+        case .restart:
+            // TODO(Q3): unreachable until needsRestart is produced. Exit lets KeepAlive restart the agent.
+            controls.button.title = "Restart"
+            controls.button.isEnabled = true
+        case .allowed:
+            controls.button.title = "Allowed"
+            controls.button.isEnabled = false
+        }
+    }
+
+    private func applyFooters(_ current: PermissionSnapshot) {
+        if case let .continueToOptional(enabled) = WizardModel.footerAction(page: .core, snapshot: current) {
+            continueButton.isEnabled = enabled
+        }
+        switch WizardModel.footerAction(page: .optional, snapshot: current) {
+        case .done: optionalFooterButton.title = "Done"
+        case .skip, .continueToOptional: optionalFooterButton.title = "Skip"
+        }
+    }
+
+    private func markReturned() {
+        returned.formUnion(requested)
+    }
+
+    private func setLabel(_ label: NSTextField, _ text: String?) {
+        label.stringValue = text ?? ""
+        label.isHidden = text == nil
+    }
+
+    // MARK: actions
+
+    /// Allow: request, re-test, and open the pane only when the permission is still not granted.
+    private func allow(_ kind: PermissionKind) {
+        switch kind {
+        case .screenRecording:
+            _ = CGRequestScreenCaptureAccess()
+        case .accessibility:
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        case .fullDiskAccess:
+            break // macOS has no request API for Full Disk Access; the pane is the only path.
+        }
+        requested.insert(kind)
+        returned.remove(kind)
+        let current = PermissionProbe.current()
+        refresh(with: current)
+        if current[kind] != .granted {
+            NSWorkspace.shared.open(kind.settingsURL)
+        }
+    }
+
+    private func finish(_ event: WizardEvent) {
+        if WizardModel.recordsCompletion(event) {
+            store.hasShown = true
+        }
+        window?.close()
+    }
+
+    @objc private func rowButtonTapped(_ sender: NSButton) {
+        guard let kind = kind(for: sender) else { return }
+        switch rowStates[kind].map(WizardModel.rowButton(for:)) {
+        case .openSettings?:
+            NSWorkspace.shared.open(kind.settingsURL)
+        case .restart?:
+            exit(0) // TODO(Q3): KeepAlive restarts the agent. Confirm that restarting clears a stale denial on macOS 15 and 26.
+        case .allowed?:
+            break
+        case .allow?, nil:
+            allow(kind)
+        }
+    }
+
+    @objc private func checkAgainTapped(_ sender: NSButton) {
+        markReturned()
+        refresh()
+    }
+
+    @objc private func continueTapped() {
+        guard WizardModel.footerAction(page: .core, snapshot: snapshot) == .continueToOptional(enabled: true) else { return }
+        page = .optional
+        refresh()
+    }
+
+    @objc private func optionalFooterTapped() {
+        if case .done = WizardModel.footerAction(page: .optional, snapshot: snapshot) {
+            finish(.done)
+        } else {
+            finish(.skip)
+        }
+    }
+
+    private func kind(for control: NSButton) -> PermissionKind? {
+        PermissionKind.allCases.indices.contains(control.tag) ? PermissionKind.allCases[control.tag] : nil
+    }
 
     // MARK: UI
 
     private func buildUI(in window: NSWindow) {
         guard let content = window.contentView else { return }
-        let stack = NSStackView()
+        for pageStack in [corePage, optionalPage] {
+            pageStack.orientation = .vertical
+            pageStack.alignment = .leading
+            pageStack.spacing = 14
+            pageStack.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(pageStack)
+            NSLayoutConstraint.activate([
+                pageStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
+                pageStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+                pageStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+                pageStack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -22),
+            ])
+        }
+
+        // Page 1: core permissions.
+        revocationLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        revocationLabel.textColor = .systemRed
+        revocationLabel.maximumNumberOfLines = 0
+        adHocCoreLabel.font = .systemFont(ofSize: 12)
+        adHocCoreLabel.textColor = .systemOrange
+        adHocCoreLabel.maximumNumberOfLines = 0
+        adHocCoreLabel.isHidden = !adHoc
+        corePage.addArrangedSubview(revocationLabel)
+        corePage.addArrangedSubview(adHocCoreLabel)
+        corePage.addArrangedSubview(headline(WizardCopy.corePageTitle, subtitle: WizardCopy.corePageSubtitle))
+        corePage.addArrangedSubview(row(for: .screenRecording))
+        corePage.addArrangedSubview(row(for: .accessibility))
+        corePage.addArrangedSubview(note(WizardCopy.corePageNote))
+
+        continueButton.target = self
+        continueButton.action = #selector(continueTapped)
+        continueButton.keyEquivalent = "\r"
+        corePage.addArrangedSubview(footer(buttons: [continueButton], pager: "●  ○"))
+
+        // Page 2: optional Full Disk Access.
+        adHocOptionalLabel.font = .systemFont(ofSize: 12)
+        adHocOptionalLabel.textColor = .systemOrange
+        adHocOptionalLabel.maximumNumberOfLines = 0
+        adHocOptionalLabel.isHidden = !adHoc
+        optionalPage.addArrangedSubview(adHocOptionalLabel)
+        optionalPage.addArrangedSubview(headline(WizardCopy.optionalPageTitle, subtitle: WizardCopy.optionalPageSubtitle))
+        optionalPage.addArrangedSubview(row(for: .fullDiskAccess))
+        optionalPage.addArrangedSubview(note(WizardCopy.optionalPageNote))
+
+        optionalFooterButton.target = self
+        optionalFooterButton.action = #selector(optionalFooterTapped)
+        optionalPage.addArrangedSubview(footer(buttons: [optionalFooterButton], pager: "○  ●"))
+
+        optionalPage.isHidden = true
+    }
+
+    private func headline(_ title: String, subtitle: String) -> NSStackView {
+        let titleLabel = NSTextField(wrappingLabelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+        titleLabel.maximumNumberOfLines = 0
+        let subtitleLabel = NSTextField(wrappingLabelWithString: subtitle)
+        subtitleLabel.font = .systemFont(ofSize: 13)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.maximumNumberOfLines = 0
+        let stack = NSStackView(views: [titleLabel, subtitleLabel])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -22),
-        ])
+        stack.spacing = 6
+        return stack
+    }
 
-        let title = NSTextField(labelWithString: "Give agents only the capabilities you choose")
-        title.font = .systemFont(ofSize: 20, weight: .semibold)
-        stack.addArrangedSubview(title)
+    private func note(_ text: String) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.maximumNumberOfLines = 0
+        return label
+    }
 
-        let intro = wrappingLabel("OpenAB Computer runs in your logged-in desktop session. macOS requires you to approve each sensitive capability in System Settings. The app cannot approve them for you, and it never bypasses TCC.")
-        stack.addArrangedSubview(intro)
-
-        summaryLabel.font = .systemFont(ofSize: 12, weight: .medium)
-        summaryLabel.maximumNumberOfLines = 2
-        stack.addArrangedSubview(summaryLabel)
-
-        for kind in PermissionKind.allCases { stack.addArrangedSubview(row(for: kind)) }
-
-        let optional = wrappingLabel("Browser tools (navigate, read the DOM, click, type) work without these permissions. Choose Not Now if this Mac will only lend its browser.")
-        optional.font = .systemFont(ofSize: 11)
-        optional.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(optional)
-
-        let footer = NSStackView()
-        footer.orientation = .horizontal
-        footer.alignment = .centerY
-        footer.spacing = 10
+    private func footer(buttons: [NSButton], pager: String) -> NSStackView {
+        let pagerLabel = NSTextField(labelWithString: pager)
+        pagerLabel.font = .systemFont(ofSize: 11)
+        pagerLabel.textColor = .secondaryLabelColor
         let spacer = NSView()
-        footer.addArrangedSubview(spacer)
-        testButton.target = self
-        testButton.action = #selector(testAgain)
-        footer.addArrangedSubview(testButton)
-        finishButton.target = self
-        finishButton.action = #selector(finish)
-        finishButton.keyEquivalent = "\r"
-        footer.addArrangedSubview(finishButton)
-        footer.translatesAutoresizingMaskIntoConstraints = false
-        stack.addArrangedSubview(footer)
-        footer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let stack = NSStackView(views: [pagerLabel, spacer] + buttons)
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.widthAnchor.constraint(equalToConstant: 594).isActive = true
+        return stack
     }
 
     private func row(for kind: PermissionKind) -> NSView {
@@ -138,82 +327,63 @@ final class PermissionSetupWindowController: NSWindowController, NSWindowDelegat
         box.fillColor = .controlBackgroundColor
         box.contentViewMargins = NSSize(width: 14, height: 10)
         box.translatesAutoresizingMaskIntoConstraints = false
-        // NSBox does not derive an intrinsic height from an assigned contentView;
-        // without this an NSStackView collapses all three cards onto one row.
+        // NSBox does not derive an intrinsic height from an assigned contentView; without these an NSStackView
+        // collapses all rows onto one line.
         box.widthAnchor.constraint(equalToConstant: 594).isActive = true
-        box.heightAnchor.constraint(equalToConstant: 72).isActive = true
+        box.heightAnchor.constraint(equalToConstant: 84).isActive = true
 
         let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: kind.title)
+        icon.image = NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: kind.rowTitle)
         icon.symbolConfiguration = .init(pointSize: 20, weight: .regular)
         icon.contentTintColor = .secondaryLabelColor
         icon.widthAnchor.constraint(equalToConstant: 30).isActive = true
 
-        let title = NSTextField(labelWithString: kind.title)
+        let title = NSTextField(labelWithString: kind.rowTitle)
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        let detail = wrappingLabel(kind.detail)
+        let detail = NSTextField(wrappingLabelWithString: kind.detail)
         detail.font = .systemFont(ofSize: 11)
         detail.textColor = .secondaryLabelColor
+        detail.maximumNumberOfLines = 0
         let labels = NSStackView(views: [title, detail])
         labels.orientation = .vertical
         labels.alignment = .leading
         labels.spacing = 2
-
-        let status = NSTextField(labelWithString: "Testing…")
-        status.font = .systemFont(ofSize: 12, weight: .medium)
-        status.alignment = .right
-        status.widthAnchor.constraint(equalToConstant: 82).isActive = true
-        statusLabels[kind] = status
-
-        let action = NSButton(title: "Open Settings", target: self, action: #selector(openSettings(_:)))
-        action.tag = PermissionKind.allCases.firstIndex(of: kind) ?? 0
-        action.widthAnchor.constraint(equalToConstant: 105).isActive = true
-        actionButtons[kind] = action
-
-        let row = NSStackView(views: [icon, labels, status, action])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
         labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
         labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: 566).isActive = true
-        box.contentView = row
+
+        let status = NSTextField(wrappingLabelWithString: "")
+        status.font = .systemFont(ofSize: 12, weight: .medium)
+        status.maximumNumberOfLines = 2
+        status.alignment = .right
+        status.widthAnchor.constraint(equalToConstant: 150).isActive = true
+
+        let checkAgain = NSButton(title: WizardCopy.checkAgain, target: self, action: #selector(checkAgainTapped(_:)))
+        checkAgain.isBordered = false
+        checkAgain.font = .systemFont(ofSize: 11)
+        checkAgain.isHidden = true
+        checkAgain.tag = PermissionKind.allCases.firstIndex(of: kind) ?? 0
+
+        let button = NSButton(title: "Allow", target: self, action: #selector(rowButtonTapped(_:)))
+        button.tag = PermissionKind.allCases.firstIndex(of: kind) ?? 0
+        button.widthAnchor.constraint(equalToConstant: 110).isActive = true
+
+        let content = NSStackView(views: [icon, labels, status, checkAgain, button])
+        content.orientation = .horizontal
+        content.alignment = .centerY
+        content.spacing = 10
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.widthAnchor.constraint(equalToConstant: 566).isActive = true
+        box.contentView = content
+
+        rows[kind] = RowControls(box: box, status: status, button: button, checkAgain: checkAgain)
         return box
-    }
-
-    private func wrappingLabel(_ text: String) -> NSTextField {
-        let label = NSTextField(wrappingLabelWithString: text)
-        label.maximumNumberOfLines = 0
-        label.lineBreakMode = .byWordWrapping
-        return label
-    }
-
-    // MARK: actions
-
-    @objc private func testAgain() { refresh() }
-
-    @objc private func finish() {
-        onFinish()
-        // Avoid a duplicate callback from windowWillClose. `onFinish` only sets
-        // one boolean today, so duplicate would be harmless, but the ownership is
-        // clearer if the close delegate is temporarily detached.
-        window?.delegate = nil
-        close()
-        window?.delegate = self
-    }
-
-    @objc private func openSettings(_ sender: NSButton) {
-        guard PermissionKind.allCases.indices.contains(sender.tag) else { return }
-        let kind = PermissionKind.allCases[sender.tag]
-        NSWorkspace.shared.open(kind.settingsURL)
     }
 }
 
 private extension PermissionKind {
-    var title: String {
+    var rowTitle: String {
         switch self {
-        case .screenRecording: return "Screen & System Audio Recording"
+        case .screenRecording: return "Screen Recording"
         case .accessibility: return "Accessibility"
         case .fullDiskAccess: return "Full Disk Access"
         }
@@ -221,9 +391,9 @@ private extension PermissionKind {
 
     var detail: String {
         switch self {
-        case .screenRecording: return "Lets screenshot and OpenAB Connect's Screens pane see this desktop."
-        case .accessibility: return "Lets mouse and key control the pointer and keyboard, and ui_snapshot / ui_action read and operate app windows."
-        case .fullDiskAccess: return "Lets exec/osascript open protected Mail, Messages, Safari, and other user data."
+        case .screenRecording: return WizardCopy.screenRecordingDetail
+        case .accessibility: return WizardCopy.accessibilityDetail
+        case .fullDiskAccess: return WizardCopy.fullDiskAccessDetail
         }
     }
 
@@ -234,32 +404,26 @@ private extension PermissionKind {
         case .fullDiskAccess: return "internaldrive"
         }
     }
-
-    var settingsURL: URL {
-        let pane: String
-        switch self {
-        case .screenRecording: pane = "Privacy_ScreenCapture"
-        case .accessibility: pane = "Privacy_Accessibility"
-        case .fullDiskAccess: pane = "Privacy_AllFiles"
-        }
-        return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
-    }
 }
 
-private extension PermissionState {
+private extension RowState {
     var statusText: String {
         switch self {
-        case .granted: return "✓ Granted"
-        case .denied: return "✗ Not granted"
-        case .unknown: return "? Can't test"
+        case .notAllowed: return "Not allowed"
+        case .waiting: return "Waiting for System Settings"
+        case .stillOff: return "Still off. Turn it on in System Settings, then come back."
+        case .needsRestart: return "Turned on. Restart OpenAB Computer to finish."
+        case .allowed: return "✓ Allowed"
+        case .cantTest: return "Can't test. Check System Settings."
         }
     }
 
     var statusColor: NSColor {
         switch self {
-        case .granted: return .systemGreen
-        case .denied: return .systemRed
-        case .unknown: return .systemOrange
+        case .notAllowed, .stillOff: return .systemRed
+        case .waiting: return .secondaryLabelColor
+        case .needsRestart, .cantTest: return .systemOrange
+        case .allowed: return .systemGreen
         }
     }
 }

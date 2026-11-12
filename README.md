@@ -385,10 +385,12 @@ Tagged releases publish a universal, Developer-ID-signed and Apple-notarized ins
 3. Double-click the package. It auto-detects your Tailscale login/name, preserves or creates the
    bearer token, installs the LaunchAgent, detects the Playwright upstream, and configures
    `tailscale serve :8444`.
-4. On first launch, the **Set Up Mac Permissions** window opens once if anything is missing. Use
-   each row's Open Settings button, return to the wizard, then Test Again. Grant only what you need:
-   Full Disk Access, Screen & System Audio Recording, and/or Accessibility. Browser tools work
-   without any of them. Future releases keep the same Developer ID + bundle id, so grants survive.
+4. On first launch, the **Set Up Mac Permissions** window opens if a required permission is missing. It
+   has two pages. Page 1 asks for Screen Recording and Accessibility, and you cannot finish it until
+   both are on. Click Allow on each row, turn the switch on in System Settings, and return to the
+   wizard, which re-tests on its own. Use Check Again if the row does not update. Page 2 is optional
+   Full Disk Access, which has a Skip link. Browser tools work without any of them. Future releases
+   keep the same Developer ID + bundle id, so grants survive.
 5. The same wizard remains available from the menu bar as **Set Up Permissions…**; use the menu
    item to copy the MCP URL and bearer token into OpenAB Connect/Remote.
 
@@ -451,8 +453,11 @@ With `--menu-bar` (deploy.sh sets it) the agent shows a status item: the name "O
 Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window
 that auto-shows once on first launch when anything is missing), session / call counters with the
 last tool call, Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
-for each permission and re-tests when the app becomes active or the user clicks Test Again; it
-never polls screenshot or triggers permission prompts by itself. The icon fills briefly on each
+for each permission. Its Allow button calls the system permission request and re-tests, and it
+opens the pane only if the permission is still off. The window re-tests when the app becomes
+active or the user clicks Check Again. The menu bar checks Screen Recording and Accessibility every
+30 seconds without prompting, and it calls the system permission request only when you click Allow.
+It never captures a screenshot by itself. The icon fills briefly on each
 tool call.
 
 With `--menu-bar`, the menu also shows a switchboard section and the reverse-attach grant list. The
