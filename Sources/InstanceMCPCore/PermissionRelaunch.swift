@@ -86,6 +86,9 @@ public enum RelaunchAction: Equatable, Sendable {
     case none
     /// Show the "Restart OpenAB Computer" button on the Screen Recording row.
     case showRestart
+    /// The child says granted, this process still reports off, and the one relaunch for this grant was already
+    /// spent (the new process is stale again). The granted row gets the Restart button back.
+    case showRestartStale
 }
 
 public enum RelaunchPolicy {
@@ -94,35 +97,42 @@ public enum RelaunchPolicy {
     /// - child: the latest child check, nil before the first one.
     /// - processGranted: what the running process reports.
     /// - userConfirmedEnabled: the user pressed Check Again, which says the switch is on.
+    /// - autoRelaunchSpent: a relaunch for this grant already happened, and this process still reports off. A child
+    ///   that says granted then gets the Restart button instead of a bare check mark.
     public static func decide(child: ChildCheckResult?, processGranted: Bool,
-                              userConfirmedEnabled: Bool) -> RelaunchAction {
+                              userConfirmedEnabled: Bool, autoRelaunchSpent: Bool = false) -> RelaunchAction {
         if processGranted { return .none }
         switch child {
-        case nil, .granted?: return .none
+        case nil: return .none
+        case .granted?: return autoRelaunchSpent ? .showRestartStale : .none
         case .failed?: return .showRestart
         case .denied?: return userConfirmedEnabled ? .showRestart : .none
         }
     }
 
-    /// The row shows the restart state when the policy asks for the button. A granted row is never overridden.
+    /// The row shows the restart state when the policy asks for the button. A granted row is overridden only by the
+    /// stale-after-relaunch case, so it never shows a check mark with no way to apply the grant.
     public static func effectiveRow(base: RowState, action: RelaunchAction) -> RowState {
-        guard action == .showRestart, base != .allowed else { return base }
-        return .needsRestart
+        switch action {
+        case .none: return base
+        case .showRestart: return base == .allowed ? base : .needsRestart
+        case .showRestartStale: return .needsRestart
+        }
     }
 
     /// The Screen Recording state the wizard shows: granted when this process says so, or when a fresh child process
     /// does. The check mark never waits for a restart, so the flow still works if the user chose Later in the macOS
-    /// "Quit & Reopen" dialog.
+    /// "Quit & Reopen" dialog. The menu bar item uses the same function (`SharedPermissionStatus`).
     public static func shownScreenRecording(process: PermissionState, child: ChildCheckResult?) -> PermissionState {
-        process == .denied && child == .granted ? .granted : process
+        SharedPermissionStatus.screenRecording(process: process, child: child)
     }
 
     /// At Finish: relaunch once, silently, when the child confirmed the grant and this process still reports off, so
-    /// the backend that captures the screen starts after the grant. A process that already reports granted skips it,
-    /// and so does a grant whose automatic relaunch was already spent.
-    public static func shouldRelaunchOnFinish(child: ChildCheckResult?, processGranted: Bool,
-                                              autoRelaunchSpent: Bool) -> Bool {
-        !processGranted && child == .granted && !autoRelaunchSpent
+    /// the backend that captures the screen starts after the grant. A process that already reports granted skips it.
+    /// A spent earlier relaunch does not block it: the new process may still be stale, and `RelaunchCoordinator`
+    /// allows one request per app launch, so this cannot loop.
+    public static func shouldRelaunchOnFinish(child: ChildCheckResult?, processGranted: Bool) -> Bool {
+        !processGranted && child == .granted
     }
 }
 
@@ -140,12 +150,12 @@ public final class RelaunchCoordinator {
         self.terminate = terminate
     }
 
-    /// An automatic request is refused when one was already spent for this grant, so a grant that the new
-    /// instance still reports as off cannot loop. Either kind is refused once this process has requested one.
+    /// At most one request per app launch, of either kind. A new instance that still reports Screen Recording off
+    /// after a spent relaunch may therefore make one extra attempt, and no more. Every request starts from a user
+    /// action (Finish, the Restart button, the menu line), never from a launch or a timer, so there is no loop.
     @discardableResult
     public func requestRelaunch(page: WizardPage?, automatic: Bool) -> Bool {
         guard !requested else { return false }
-        if automatic && store.autoRelaunchSpent { return false }
         let wasSpent = store.autoRelaunchSpent
         store.recordRelaunch(page: page)
         requested = true

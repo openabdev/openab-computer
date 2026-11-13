@@ -232,6 +232,8 @@ public enum WizardCopy {
     public static let adHocBanner = "This build is not signed with the release certificate. macOS may drop these permissions after an update, and you will need to allow them again."
 
     public static let restartButton = "Restart OpenAB Computer"
+    /// The extra menu bar line shown while Screen Recording is granted but the running process still reports off.
+    public static let menuRestartLine = "Restart to finish setup"
     public static let restartExplanation = "macOS needs a restart for Screen Recording to take effect."
     public static let restartFailed = "Could not restart automatically. Quit OpenAB Computer from the menu bar, then open it again."
 

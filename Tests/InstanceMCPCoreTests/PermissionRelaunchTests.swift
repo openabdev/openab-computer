@@ -57,17 +57,19 @@ final class RelaunchCoordinatorTests: XCTestCase {
         XCTAssertFalse(first.requestRelaunch(page: nil, automatic: true), "same process, second request")
         XCTAssertFalse(first.requestRelaunch(page: .core, automatic: false), "same process, manual request")
 
-        // The new instance still reports off: no second automatic relaunch.
+        // The new instance still reports off (stale again): it gets one extra attempt, and no more.
         let second = make()
         XCTAssertNotNil(store.consumeRelaunch())
-        XCTAssertFalse(second.requestRelaunch(page: nil, automatic: true), "no relaunch loop")
-        XCTAssertEqual(launches, 1)
-        XCTAssertEqual(terminations, 1)
+        XCTAssertTrue(second.requestRelaunch(page: nil, automatic: true), "one extra attempt per launch")
+        XCTAssertFalse(second.requestRelaunch(page: nil, automatic: true), "no second extra attempt in the same launch")
+        XCTAssertFalse(second.requestRelaunch(page: .core, automatic: false), "the Restart button counts too")
+        XCTAssertEqual(launches, 2)
+        XCTAssertEqual(terminations, 2)
 
         // A process that sees the grant clears the spent flag, so a later revoke and re-grant can relaunch once.
         store.autoRelaunchSpent = false
         XCTAssertTrue(make().requestRelaunch(page: nil, automatic: true))
-        XCTAssertEqual(launches, 2)
+        XCTAssertEqual(launches, 3)
     }
 
     func testFailedLaunchLeavesTheAutomaticRelaunchUnspent() {
@@ -135,14 +137,51 @@ final class RelaunchPolicyTests: XCTestCase {
 
     func testRelaunchIsRequestedOnlyOnFinish() {
         // Child confirmed, process stale: Finish relaunches once.
-        XCTAssertTrue(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: false, autoRelaunchSpent: false))
+        XCTAssertTrue(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: false))
         // Finish with a process that already reports granted skips the relaunch.
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: true, autoRelaunchSpent: false))
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: nil, processGranted: true, autoRelaunchSpent: false))
-        // Nothing confirmed, or already spent: no relaunch.
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .denied, processGranted: false, autoRelaunchSpent: false))
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .failed, processGranted: false, autoRelaunchSpent: false))
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: false, autoRelaunchSpent: true))
+        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: true))
+        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: nil, processGranted: true))
+        // Nothing confirmed: no relaunch.
+        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .denied, processGranted: false))
+        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .failed, processGranted: false))
+    }
+
+    func testAfterASpentRelaunchAStaleProcessGetsTheRestartButtonBack() {
+        // Child says granted, the new process still reports off, the earlier relaunch was spent.
+        let action = RelaunchPolicy.decide(child: .granted, processGranted: false, userConfirmedEnabled: false,
+                                           autoRelaunchSpent: true)
+        XCTAssertEqual(action, .showRestartStale)
+        let row = RelaunchPolicy.effectiveRow(base: .allowed, action: action)
+        XCTAssertEqual(row, .needsRestart, "a check mark with no button is the bug")
+        XCTAssertEqual(WizardModel.rowButton(for: row), .restart)
+        // Not spent yet: the check mark stays and Finish does the relaunch.
+        XCTAssertEqual(RelaunchPolicy.decide(child: .granted, processGranted: false, userConfirmedEnabled: false,
+                                             autoRelaunchSpent: false), .none)
+        // A process that sees the grant never shows it.
+        XCTAssertEqual(RelaunchPolicy.decide(child: .granted, processGranted: true, userConfirmedEnabled: false,
+                                             autoRelaunchSpent: true), .none)
+    }
+
+    func testFinishAfterASpentRelaunchTriesOnceMoreAndDoesNotLoop() {
+        let (store, defaults, suite) = freshStore()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var launches = 0
+        func launch() -> RelaunchCoordinator {
+            RelaunchCoordinator(store: store, launch: { launches += 1; return true }, terminate: {})
+        }
+        // Launch 1: Finish relaunches (child granted, process stale).
+        let first = launch()
+        XCTAssertTrue(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: false))
+        XCTAssertTrue(first.requestRelaunch(page: nil, automatic: true))
+        XCTAssertTrue(store.autoRelaunchSpent)
+        // Launch 2 is stale again: Finish and the menu line may try once more...
+        let second = launch()
+        XCTAssertTrue(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: false))
+        XCTAssertTrue(second.requestRelaunch(page: nil, automatic: true))
+        // ...but not twice in that launch, however many times the user presses.
+        XCTAssertFalse(second.requestRelaunch(page: nil, automatic: true))
+        XCTAssertFalse(second.requestRelaunch(page: .core, automatic: false))
+        XCTAssertEqual(launches, 2)
     }
 
     func testDetectionNeverRequestsARelaunch() {

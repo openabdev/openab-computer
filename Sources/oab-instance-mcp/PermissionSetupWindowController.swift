@@ -48,6 +48,10 @@ final class PermissionSetupWindowController: NSWindowController {
     private var lastChildCheckAt: Date?
     private var childCheckInFlight = false
     private var lastChildResult: ChildCheckResult?
+    /// Shared with the menu bar item, so both read the same child result for Screen Recording.
+    private let probeCache = ScreenRecordingProbeCache.shared
+    /// The child result both surfaces use: this window's own latest check, else the shared cached one.
+    private var childForStatus: ChildCheckResult? { lastChildResult ?? probeCache.latest }
     /// The user pressed Check Again for Screen Recording, which says the switch is on.
     private var userConfirmedScreenRecording = false
     /// What this process itself reports, before the child result is applied.
@@ -96,7 +100,8 @@ final class PermissionSetupWindowController: NSWindowController {
     /// Opens on the core page while a core permission is missing, and on the optional page otherwise. After a
     /// relaunch, `resume` is the page the previous instance was on.
     func show(resume: WizardPage? = nil) {
-        page = resume ?? (SetupGate.evaluate(snapshot: PermissionProbe.current()).blocksCore ? .core : .optional)
+        let shown = SharedPermissionStatus.resolve(process: PermissionProbe.current(), child: childForStatus).shown
+        page = resume ?? (SetupGate.evaluate(snapshot: shown).blocksCore ? .core : .optional)
         refresh()
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
@@ -117,8 +122,7 @@ final class PermissionSetupWindowController: NSWindowController {
 
     private func refresh(with raw: PermissionSnapshot) {
         rawSnapshot = raw
-        var current = raw
-        current.screenRecording = RelaunchPolicy.shownScreenRecording(process: raw.screenRecording, child: lastChildResult)
+        let current = SharedPermissionStatus.resolve(process: raw, child: childForStatus).shown
         snapshot = current
         // A process that sees Screen Recording granted has consumed the grant: a later revoke may relaunch once more.
         if raw.screenRecording.isGranted, store.autoRelaunchSpent { store.autoRelaunchSpent = false }
@@ -143,13 +147,22 @@ final class PermissionSetupWindowController: NSWindowController {
         corePage.isHidden = page != .core
         optionalPage.isHidden = page != .optional
         updateChildCheckTimer()
+        // A stale process may be waiting on the shared probe (for example right after a relaunch): ask for a fresh
+        // one off the main thread, and redraw when it answers.
+        if !raw.screenRecording.isGranted {
+            probeCache.refreshIfStale { [weak self] value in
+                guard value != nil else { return }
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.refresh() } }
+            }
+        }
     }
 
     // MARK: Screen Recording child check
 
     private var relaunchAction: RelaunchAction {
-        RelaunchPolicy.decide(child: lastChildResult, processGranted: rawSnapshot.screenRecording.isGranted,
-                              userConfirmedEnabled: userConfirmedScreenRecording)
+        RelaunchPolicy.decide(child: childForStatus, processGranted: rawSnapshot.screenRecording.isGranted,
+                              userConfirmedEnabled: userConfirmedScreenRecording,
+                              autoRelaunchSpent: store.autoRelaunchSpent)
     }
 
     private var needsChildCheck: Bool {
@@ -201,6 +214,7 @@ final class PermissionSetupWindowController: NSWindowController {
         childCheckInFlight = false
         // A confirmed grant is not undone by one check that could not answer.
         if !(result == .failed && lastChildResult == .granted) { lastChildResult = result }
+        probeCache.record(result)
         refresh()
     }
 
@@ -277,6 +291,7 @@ final class PermissionSetupWindowController: NSWindowController {
             childCheckStartedAt = nil
             lastChildCheckAt = nil
             lastChildResult = nil
+            probeCache.invalidate()
             userConfirmedScreenRecording = false
         }
         let current = PermissionProbe.current()
@@ -295,8 +310,7 @@ final class PermissionSetupWindowController: NSWindowController {
             store.hasShown = true
         }
         let relaunchNow = RelaunchPolicy.shouldRelaunchOnFinish(
-            child: lastChildResult, processGranted: rawSnapshot.screenRecording.isGranted,
-            autoRelaunchSpent: store.autoRelaunchSpent)
+            child: childForStatus, processGranted: rawSnapshot.screenRecording.isGranted)
         window?.close()
         if relaunchNow, !relaunch.requestRelaunch(page: nil, automatic: true) {
             log("permission setup: relaunch after Finish not started")

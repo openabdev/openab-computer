@@ -39,6 +39,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Revocation watch: 30 seconds, preflight reads only (`CoreWatch`). Runs for the life of the menu bar process.
     private var coreWatchTimer: Timer?
     private let coreReader = SystemCorePermissionReader()
+    private let probeCache = ScreenRecordingProbeCache.shared
+    /// The menu rows that show permission state, replaced in place when the shared status changes under an open menu.
+    private var permissionItems: [NSMenuItem] = []
     private let attach: AttachManager?
     private let switchboardSupervisor: SwitchboardSupervisor?
     private lazy var switchboardMenu: SwitchboardMenu? = switchboardSupervisor.map { SwitchboardMenu(supervisor: $0) }
@@ -81,6 +84,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.delegate = self
         item.menu = menu
         startCoreWatch()
+        refreshPermissionStatus()
         NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -148,15 +152,31 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func tickCoreWatch() {
-        let current = CoreWatch.poll(coreReader)
+        // Same timer: refresh the shared Screen Recording status so a grant made while the app runs reaches the menu.
+        refreshPermissionStatus()
+        let current = SharedPermissionStatus.resolve(process: CoreWatch.poll(coreReader), child: probeCache.latest).shown
         store.coreGrantedSeen = CoreWatch.seenAfter(previouslySeen: store.coreGrantedSeen, current: current)
         let revoked = CoreWatch.revoked(previouslySeen: store.coreGrantedSeen, current: current)
         item.button?.toolTip = revoked
             ? "OpenAB Computer \(version) · \(WizardCopy.setupIncomplete)"
             : "OpenAB Computer \(version)"
         if permissionSetupWindow?.isWindowVisible == true {
-            permissionSetupWindow?.refreshCore(current)
+            permissionSetupWindow?.refreshCore(CoreWatch.poll(coreReader))
         }
+    }
+
+    /// Asks the shared cache for a fresh child probe (off the main thread, at most one per few seconds) when this
+    /// process reports Screen Recording off, then redraws the permission rows if the menu is built.
+    private func refreshPermissionStatus() {
+        guard !coreReader.screenRecordingGranted() else { renderPermissionItems(); return }
+        probeCache.refreshIfStale { [weak self] value in
+            guard value != nil else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.renderPermissionItems() } }
+        }
+    }
+
+    private func resolvedPermissions() -> ResolvedPermissions {
+        SharedPermissionStatus.resolve(process: PermissionProbe.current(), child: probeCache.latest)
     }
     private static func icon(active: Bool) -> NSImage? {
         let name = active ? "desktopcomputer.and.arrow.down.fill" : "desktopcomputer.and.arrow.down"
@@ -193,7 +213,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         menu.removeAllItems()
-        let permissions = PermissionProbe.current()
+        refreshPermissionStatus()
 
         menu.addItem(label("OpenAB Computer \(version)"))
         menu.addItem(label(url, action: #selector(copyURL), tip: "Click to copy"))
@@ -205,16 +225,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
-        menu.addItem(label("Set Up Permissions…", action: #selector(showPermissionSetup)))
-        if SetupGate.evaluate(snapshot: permissions).blocksCore {
-            menu.addItem(label(WizardCopy.setupIncomplete))
-        }
-        menu.addItem(permissionMenuItem("Screen Recording", kind: .screenRecording,
-                                        state: permissions.screenRecording, action: #selector(openScreenPane)))
-        menu.addItem(permissionMenuItem("Accessibility", kind: .accessibility,
-                                        state: permissions.accessibility, action: #selector(openAXPane)))
-        menu.addItem(permissionMenuItem("Full Disk Access", kind: .fullDiskAccess,
-                                        state: permissions.fullDiskAccess, action: #selector(openFDAPane)))
+        permissionItems = permissionMenuItems(resolvedPermissions())
+        for item in permissionItems { menu.addItem(item) }
         menu.addItem(.separator())
 
         addSwitchboardSection()
@@ -234,6 +246,41 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(label("Restart Agent", action: #selector(restart)))
         menu.addItem(label("Quit Agent (stops launchd job)", action: #selector(quit)))
         startRefreshTimer()
+    }
+
+    private func permissionMenuItems(_ resolved: ResolvedPermissions) -> [NSMenuItem] {
+        let permissions = resolved.shown
+        var items = [label("Set Up Permissions…", action: #selector(showPermissionSetup))]
+        if SetupGate.evaluate(snapshot: permissions).blocksCore {
+            items.append(label(WizardCopy.setupIncomplete))
+        }
+        items.append(permissionMenuItem("Screen Recording", kind: .screenRecording,
+                                        state: permissions.screenRecording, action: #selector(openScreenPane)))
+        items.append(permissionMenuItem("Accessibility", kind: .accessibility,
+                                        state: permissions.accessibility, action: #selector(openAXPane)))
+        items.append(permissionMenuItem("Full Disk Access", kind: .fullDiskAccess,
+                                        state: permissions.fullDiskAccess, action: #selector(openFDAPane)))
+        if let line = SharedPermissionStatus.menuRestartLine(resolved) {
+            items.append(label(line, action: #selector(restartToFinishSetup),
+                               tip: "macOS applies Screen Recording to a running app only after it restarts"))
+        }
+        return items
+    }
+
+    /// Replaces the permission rows in place. A no-op while the menu is not built.
+    private func renderPermissionItems() {
+        guard let first = permissionItems.first, menu.index(of: first) >= 0 else { return }
+        let index = menu.index(of: first)
+        for item in permissionItems { menu.removeItem(item) }
+        permissionItems = permissionMenuItems(resolvedPermissions())
+        for (offset, item) in permissionItems.enumerated() { menu.insertItem(item, at: index + offset) }
+    }
+
+    /// The same coordinator as the wizard's Finish: one request per app launch, new instance first, then quit.
+    @objc private func restartToFinishSetup() {
+        if !relaunchCoordinator.requestRelaunch(page: nil, automatic: true) {
+            log("menu: restart to finish setup not started")
+        }
     }
 
     func menuDidClose(_ menu: NSMenu) {
