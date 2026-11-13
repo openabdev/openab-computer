@@ -21,27 +21,6 @@ import InstanceMCPCore
 /// Restart button that relaunches and reopens the wizard on the same page (`RelaunchCoordinator`).
 @MainActor
 final class PermissionSetupWindowController: NSWindowController {
-    private final class RowControls {
-        let box: NSBox
-        let status: NSTextField
-        let button: NSButton
-        let checkAgain: NSButton
-        let detail: NSTextField
-        let statusWidth: NSLayoutConstraint
-        let buttonWidth: NSLayoutConstraint
-
-        init(box: NSBox, status: NSTextField, button: NSButton, checkAgain: NSButton, detail: NSTextField,
-             statusWidth: NSLayoutConstraint, buttonWidth: NSLayoutConstraint) {
-            self.box = box
-            self.status = status
-            self.button = button
-            self.checkAgain = checkAgain
-            self.detail = detail
-            self.statusWidth = statusWidth
-            self.buttonWidth = buttonWidth
-        }
-    }
-
     private let store: SetupWizardStore
     private let relaunch: RelaunchCoordinator
     private let adHoc: Bool
@@ -56,7 +35,7 @@ final class PermissionSetupWindowController: NSWindowController {
     private var paneNotice: String?
     private let continueButton = NSButton(title: "Continue", target: nil, action: nil)
     private let optionalFooterButton = NSButton(title: "Skip", target: nil, action: nil)
-    private var rows: [PermissionKind: RowControls] = [:]
+    private var rows: [PermissionKind: PermissionRowView] = [:]
     private var rowStates: [PermissionKind: RowState] = [:]
     /// Kinds whose Allow was clicked in this session.
     private var requested: Set<PermissionKind> = []
@@ -85,12 +64,7 @@ final class PermissionSetupWindowController: NSWindowController {
             log("permission setup: could not read the code signature (OSStatus \(status)); ad-hoc banner hidden")
         }
         self.adHoc = WizardModel.adHocBannerVisible(signing: signing)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 650, height: 620),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
+        let window = WizardWindowFactory.makeWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 620))
         window.title = "Set Up Mac Permissions"
         window.isReleasedWhenClosed = false
         window.center()
@@ -243,33 +217,25 @@ final class PermissionSetupWindowController: NSWindowController {
     }
 
     private func applyRow(_ kind: PermissionKind, state: PermissionState) {
-        guard let controls = rows[kind] else { return }
+        guard let rowView = rows[kind] else { return }
         var row = WizardModel.rowState(state: state, requested: requested.contains(kind),
                                        returnedSinceRequest: returned.contains(kind))
         if kind == .screenRecording { row = RelaunchPolicy.effectiveRow(base: row, action: relaunchAction) }
         rowStates[kind] = row
         let restart = row == .needsRestart
-        controls.detail.stringValue = restart ? WizardCopy.restartExplanation : kind.detail
-        controls.buttonWidth.constant = restart ? 190 : 110
-        controls.statusWidth.constant = restart ? 110 : 150
-        controls.status.stringValue = row.statusText
-        controls.status.textColor = row.statusColor
-        controls.checkAgain.isHidden = !(row == .waiting || row == .stillOff)
-
+        let title: String
         switch WizardModel.rowButton(for: row) {
-        case .allow:
-            controls.button.title = "Allow"
-            controls.button.isEnabled = true
-        case .openSettings:
-            controls.button.title = "Open Settings"
-            controls.button.isEnabled = true
-        case .restart:
-            controls.button.title = WizardCopy.restartButton
-            controls.button.isEnabled = true
-        case .allowed:
-            controls.button.title = "Allowed"
-            controls.button.isEnabled = false
+        case .allow: title = "Allow"
+        case .openSettings: title = "Open Settings"
+        case .restart: title = WizardCopy.restartButton
+        case .allowed: title = "Allowed"
         }
+        // Granted rows show only the green "✓ Allowed" label; the disabled button is hidden.
+        rowView.update(detail: restart ? WizardCopy.restartExplanation : kind.detail,
+                       status: row.statusText, statusColor: row.statusColor,
+                       showCheckAgain: row == .waiting || row == .stillOff,
+                       buttonTitle: title, buttonVisible: row != .allowed, buttonEnabled: row != .allowed,
+                       wideButton: restart)
     }
 
     private func applyFooters(_ current: PermissionSnapshot) {
@@ -482,67 +448,13 @@ final class PermissionSetupWindowController: NSWindowController {
     }
 
     private func row(for kind: PermissionKind) -> NSView {
-        let box = NSBox()
-        box.boxType = .custom
-        box.cornerRadius = 8
-        box.borderColor = .separatorColor
-        box.borderWidth = 1
-        box.fillColor = .controlBackgroundColor
-        box.contentViewMargins = NSSize(width: 14, height: 10)
-        box.translatesAutoresizingMaskIntoConstraints = false
-        // NSBox does not derive an intrinsic height from an assigned contentView; without these an NSStackView
-        // collapses all rows onto one line.
-        box.widthAnchor.constraint(equalToConstant: 594).isActive = true
-        box.heightAnchor.constraint(equalToConstant: 84).isActive = true
-
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: kind.rowTitle)
-        icon.symbolConfiguration = .init(pointSize: 20, weight: .regular)
-        icon.contentTintColor = .secondaryLabelColor
-        icon.widthAnchor.constraint(equalToConstant: 30).isActive = true
-
-        let title = NSTextField(labelWithString: kind.rowTitle)
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        let detail = NSTextField(wrappingLabelWithString: kind.detail)
-        detail.font = .systemFont(ofSize: 11)
-        detail.textColor = .secondaryLabelColor
-        detail.maximumNumberOfLines = 0
-        let labels = NSStackView(views: [title, detail])
-        labels.orientation = .vertical
-        labels.alignment = .leading
-        labels.spacing = 2
-        labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let status = NSTextField(wrappingLabelWithString: "")
-        status.font = .systemFont(ofSize: 12, weight: .medium)
-        status.maximumNumberOfLines = 2
-        status.alignment = .right
-        let statusWidth = status.widthAnchor.constraint(equalToConstant: 150)
-        statusWidth.isActive = true
-
-        let checkAgain = NSButton(title: WizardCopy.checkAgain, target: self, action: #selector(checkAgainTapped(_:)))
-        checkAgain.isBordered = false
-        checkAgain.font = .systemFont(ofSize: 11)
-        checkAgain.isHidden = true
-        checkAgain.tag = PermissionKind.allCases.firstIndex(of: kind) ?? 0
-
-        let button = NSButton(title: "Allow", target: self, action: #selector(rowButtonTapped(_:)))
-        button.tag = PermissionKind.allCases.firstIndex(of: kind) ?? 0
-        let buttonWidth = button.widthAnchor.constraint(equalToConstant: 110)
-        buttonWidth.isActive = true
-
-        let content = NSStackView(views: [icon, labels, status, checkAgain, button])
-        content.orientation = .horizontal
-        content.alignment = .centerY
-        content.spacing = 10
-        content.translatesAutoresizingMaskIntoConstraints = false
-        content.widthAnchor.constraint(equalToConstant: 566).isActive = true
-        box.contentView = content
-
-        rows[kind] = RowControls(box: box, status: status, button: button, checkAgain: checkAgain, detail: detail,
-                                 statusWidth: statusWidth, buttonWidth: buttonWidth)
-        return box
+        let tag = PermissionKind.allCases.firstIndex(of: kind) ?? 0
+        let view = PermissionRowView(title: kind.rowTitle, detail: kind.detail, symbolName: kind.symbolName, tag: tag,
+                                     target: self, actionSelector: #selector(rowButtonTapped(_:)),
+                                     checkAgainSelector: #selector(checkAgainTapped(_:)),
+                                     checkAgainTitle: WizardCopy.checkAgain)
+        rows[kind] = view
+        return view
     }
 }
 
