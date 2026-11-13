@@ -122,6 +122,88 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertFalse(plan.logLines.joined(separator: "\n").contains(old), "the token is not logged")
     }
 
+    /// The staged copy must be private from the moment it exists, even when the legacy file is 0644.
+    func testStagedCopyOfALooseLegacyTokenIsNeverGroupOrOtherAccessible() throws {
+        let old = String(repeating: "c", count: 64)
+        let legacy = FirstRunSetup.legacyTokenPath(home: home)
+        try writeToken(old, at: legacy, mode: 0o644)
+        let path = FirstRunSetup.tokenPath(home: home)
+
+        var stagedMode = -1
+        var lockMode = -1
+        var observed = false
+        FirstRunSetup.stagedTokenObserver = { staged in
+            observed = true
+            stagedMode = (try? self.mode(of: staged)) ?? -1
+            lockMode = (try? self.mode(of: (staged as NSString).deletingLastPathComponent)) ?? -1
+        }
+        defer { FirstRunSetup.stagedTokenObserver = nil }
+
+        let made = try FirstRunSetup.loadOrCreateToken(at: path, legacyPaths: [legacy])
+        XCTAssertEqual(made.copiedFrom, legacy)
+        XCTAssertTrue(observed, "the copy was staged in the lock directory")
+        XCTAssertEqual(stagedMode & 0o077, 0, "the staged copy has no group or other bits")
+        XCTAssertEqual(stagedMode, 0o600)
+        XCTAssertEqual(lockMode, 0o700, "the lock directory is private")
+        XCTAssertEqual(try mode(of: path), 0o600)
+        XCTAssertEqual(try mode(of: (path as NSString).deletingLastPathComponent), 0o700)
+    }
+
+    /// Deleting the new token rotates it: the migration ran once, when the directory was created.
+    func testDeletingTheNewTokenGeneratesAFreshOneAndNeverCopiesTheOldOneBack() throws {
+        let old = String(repeating: "a", count: 64)
+        let legacy = FirstRunSetup.legacyTokenPath(home: home)
+        try writeToken(old, at: legacy, mode: 0o600)
+        let first = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertEqual(try String(contentsOfFile: first.tokenPath, encoding: .utf8), old + "\n")
+
+        try FileManager.default.removeItem(atPath: first.tokenPath)
+        let second = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertTrue(second.tokenCreated, "a fresh token is generated")
+        let fresh = try String(contentsOfFile: second.tokenPath, encoding: .utf8)
+        XCTAssertNotEqual(fresh, old + "\n", "the legacy token is not copied back")
+        XCTAssertEqual(fresh.count, 65)
+        XCTAssertEqual(try String(contentsOfFile: legacy, encoding: .utf8), old + "\n", "the legacy file is untouched")
+        XCTAssertTrue(second.logLines.contains { $0.contains("created") })
+    }
+
+    /// An existing token directory means the migration is over, even when it holds no token.
+    func testExistingEmptyTokenDirectoryMeansNoMigration() throws {
+        let legacy = FirstRunSetup.legacyTokenPath(home: home)
+        try writeToken(String(repeating: "a", count: 64), at: legacy, mode: 0o600)
+        let path = FirstRunSetup.tokenPath(home: home)
+        try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                withIntermediateDirectories: true)
+        let made = try FirstRunSetup.loadOrCreateToken(at: path, legacyPaths: [legacy])
+        XCTAssertTrue(made.created)
+        XCTAssertNil(made.copiedFrom)
+    }
+
+    /// The 0.11.0 token wins over the pre-0.4.0 one, and a whitespace-only file counts as absent.
+    func testLegacySourceOrderIsTheElevenTokenThenThePreFourToken() throws {
+        let eleven = String(repeating: "b", count: 64)
+        let ancient = String(repeating: "d", count: 64)
+        let sources = FirstRunSetup.legacyTokenPaths(home: home)
+        XCTAssertEqual(sources, [FirstRunSetup.legacyTokenPath(home: home), FirstRunSetup.oldestTokenPath(home: home)])
+        try writeToken(eleven, at: sources[0], mode: 0o600)
+        try writeToken(ancient, at: sources[1], mode: 0o600)
+        let both = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertEqual(try String(contentsOfFile: both.tokenPath, encoding: .utf8), eleven + "\n")
+        XCTAssertEqual(try String(contentsOfFile: sources[1], encoding: .utf8), ancient + "\n", "the oldest file is untouched")
+
+        // Only the pre-0.4.0 file usable (the 0.11.0 one is whitespace only): it is copied.
+        try FileManager.default.removeItem(atPath: (both.tokenPath as NSString).deletingLastPathComponent)
+        try "  \n".write(toFile: sources[0], atomically: false, encoding: .utf8)
+        let onlyOldest = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertEqual(try String(contentsOfFile: onlyOldest.tokenPath, encoding: .utf8), ancient + "\n")
+
+        // Both whitespace only: a fresh token.
+        try FileManager.default.removeItem(atPath: (both.tokenPath as NSString).deletingLastPathComponent)
+        try "\n".write(toFile: sources[1], atomically: false, encoding: .utf8)
+        let neither = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        XCTAssertTrue(neither.tokenCreated)
+    }
+
     func testExistingNewTokenIsNotReplacedByTheOldOne() throws {
         let path = FirstRunSetup.tokenPath(home: home)
         let current = String(repeating: "b", count: 64)
@@ -194,7 +276,7 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertEqual(mkdir(lock, 0o777), 0, "the installer's lock is taken first")
 
         let outcome = NSLock()
-        var result: (token: String, created: Bool, copied: Bool)?
+        var result: (token: String, created: Bool, copiedFrom: String?)?
         let finished = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             let made = try? FirstRunSetup.loadOrCreateToken(at: path)
@@ -312,7 +394,9 @@ final class FirstRunSetupTests: XCTestCase {
             usleep(100_000)
         }
         XCTAssertEqual(anonymous, 401, "the flag launch answers /mcp and refuses a request without a bearer token")
-        XCTAssertNotEqual(status(of: url, bearer: token), 401, "the token from --token-file is accepted")
+        let accepted = status(of: url, bearer: token)
+        XCTAssertNotEqual(accepted, 0, "the flag launch answers a request that carries the token")
+        XCTAssertEqual(accepted, 405, "the token from --token-file is accepted: GET /mcp answers 405, not 401")
     }
 
     // MARK: no-flag launch (process level, no arguments)

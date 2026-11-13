@@ -132,7 +132,7 @@ permissions wizard ([details](#download-and-install)). Then point a caller at it
 
 ```sh
 kiro-cli mcp add --name mac-mcp --url https://<host>.<tailnet>.ts.net:8444/mcp \
-  --header "Authorization: Bearer $(ssh <host> cat ~/.config/oab-instance-mcp/token)" \
+  --header "Authorization: Bearer $(ssh <host> cat ~/.config/oab-computer/token)" \
   --scope global --timeout 30000
 ```
 
@@ -229,12 +229,12 @@ Configured checks are **AND**-combined: a request must pass every check that is 
 - `--token <s>` / `--token-file <p>` — additionally require `Authorization: Bearer`, constant-time
   compared. The token after the `Bearer` scheme (case-insensitive) must match byte for byte;
   whitespace around the whole header value is stripped by the HTTP parser, nothing inside it is.
-  **`deploy.sh` now generates one at `~/.config/oab-instance-mcp/token` (mode 600) and passes
+  **`deploy.sh` now generates one at `~/.config/oab-computer/token` on macOS (mode 600; Linux keeps `~/.config/oab-instance-mcp/token`) and passes
   `--token-file`**, so the deployed agent requires *both* an allow-listed Tailscale login *and* the
   bearer token. This is defence-in-depth: a leaked tailnet auth key that enrols a node as
   your Tailscale login passes the login check but still gets `401` without the token (verified
   2026-09-23: no token → 401, correct token → 200, wrong token → 401). The token is stable across
-  re-deploys; rotate by deleting the file and re-deploying. The menu bar shows a masked form and
+  re-deploys; rotate by deleting `~/.config/oab-computer/token` (macOS) and re-deploying. The first 0.12 run copies a 0.11 token from `~/.config/oab-instance-mcp/token` once, when `~/.config/oab-computer` is created; after that the old file is never read again, so a deleted token is not restored from it. (The switchboard files and grants still live under `~/.config/oab-instance-mcp` for now.) The menu bar shows a masked form and
   copies the full token (see below); it is never written to `agent.log`.
 - `--insecure-local` — allow bare loopback requests with no Tailscale headers. Debugging only.
 - `/healthz` is unauthenticated and says only `ok`.
@@ -310,7 +310,7 @@ runs.
 
 ```sh
 openab-sb gen-secret                    # on the switchboard: verifier → [vm].secret_sha256
-oab-instance-mcp --token-file ~/.config/oab-instance-mcp/token \
+oab-instance-mcp --token-file ~/.config/oab-computer/token \
   --switchboard wss://<switchboard>.<tailnet>.ts.net/vm/attach \
   --switchboard-secret-file ~/.config/oab-instance-mcp/switchboard.secret \
   --switchboard-profile observe         # observe (default) | owner

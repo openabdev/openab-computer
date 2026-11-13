@@ -14,7 +14,9 @@ public enum FirstRunSetup {
     }
 
     /// Where the app and the 0.12 installer keep the bearer token: ~/.config/oab-computer/token (mode 600). On the
-    /// first run the app copies an existing token from `legacyTokenPath` here, so the token does not rotate.
+    /// first run (the directory does not exist yet) the app copies an existing token from `legacyTokenPaths`
+    /// here, so the token does not rotate. After that the directory exists and the migration never runs again:
+    /// deleting this file rotates the token.
     public static func tokenPath(home: String) -> String {
         home + "/.config/oab-computer/token"
     }
@@ -23,6 +25,17 @@ public enum FirstRunSetup {
     /// installed agent keeps working until its owner upgrades.
     public static func legacyTokenPath(home: String) -> String {
         home + "/.config/oab-instance-mcp/token"
+    }
+
+    /// The pre-0.4.0 token path. It is the last source the migration tries, after `legacyTokenPath`; the
+    /// installer uses the same order.
+    public static func oldestTokenPath(home: String) -> String {
+        home + "/.config/oab-mac-agent/token"
+    }
+
+    /// The sources the one-shot migration reads, newest first. The first one that holds a usable token wins.
+    public static func legacyTokenPaths(home: String) -> [String] {
+        [legacyTokenPath(home: home), oldestTokenPath(home: home)]
     }
 
     /// `~/.config/oab-instance-mcp`: the directory the installer and the installed agent read. A no-flag launch
@@ -105,9 +118,8 @@ public enum FirstRunSetup {
     /// login. A missing login is not an error: the launch continues with the token alone and says so.
     public static func prepare(home: String, detectLogin: () -> String? = { FirstRunSetup.detectTailscaleLogin() }) throws -> Plan {
         let path = tokenPath(home: home)
-        let legacy = legacyTokenPath(home: home)
-        let made = try loadOrCreateToken(at: path, legacyPath: legacy)
-        let state = made.copied ? "copied from \(legacy)" : (made.created ? "created" : "reused")
+        let made = try loadOrCreateToken(at: path, legacyPaths: legacyTokenPaths(home: home))
+        let state = made.copiedFrom.map { "copied from \($0)" } ?? (made.created ? "created" : "reused")
         var lines = ["no-flag launch: token file \(path) \(state) (mode 600; token not logged)"]
         if let login = detectLogin() {
             lines.append("no-flag launch: Tailscale login detected, applied as --allow-login")
@@ -117,22 +129,39 @@ public enum FirstRunSetup {
         return Plan(tokenPath: path, tokenCreated: made.created, allowLogin: nil, notice: tokenOnlyNotice, logLines: lines)
     }
 
-    /// Returns the token at `path`. When the file is missing or empty, copies the token at `legacyPath` if that
-    /// holds one, and otherwise creates a new token. The created format matches scripts/install-prebuilt.sh:
-    /// `openssl rand -hex 32` (64 hex characters and a newline), mode 600. Nothing here prints the token.
-    /// - Returns: the token; `created` when this call generated it; `copied` when it came from `legacyPath`.
-    public static func loadOrCreateToken(at path: String, legacyPath: String? = nil)
-        throws -> (token: String, created: Bool, copied: Bool) {
-        let dir = (path as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    /// Test seam: called with the staged file's path just before it is renamed into place. Nil in production.
+    static var stagedTokenObserver: ((String) -> Void)?
 
-        // The same lock as scripts/install-prebuilt.sh: an atomic mkdir on "<token>.lock", tried 50 times 0.1 s
-        // apart, removed on exit. Sharing this lock (not a private one) means a first no-flag launch and an
-        // installer run cannot both see a missing token and rotate it under each other.
+    /// Returns the token at `path`. When the file is missing or empty and this call created the token's directory
+    /// (the one-shot migration), copies the first usable token from `legacyPaths`; otherwise creates a new token.
+    /// Once the directory exists the legacy files are never read again, so deleting the token rotates it. The
+    /// created format matches scripts/install-prebuilt.sh: `openssl rand -hex 32` (64 hex characters and a
+    /// newline), mode 600. Nothing here prints the token.
+    ///
+    /// The legacy files are read without their own locks: a 0.11.0 installer run must not overlap the first
+    /// 0.12 launch. If two first runs race, the one that creates the directory is the one that migrates; the
+    /// other may generate a fresh token, which is the safe outcome (a new token, never a leaked one).
+    /// - Returns: the token; `created` when this call generated it; `copiedFrom` when it came from a legacy file.
+    public static func loadOrCreateToken(at path: String, legacyPaths: [String] = [])
+        throws -> (token: String, created: Bool, copiedFrom: String?) {
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: (dir as NSString).deletingLastPathComponent,
+                                                withIntermediateDirectories: true)
+        // mkdir is the atomic "first run" test: only the call that creates the directory may migrate.
+        var mayMigrate = false
+        if mkdir(dir, 0o700) == 0 {
+            mayMigrate = true
+        } else if errno != EEXIST {
+            throw FirstRunError.io("cannot create \(dir): errno \(errno)")
+        }
+
+        // The same lock as scripts/install-prebuilt.sh: an atomic mkdir on "<token>.lock" (mode 700), tried 50
+        // times 0.1 s apart, removed on exit. Sharing this lock (not a private one) means a first no-flag launch
+        // and an installer run cannot both see a missing token and rotate it under each other.
         let lock = lockPath(for: path)
         var acquired = false
         for _ in 0..<50 {
-            if mkdir(lock, 0o777) == 0 { acquired = true; break }
+            if mkdir(lock, 0o700) == 0 { acquired = true; break }
             usleep(100_000)
         }
         guard acquired else { throw FirstRunError.io("timed out waiting for the token lock at \(lock)") }
@@ -141,45 +170,48 @@ public enum FirstRunSetup {
         // Re-read under the lock: a launch that lost the race reads the winner's token and never replaces it.
         if let existing = try readToken(at: path) {
             try setMode600(path)
-            return (existing, false, false)
+            return (existing, false, nil)
         }
 
-        // Copy the 0.11.0 token. `copyItem` is a copy, not a move: the old file stays for the installed agent.
-        if let legacy = legacyPath, let inherited = try readToken(at: legacy) {
-            let tmp = lock + "/token"
-            do {
-                try FileManager.default.copyItem(atPath: legacy, toPath: tmp)
-            } catch {
-                throw FirstRunError.io("cannot copy the token from \(legacy) to \(path): \(error.localizedDescription)")
-            }
-            try setMode600(tmp)
-            guard rename(tmp, path) == 0 else {
-                throw FirstRunError.io("cannot move the copied token into place at \(path): errno \(errno)")
-            }
-            try setMode600(path)
-            return (inherited, false, true)
-        }
-
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            throw FirstRunError.randomUnavailable
-        }
-        let token = bytes.map { String(format: "%02x", $0) }.joined()
-
-        // Write the temp file inside the lock directory, at mode 600, then rename it over the target, as the
-        // installer does with "$LOCK/token". A reader never sees a partial token, and other users never read it.
+        // The staged file lives in the lock directory and is created at mode 600 with O_EXCL, for a copy as for a
+        // generated token, so no byte of a token is ever readable by another user.
         let tmp = lock + "/token"
+        var copiedFrom: String?
+        var token = ""
+        if mayMigrate {
+            for legacy in legacyPaths {
+                if let inherited = try readToken(at: legacy) {
+                    token = inherited
+                    copiedFrom = legacy
+                    break
+                }
+            }
+        }
+        // Copy the legacy token byte for byte (the old file stays for the installed agent); generate otherwise.
+        var content: [UInt8]
+        if let legacy = copiedFrom {
+            do { content = [UInt8](try Data(contentsOf: URL(fileURLWithPath: legacy))) } catch {
+                throw FirstRunError.io("cannot read the token from \(legacy): \(error.localizedDescription)")
+            }
+        } else {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+                throw FirstRunError.randomUnavailable
+            }
+            token = bytes.map { String(format: "%02x", $0) }.joined()
+            content = Array((token + "\n").utf8)
+        }
         let fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard fd >= 0 else { throw FirstRunError.io("cannot create the temp token in \(lock): errno \(errno)") }
-        let line = Array((token + "\n").utf8)
-        let written = line.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
+        let written = content.withUnsafeBufferPointer { write(fd, $0.baseAddress, $0.count) }
         close(fd)
-        guard written == line.count else { throw FirstRunError.io("short write to \(tmp)") }
+        guard written == content.count else { throw FirstRunError.io("short write to \(tmp)") }
+        stagedTokenObserver?(tmp)
         guard rename(tmp, path) == 0 else {
             throw FirstRunError.io("cannot move the token into place at \(path): errno \(errno)")
         }
         try setMode600(path)
-        return (token, true, false)
+        return (token, copiedFrom == nil, copiedFrom)
     }
 
     /// The lock directory the installer uses for the token file: "$TOKEN_FILE.lock".
