@@ -236,4 +236,14 @@ final class PortReleaseWaitTests: XCTestCase {
         XCTAssertFalse(FirstRunSetup.waitForPortFree(host: "127.0.0.1", port: port, timeout: 0.3),
                        "a genuinely separate copy keeps the port")
     }
+
+    func testChildCheckTimerRunsAgainWhenWindowReopens() {
+        XCTAssertTrue(ChildCheckSchedule.shouldRun(requested: true, granted: false, windowVisible: true))
+        // Closed: the timer stops.
+        XCTAssertFalse(ChildCheckSchedule.shouldRun(requested: true, granted: false, windowVisible: false))
+        // Reopened with the request still pending: it runs again.
+        XCTAssertTrue(ChildCheckSchedule.shouldRun(requested: true, granted: false, windowVisible: true))
+        XCTAssertFalse(ChildCheckSchedule.shouldRun(requested: true, granted: true, windowVisible: true))
+        XCTAssertFalse(ChildCheckSchedule.shouldRun(requested: false, granted: false, windowVisible: true))
+    }
 }

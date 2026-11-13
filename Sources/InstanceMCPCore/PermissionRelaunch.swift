@@ -69,6 +69,12 @@ public enum ChildCheckSchedule {
     public static let backoffAfter: TimeInterval = 120
     public static let hardCap: TimeInterval = 600
 
+    /// The timer runs only while Screen Recording was requested, is not yet granted, and the window is visible.
+    /// The window must call this again after it becomes visible, because a close invalidates the timer.
+    public static func shouldRun(requested: Bool, granted: Bool, windowVisible: Bool) -> Bool {
+        requested && !granted && windowVisible
+    }
+
     public static func interval(elapsed: TimeInterval) -> TimeInterval? {
         if elapsed < backoffAfter { return fastInterval }
         if elapsed < hardCap { return slowInterval }

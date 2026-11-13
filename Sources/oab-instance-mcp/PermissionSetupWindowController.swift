@@ -122,6 +122,8 @@ final class PermissionSetupWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
         window?.makeKeyAndOrderFront(nil)
+        // The window is visible only now; a close earlier invalidated the timer, so start it again.
+        updateChildCheckTimer()
     }
 
     func refresh() {
@@ -170,7 +172,10 @@ final class PermissionSetupWindowController: NSWindowController {
     }
 
     private var needsChildCheck: Bool {
-        requested.contains(.screenRecording) && !snapshot.screenRecording.isGranted && isWindowVisible
+        ChildCheckSchedule.shouldRun(
+            requested: requested.contains(.screenRecording),
+            granted: snapshot.screenRecording.isGranted,
+            windowVisible: isWindowVisible)
     }
 
     private func updateChildCheckTimer() {
