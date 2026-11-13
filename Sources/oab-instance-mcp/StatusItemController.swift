@@ -204,6 +204,32 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if permissionSetupWindow?.isWindowVisible == true {
             permissionSetupWindow?.refreshCore(CoreWatch.poll(coreReader))
         }
+        recheckWithoutLogin()
+    }
+
+    /// While this process has no Tailscale login, the token alone guards it. Every tick re-runs the no-login
+    /// withdrawal off the main thread, so a mapping that appears after launch (or a daemon that starts late) is
+    /// withdrawn. If it cannot be withdrawn or checked while the daemon runs, show the alert and quit.
+    private var recheckInFlight = false
+    private func recheckWithoutLogin() {
+        guard let exposure, !exposure.loginDetected, !recheckInFlight else { return }
+        recheckInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let outcome = exposure.withdrawWithoutLogin()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.recheckInFlight = false
+                    guard case .failed(let why)? = outcome else { return }
+                    let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Remove the mapping with: tailscale serve --https=8444 off"
+                    fputs("tailnet access: quitting: \(reason)\n", stderr)
+                    let alert = NSAlert()
+                    alert.messageText = "OpenAB Computer is quitting"
+                    alert.informativeText = reason
+                    alert.runModal()
+                    exit(3)
+                }
+            }
+        }
     }
 
     /// Asks the shared cache for a fresh child probe (off the main thread, at most one per few seconds) when this

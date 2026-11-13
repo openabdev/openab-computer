@@ -300,15 +300,23 @@ let attachManager: AttachManager? = opts.attach
 let exposureLoginDetected = firstRunLaunch ? firstRunLoginDetected : !opts.allowLogins.isEmpty
 // An installer --public-url on a port other than 8444 means the installer owns a mapping this code does not manage: leave it alone.
 let installerOwnsOtherPort = !firstRunLaunch && TailnetExposure.installerOwnsOtherPort(publicURL: opts.publicURL)
-let tailnetExposure: TailnetExposure? = (firstRunLaunch || (opts.menuBar && !opts.allowLogins.isEmpty && !installerOwnsOtherPort))
-    && ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] == nil
+// Debug builds only: the process tests set an environment variable so a test-launched binary never touches Tailscale.
+// A release build has no such switch, so nothing in the environment can skip the no-login withdrawal below.
+#if DEBUG
+let tailnetExposureDisabledForTests = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] != nil
+#else
+let tailnetExposureDisabledForTests = false
+#endif
+// Flag launches without an allow list also get the object (no login: it only withdraws a leftover mapping).
+let tailnetExposure: TailnetExposure? = (firstRunLaunch || ((opts.menuBar || opts.allowLogins.isEmpty) && !installerOwnsOtherPort))
+    && !tailnetExposureDisabledForTests
     ? TailnetExposure(defaults: .standard, loginDetected: exposureLoginDetected, backendPort: opts.port,
                       runner: FirstRunSetup.systemTailscaleCommandRunner, log: log)
     : nil
 // Without a detected login this launch accepts the token alone. A leftover app-owned 8444 mapping would expose that
 // to the tailnet, so it is removed before the listener starts. If it is there and cannot be removed, fail closed.
-if firstRunLaunch, case .failed(let why)? = tailnetExposure?.withdrawWithoutLogin() {
-    let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Run: tailscale serve --https=8444 off"
+if case .failed(let why)? = tailnetExposure?.withdrawWithoutLogin() {
+    let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Start Tailscale and open OpenAB Computer again, or remove the mapping with: tailscale serve --https=8444 off"
     log("refusing to start: \(reason)")
     showFirstRunAlert("OpenAB Computer will not start: \(reason)"); exit(3)
 }

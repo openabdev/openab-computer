@@ -377,6 +377,7 @@ final class FirstRunSetupTests: XCTestCase {
                            "--no-attach", "--no-grant-persistence", "--quiet"]
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home
+        environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] = "1"
         child.environment = environment
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice

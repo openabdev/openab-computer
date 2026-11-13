@@ -63,6 +63,7 @@ public final class TailnetExposure: @unchecked Sendable {
     /// One operation at a time (wizard, menu and launch share the instance). Recursive: the launch re-apply calls `enable()`.
     private let operation = NSRecursiveLock()
     private var url: String?
+    private var lastTransition = ""
     /// True while the launch re-apply runs `enable()`: a failed attempt then keeps the stored opt-in, so one bad
     /// launch (tailscaled still starting) does not silently drop the user's choice.
     private var preserveChoiceOnFailure = false
@@ -138,7 +139,22 @@ public final class TailnetExposure: @unchecked Sendable {
             return .conflict(existing: existing)
         }
         if before == .absent {
-            if case .failure(let why) = tailscale(serveOnArguments, timeout: 10, attempts: 2, allowEmpty: true) {
+            var serveResult = tailscale(serveOnArguments, timeout: 10, attempts: 1, allowEmpty: true, mutating: true)
+            if case .failure(let first) = serveResult {
+                // Re-read before any retry: the first try may have applied, or 8444 may have been taken meanwhile.
+                switch readMapping(attempts: 1) {
+                case .success(.ours): serveResult = .success(Data())
+                case .success(.absent):
+                    log("tailnet access: tailscale serve failed (\(first)); retrying once")
+                    serveResult = tailscale(serveOnArguments, timeout: 10, attempts: 1, allowEmpty: true, mutating: true)
+                case .success(.foreign(let existing)):
+                    log("tailnet access: after a failed serve, port \(Self.httpsPort) maps to \(existing); left untouched")
+                    setChoice(false)
+                    return .conflict(existing: existing)
+                case .failure: break
+                }
+            }
+            if case .failure(let why) = serveResult {
                 log("tailnet access: tailscale serve failed (\(why))")
                 // A timed-out serve may still have applied; undo it so "off" means off.
                 if case .success(.ours) = readMapping() { rollback() }
@@ -197,7 +213,7 @@ public final class TailnetExposure: @unchecked Sendable {
         case .ours:
             break
         }
-        if case .failure(let why) = tailscale(serveOffArguments, timeout: 10, attempts: 2, allowEmpty: true) {
+        if case .failure(let why) = tailscale(serveOffArguments, timeout: 10, attempts: 1, allowEmpty: true, mutating: true) {
             log("tailnet access: tailscale serve off failed (\(why))")
             return .failed("Tailscale could not remove the mapping on port \(Self.httpsPort). Access is still on.")
         }
@@ -261,20 +277,32 @@ public final class TailnetExposure: @unchecked Sendable {
     public func withdrawWithoutLogin() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
         guard !loginDetected else { return nil }
-        // With a stored opt-in this app may have a live mapping, so read with the full retry budget.
-        switch readMapping(attempts: optedIn ? 3 : 1) {
-        case .failure(.noCLI):
+        // (D) No CLI at any candidate path: nothing can be inspected; continue token-only. The periodic recheck covers a later install.
+        guard !candidates().isEmpty else {
+            logTransition("no-cli", "tailnet access: no login detected and no Tailscale command line tool found; continuing token-only, will recheck")
             return nil
+        }
+        // (C) Daemon unreachable or not Running: nothing can be served through tailscaled now. Continue, recheck later.
+        guard daemonIsRunning() else {
+            logTransition("daemon-down", "tailnet access: no login detected and the Tailscale daemon is not running or not reachable; continuing token-only, will recheck")
+            return nil
+        }
+        switch readMapping(attempts: 3) {
         case .failure(let why):
-            log("tailnet access: no login detected and serve status could not be read (\(why)); cannot check for a leftover mapping")
-            // An installer or an older build may have left a live mapping with no stored opt-in, so the opt-in does not
-            // matter here. Absence is only established by a parsed, explicitly non-running BackendState.
-            if daemonProvablyNotServing() {
-                log("tailnet access: the Tailscale daemon reports a non-running state, so no mapping can be live")
-                return nil
-            }
+            // (B) Daemon Running but serve status unreadable (including empty stdout): fail closed.
+            logTransition("unreadable", "tailnet access: no login detected, daemon running, serve status unreadable (\(why)); failing closed")
             return .failed("Could not read Tailscale Serve status to check for a leftover mapping on port \(Self.httpsPort).")
-        case .success(.absent), .success(.foreign):
+        case .success(.absent):
+            logTransition("absent", "tailnet access: no login detected; nothing is mapped on port \(Self.httpsPort); continuing token-only")
+            return nil
+        case .success(.foreign(let existing)):
+            // (A) Foreign only: untouched. If it also routes to this backend (extra handler, Funnel, TCP forward),
+            // this app may not edit someone else's config, and the token alone would guard it: fail closed.
+            if Self.description(existing, routesTo: backend) {
+                logTransition("foreign-reaches", "tailnet access: port \(Self.httpsPort) maps to \(existing), which includes this app's backend; left untouched, failing closed")
+                return .failed("Port \(Self.httpsPort) is mapped to \(existing), which also reaches this app, and it is not this app's own mapping to remove.")
+            }
+            logTransition("foreign", "tailnet access: no login detected; port \(Self.httpsPort) maps to \(existing) (not this app); left untouched, continuing token-only")
             return nil
         case .success(.ours):
             break
@@ -308,16 +336,38 @@ public final class TailnetExposure: @unchecked Sendable {
 
     // MARK: state
 
-    /// True only when `tailscale status --json` was read and parsed and reports a BackendState other than Running
-    /// (the node is off the tailnet). A command failure, empty or unparsable output proves nothing: fail closed.
-    private func daemonProvablyNotServing() -> Bool {
+    /// Whether a foreign-mapping description (from `mapping(serveStatusJSON:)`) names this app's backend host:port.
+    static func description(_ description: String, routesTo backend: String) -> Bool {
+        var hostPort = backend
+        if let r = hostPort.range(of: "://") { hostPort = String(hostPort[r.upperBound...]) }
+        while hostPort.hasSuffix("/") { hostPort.removeLast() }
+        var rest = Substring(description)
+        while let r = rest.range(of: hostPort) {
+            let next = rest[r.upperBound...].first
+            if next == nil || !(next!.isNumber) { return true }
+            rest = rest[r.upperBound...]
+        }
+        return false
+    }
+
+    /// True only when `tailscale status --json` was read and parsed and BackendState is "Running". A command
+    /// failure, empty or unparsable output, or any other state counts as not running (nothing can be served).
+    private func daemonIsRunning() -> Bool {
         switch tailscale(FirstRunSetup.tailscaleStatusArguments, timeout: 3, attempts: 2, allowEmpty: false) {
-        case .failure: return false   // a launch failure, timeout or error proves nothing
+        case .failure: return false
         case .success(let data):
             guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let state = root["BackendState"] as? String else { return false }
-            return state != "Running"
+            return state == "Running"
         }
+    }
+
+    /// Logs a withdrawal-check state once: repeats of the same state (the 30-second recheck) stay silent.
+    private func logTransition(_ key: String, _ message: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard key != lastTransition else { return }
+        lastTransition = key
+        log(message)
     }
 
     private func fail(_ message: String) -> Outcome {
@@ -355,10 +405,10 @@ public final class TailnetExposure: @unchecked Sendable {
     }
 
     /// Reads port `httpsPort` out of `tailscale serve status --json`. Nil when the output is not a status object.
-    /// An empty output or `{}` means nothing is served.
+    /// `{}` means nothing is served. An empty output is not proof of that (lost or truncated stdout): nil.
     public static func mapping(serveStatusJSON data: Data, httpsPort: Int, backend: String) -> ServeMapping? {
         let trimmed = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return .absent }
+        if trimmed.isEmpty { return nil }
         guard let root = (try? JSONSerialization.jsonObject(with: Data(trimmed.utf8))) as? [String: Any] else { return nil }
         func normalized(_ s: String) -> String {
             var t = s.trimmingCharacters(in: .whitespaces)
@@ -419,7 +469,7 @@ public final class TailnetExposure: @unchecked Sendable {
     /// reason is logged by name only; output is never logged. Exit 0 with the app binary's GUI message is a failure,
     /// like the login detection treats it.
     private func tailscale(_ arguments: [String], timeout: TimeInterval, attempts: Int,
-                           allowEmpty: Bool) -> Result<Data, CLIFailure> {
+                           allowEmpty: Bool, mutating: Bool = false) -> Result<Data, CLIFailure> {
         let clis = candidates()
         guard !clis.isEmpty else { return .failure(.noCLI) }
         var last: CLIFailure = .failed("no attempt")
@@ -428,7 +478,10 @@ public final class TailnetExposure: @unchecked Sendable {
             for cli in clis {
                 switch runner(cli, arguments, timeout) {
                 case .launchFailed: last = .failed("could not start")
-                case .timeout: last = .failed("timeout")
+                case .timeout:
+                    last = .failed("timeout")
+                    // A timed-out mutating command may have applied: do not re-issue it, the caller re-reads status first.
+                    if mutating { return .failure(last) }
                 case let .finished(output, status):
                     if status != 0 {
                         last = .failed("exit status \(status)")

@@ -14,7 +14,13 @@ final class FakeTailscale: @unchecked Sendable {
     var funnel: Set<String> = []
     var dnsFails = false
     /// Added to the status JSON as "BackendState" when set.
-    var backendState: String?
+    var backendState: String? = "Running"
+    /// `serve status --json` answers with empty stdout and exit 0.
+    var statusEmpty = false
+    /// The first mutating serve command times out but is applied anyway.
+    var firstServeTimesOutButApplies = false
+    private var serveTimedOut = false
+    var extraHandlers: [String: [String: String]] = [:]
     var statusFails = false
     var serveFails = false
     var serveNoEffect = false
@@ -39,6 +45,7 @@ final class FakeTailscale: @unchecked Sendable {
         }
         if args == ["serve", "status", "--json"] {
             if statusFails || (statusFailsAfterMutation && mutated) { return .finished(output: Data(), status: 1) }
+            if statusEmpty { return .finished(output: Data(), status: 0) }
             return .finished(output: statusJSON(), status: 0)
         }
         guard args.first == "serve" else {
@@ -46,6 +53,11 @@ final class FakeTailscale: @unchecked Sendable {
             return .finished(output: Data(), status: 2)
         }
         mutated = true
+        if firstServeTimesOutButApplies, !serveTimedOut, args.contains("--bg") {
+            serveTimedOut = true
+            serve(8444, to: "http://127.0.0.1:8795")
+            return .timeout
+        }
         if serveFails { return .finished(output: Data(), status: 1) }
         if args == ["serve", "--bg", "--https=8444", "http://127.0.0.1:8795"] {
             if !serveNoEffect { serve(8444, to: "http://127.0.0.1:8795") }
@@ -62,7 +74,9 @@ final class FakeTailscale: @unchecked Sendable {
         var tcp: [String: Any] = [:]
         var webObj: [String: Any] = [:]
         for (hostPort, proxy) in web {
-            webObj[hostPort] = ["Handlers": ["/": ["Proxy": proxy]]]
+            var handlers: [String: Any] = ["/": ["Proxy": proxy]]
+            for (path, target) in extraHandlers[hostPort] ?? [:] { handlers[path] = ["Proxy": target] }
+            webObj[hostPort] = ["Handlers": handlers]
             if let port = hostPort.split(separator: ":").last { tcp[String(port)] = ["HTTPS": true] }
         }
         for (port, target) in tcpForward { tcp[String(port)] = ["TCPForward": target] }
@@ -317,7 +331,9 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertTrue(exposure.optedIn, "kept for a later launch that detects the login")
     }
 
-    func testWithoutALoginAForeignOrMissingMappingIsLeftAlone() {
+    // Decision of record rows A to D (no login at launch).
+
+    func testRowAForeignOrAbsentMappingContinuesTokenOnly() {
         let foreign = FakeTailscale()
         foreign.serve(8444, to: "http://127.0.0.1:9000")
         XCTAssertNil(make(foreign, login: false).withdrawWithoutLogin())
@@ -327,32 +343,123 @@ final class TailnetExposureTests: XCTestCase {
         let none = FakeTailscale()
         XCTAssertNil(make(none, login: false).withdrawWithoutLogin())
         XCTAssertTrue(none.mutating.isEmpty)
+    }
 
-        // Unreadable serve status while the daemon answers: an installer or older build may have left a mapping,
-        // with or without the new opt-in, so the launch fails closed either way.
-        let unreadable = FakeTailscale()
-        unreadable.statusFails = true
-        guard case .failed = make(unreadable, login: false).withdrawWithoutLogin() else { return XCTFail("no opt-in and unprovable fails closed too") }
-        XCTAssertTrue(unreadable.mutating.isEmpty)
+    func testRowAMixedHandlerAndFunnelMappingsFailClosedWithoutTouchingThem() {
+        let mixed = FakeTailscale()
+        mixed.serve(8444, to: "http://127.0.0.1:8795")
+        mixed.extraHandlers["mac.tail1234.ts.net:8444"] = ["/x": "http://127.0.0.1:1"]
+        guard case .failed = make(mixed, login: false).withdrawWithoutLogin() else { return XCTFail("mixed handlers must fail closed") }
+        XCTAssertTrue(mixed.mutating.isEmpty, "someone else's config is not edited")
 
-        // Every status command failing proves nothing (launch failure, timeout, GUI error): fail closed.
-        let down = FakeTailscale()
-        down.statusFails = true
-        down.dnsFails = true
-        guard case .failed = make(down, login: false).withdrawWithoutLogin() else { return XCTFail("failed status commands are not proof of absence") }
-        XCTAssertTrue(down.mutating.isEmpty)
+        let funnel = FakeTailscale()
+        funnel.serve(8444, to: "http://127.0.0.1:8795")
+        funnel.funnel = ["mac.tail1234.ts.net:8444"]
+        guard case .failed = make(funnel, login: false).withdrawWithoutLogin() else { return XCTFail("Funnel must fail closed") }
+        XCTAssertTrue(funnel.mutating.isEmpty)
 
-        // The daemon reports it is not running (stopped or logged out): no mapping can be live.
-        let stopped = FakeTailscale()
-        stopped.statusFails = true
-        stopped.backendState = "Stopped"
-        XCTAssertNil(make(stopped, login: false).withdrawWithoutLogin())
+        let tcp = FakeTailscale()
+        tcp.tcpForward[8444] = "127.0.0.1:8795"
+        guard case .failed = make(tcp, login: false).withdrawWithoutLogin() else { return XCTFail("a TCP forward to this app must fail closed") }
 
-        let optedIn = FakeTailscale()
-        optedIn.statusFails = true
-        defaults.set(true, forKey: TailnetExposure.optInKey)
-        guard case .failed = make(optedIn, login: false).withdrawWithoutLogin() else { return XCTFail("opted in and unprovable fails closed") }
-        XCTAssertTrue(optedIn.mutating.isEmpty)
+        let other = FakeTailscale()
+        other.serve(8444, to: "http://127.0.0.1:87950")
+        XCTAssertNil(make(other, login: false).withdrawWithoutLogin(), "a different port that starts with the same digits is foreign")
+    }
+
+    func testRowALegacyOwnMappingWithoutAnOptInKeyIsWithdrawn() {
+        XCTAssertFalse(defaults.bool(forKey: TailnetExposure.optInKey))
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        XCTAssertEqual(make(fake, login: false).withdrawWithoutLogin(), .off)
+        XCTAssertEqual(fake.mutating, [offArgs])
+    }
+
+    func testRowBUnreadableStatusWithARunningDaemonFailsClosedOptInOrNot() {
+        for optIn in [false, true] {
+            defaults.set(optIn, forKey: TailnetExposure.optInKey)
+            let failing = FakeTailscale()
+            failing.statusFails = true
+            guard case .failed = make(failing, login: false).withdrawWithoutLogin() else { return XCTFail("exit status failure, optIn \(optIn)") }
+            XCTAssertTrue(failing.mutating.isEmpty)
+            let empty = FakeTailscale()
+            empty.statusEmpty = true
+            guard case .failed = make(empty, login: false).withdrawWithoutLogin() else { return XCTFail("empty stdout, optIn \(optIn)") }
+            XCTAssertTrue(empty.mutating.isEmpty)
+        }
+    }
+
+    func testRowCADaemonThatIsNotRunningContinuesTokenOnlyOptInOrNot() {
+        for optIn in [false, true] {
+            defaults.set(optIn, forKey: TailnetExposure.optInKey)
+            let down = FakeTailscale()   // tailscaled not running: status fails, serve status fails too
+            down.dnsFails = true
+            down.statusFails = true
+            XCTAssertNil(make(down, login: false).withdrawWithoutLogin(), "a launch at login before tailscaled starts is not blocked")
+            XCTAssertTrue(down.mutating.isEmpty)
+            for state in ["Stopped", "NeedsLogin", "Starting"] {
+                let fake = FakeTailscale()
+                fake.backendState = state
+                fake.statusFails = true
+                XCTAssertNil(make(fake, login: false).withdrawWithoutLogin(), state)
+            }
+        }
+    }
+
+    func testRowDNoCLIContinuesTokenOnlyAndNothingRuns() {
+        let fake = FakeTailscale()
+        let exposure = TailnetExposure(defaults: defaults, loginDetected: false, backendPort: 8795,
+                                       runner: { cli, args, t in fake.run(cli, args, t) },
+                                       candidates: { [] }, sleep: { _ in }, log: { _ in })
+        XCTAssertNil(exposure.withdrawWithoutLogin())
+        XCTAssertTrue(fake.calls.isEmpty)
+    }
+
+    func testTheRecheckWithdrawsAMappingThatAppearsAfterLaunchAndLogsTransitionsOnce() {
+        let fake = FakeTailscale()
+        fake.dnsFails = true       // daemon down at launch
+        let logs = LogBox()
+        let exposure = make(fake, login: false, logs: logs)
+        XCTAssertNil(exposure.withdrawWithoutLogin())
+        XCTAssertNil(exposure.withdrawWithoutLogin())
+        XCTAssertEqual(logs.lines.filter { $0.contains("not running or not reachable") }.count, 1, "same state logs once")
+        fake.dnsFails = false      // the daemon starts, with a persisted mapping to this app
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        XCTAssertEqual(exposure.withdrawWithoutLogin(), .off)
+        XCTAssertEqual(fake.mutating, [offArgs])
+        // A later tick finds nothing and stays quiet about repeats.
+        XCTAssertNil(exposure.withdrawWithoutLogin())
+        XCTAssertNil(exposure.withdrawWithoutLogin())
+        XCTAssertEqual(logs.lines.filter { $0.contains("nothing is mapped") }.count, 1)
+        // A foreign-only mapping that later also reaches this app fails the recheck.
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        fake.offNoEffect = true
+        guard case .failed = exposure.withdrawWithoutLogin() else { return XCTFail("an unremovable own mapping fails") }
+    }
+
+    func testEmptyServeStatusIsUnreadableForEnableAndNothingIsMapped() {
+        let fake = FakeTailscale()
+        fake.statusEmpty = true
+        let exposure = make(fake)
+        guard case .failed = exposure.enable() else { return XCTFail("empty stdout must refuse") }
+        XCTAssertTrue(fake.mutating.isEmpty)
+        XCTAssertFalse(exposure.optedIn)
+    }
+
+    func testATimedOutServeIsNotReissuedBlindly() {
+        let fake = FakeTailscale()
+        fake.firstServeTimesOutButApplies = true
+        XCTAssertEqual(make(fake).enable(), .on(url: expectedURL))
+        XCTAssertEqual(fake.mutating, [onArgs], "applied despite the timeout: re-read, no second serve")
+    }
+
+    func testTheReleaseBinaryDoesNotContainTheTestOverrideName() throws {
+        let dir = Bundle(for: TailnetExposureTests.self).bundleURL.deletingLastPathComponent()
+        // .../.build/<triple>/debug/ -> .../release/
+        let release = dir.deletingLastPathComponent().appendingPathComponent("release/oab-instance-mcp")
+        guard FileManager.default.fileExists(atPath: release.path) else { throw XCTSkip("no release binary built") }
+        let data = try Data(contentsOf: release)
+        XCTAssertNil(data.range(of: Data("OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE".utf8)))
     }
 
     func testWithdrawReportsAMappingThatWillNotGoAway() {
@@ -409,7 +516,7 @@ final class TailnetExposureTests: XCTestCase {
         func parse(_ s: String) -> TailnetExposure.ServeMapping? {
             TailnetExposure.mapping(serveStatusJSON: Data(s.utf8), httpsPort: 8444, backend: backend)
         }
-        XCTAssertEqual(parse(""), .absent)
+        XCTAssertNil(parse(""), "empty stdout is unreadable, not proof of absence")
         XCTAssertEqual(parse("{}"), .absent)
         XCTAssertNil(parse("not json"))
         XCTAssertEqual(parse(#"{"Web":{"m.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000"}}}}}"#), .absent)
