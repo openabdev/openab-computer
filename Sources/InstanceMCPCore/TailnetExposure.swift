@@ -249,7 +249,7 @@ public final class TailnetExposure: @unchecked Sendable {
     /// still live in tailscaled, and this process would accept the bearer token alone through it. Remove it, but only
     /// when it is exactly our own backend on 8444; a foreign mapping and every other port stay untouched. The stored
     /// opt-in is kept, so a later launch that detects the login re-applies it. Call it before the server listens; a `.failed` result means the mapping is positively there and could not be removed, and the caller must not listen.
-    /// Needs no opt-in; with a detected login it does nothing and runs nothing.
+    /// Needs no opt-in; with a detected login it does nothing and runs nothing. When serve status cannot be read the launch fails closed (opt-in or not), unless the daemon is provably not running.
     @discardableResult
     public func withdrawWithoutLogin() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
@@ -260,8 +260,13 @@ public final class TailnetExposure: @unchecked Sendable {
             return nil
         case .failure(let why):
             log("tailnet access: no login detected and serve status could not be read (\(why)); cannot check for a leftover mapping")
-            // An opt-in means a mapping from this app may be live: fail closed. Without one, none can be ours.
-            return optedIn ? .failed("Could not read Tailscale Serve status to check for a leftover mapping on port \(Self.httpsPort).") : nil
+            // An installer or an older build may have left a live mapping with no stored opt-in, so the opt-in does not
+            // matter here. Absence is only established when the daemon itself is unreachable or not running.
+            if daemonProvablyNotServing() {
+                log("tailnet access: the Tailscale daemon is not running or not reachable, so no mapping can be live")
+                return nil
+            }
+            return .failed("Could not read Tailscale Serve status to check for a leftover mapping on port \(Self.httpsPort).")
         case .success(.absent), .success(.foreign):
             return nil
         case .success(.ours):
@@ -295,6 +300,18 @@ public final class TailnetExposure: @unchecked Sendable {
     }
 
     // MARK: state
+
+    /// True when `tailscale status --json` fails (nothing answers, so nothing is being served) or reports a backend
+    /// state other than Running (the node is off the tailnet). A readable status with no state is not proof.
+    private func daemonProvablyNotServing() -> Bool {
+        switch tailscale(FirstRunSetup.tailscaleStatusArguments, timeout: 3, attempts: 2, allowEmpty: false) {
+        case .failure: return true
+        case .success(let data):
+            guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let state = root["BackendState"] as? String else { return false }
+            return state != "Running"
+        }
+    }
 
     private func fail(_ message: String) -> Outcome {
         if !preserveChoiceOnFailure { setChoice(false) }

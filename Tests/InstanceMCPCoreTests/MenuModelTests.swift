@@ -120,6 +120,13 @@ final class MenuModelTests: XCTestCase {
                        TailnetMenu(stateLine: "Tailnet access: On", actionTitle: "Turn Off Tailnet Access", action: .turnOff))
     }
 
+    func testAStoredOptInThatWasNotAppliedIsNotShownAsPlainOff() {
+        XCTAssertEqual(MenuModel.tailnetMenu(offered: true, publicURL: nil, optedIn: true),
+                       TailnetMenu(stateLine: "Tailnet access: not applied (see the log)", actionTitle: "Allow tailnet access…", action: .allow))
+        XCTAssertEqual(MenuModel.tailnetMenu(offered: false, publicURL: nil, optedIn: true),
+                       TailnetMenu(stateLine: nil, actionTitle: nil, action: nil))
+    }
+
     func testWizardFootersWithAndWithoutTheTailnetPage() {
         let granted = PermissionSnapshot(screenRecording: .granted, accessibility: .granted, fullDiskAccess: .granted)
         let noFDA = PermissionSnapshot(screenRecording: .granted, accessibility: .granted, fullDiskAccess: .denied)

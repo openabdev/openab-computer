@@ -17,7 +17,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// The launchd job label when this process is a launchd job (`XPC_SERVICE_NAME`), nil for a Finder or terminal run.
     private let launchdJobLabel: String?
     private var underLaunchd: Bool { launchdJobLabel != nil }
-    /// The opt-in tailnet exposure; nil for flag launches, where the installer owns `tailscale serve`.
+    /// The tailnet exposure state and controls. Nil without a Tailscale login to rely on (no allow list, no detected login).
     private let exposure: TailnetExposure?
     private let logPath: String
     private let token: String?
@@ -142,10 +142,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// "Turn Off Tailnet Access": runs the CLI off the main thread and reports a failure in a dialog.
     @objc private func turnOffTailnet() {
         guard let exposure else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let outcome = exposure.disable()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
+                    self?.permissionSetupWindow?.refresh()   // an open wizard's tailnet row must not keep showing "On"
                     guard outcome != .off else { return }
                     let alert = NSAlert()
                     alert.messageText = "Tailnet access"
@@ -263,7 +264,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if let notice {
             menu.addItem(label(notice))
         }
-        let tailnet = MenuModel.tailnetMenu(offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL)
+        let tailnet = MenuModel.tailnetMenu(offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL,
+                                          optedIn: exposure?.optedIn ?? false)
         if let line = tailnet.stateLine {
             menu.addItem(label(line))
         }

@@ -85,11 +85,16 @@ public enum MenuModel {
         if let jobLabel { bootout(jobLabel) } else { exitProcess() }
     }
 
-    public static func tailnetMenu(offered: Bool, publicURL: String?) -> TailnetMenu {
+    /// `optedIn`: the stored choice is on but no verified mapping exists (a failed launch re-apply); the line says so
+    /// instead of a plain "Off", and the action stays "Allow…" so the user can retry from the wizard.
+    public static func tailnetMenu(offered: Bool, publicURL: String?, optedIn: Bool = false) -> TailnetMenu {
         if publicURL != nil {
             return TailnetMenu(stateLine: "Tailnet access: On", actionTitle: "Turn Off Tailnet Access", action: .turnOff)
         }
         if offered {
+            if optedIn {
+                return TailnetMenu(stateLine: "Tailnet access: not applied (see the log)", actionTitle: "Allow tailnet access…", action: .allow)
+            }
             return TailnetMenu(stateLine: "Tailnet access: Off", actionTitle: "Allow tailnet access…", action: .allow)
         }
         return TailnetMenu(stateLine: nil, actionTitle: nil, action: nil)

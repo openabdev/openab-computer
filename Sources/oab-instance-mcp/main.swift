@@ -294,17 +294,21 @@ let attachManager: AttachManager? = opts.attach
                     audit: auditLog,
                     log: log)
     : nil
-// Opt-in tailnet exposure exists only for the no-flag launch; flag launches keep the installer's own serve mapping.
-let tailnetExposure: TailnetExposure? = firstRunLaunch
+// Tailnet exposure state and controls. A no-flag launch gets the opt-in page (off by default). A menu-bar launch
+// with flags and a login allow list (the installer's LaunchAgent) gets the same state line and Turn Off control, and
+// shows the installer's mapping as on; nothing here turns exposure on by itself in that mode either.
+let exposureLoginDetected = firstRunLaunch ? firstRunLoginDetected : !opts.allowLogins.isEmpty
+let tailnetExposure: TailnetExposure? = (firstRunLaunch || (opts.menuBar && !opts.allowLogins.isEmpty))
     && ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] == nil
-    ? TailnetExposure(defaults: .standard, loginDetected: firstRunLoginDetected, backendPort: opts.port,
+    ? TailnetExposure(defaults: .standard, loginDetected: exposureLoginDetected, backendPort: opts.port,
                       runner: FirstRunSetup.systemTailscaleCommandRunner, log: log)
     : nil
 // Without a detected login this launch accepts the token alone. A leftover app-owned 8444 mapping would expose that
 // to the tailnet, so it is removed before the listener starts. If it is there and cannot be removed, fail closed.
-if case .failed(let why)? = tailnetExposure?.withdrawWithoutLogin() {
-    log("refusing to start: \(why) No Tailscale login was detected, so the token alone would guard it. Run: tailscale serve --https=8444 off")
-    fputs("refusing to start: \(why)\n", stderr); exit(3)
+if firstRunLaunch, case .failed(let why)? = tailnetExposure?.withdrawWithoutLogin() {
+    let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Run: tailscale serve --https=8444 off"
+    log("refusing to start: \(reason)")
+    showFirstRunAlert("OpenAB Computer will not start: \(reason)"); exit(3)
 }
 let endpoint = MCPHTTPEndpoint(path: opts.path, server: server, auth: auth, attach: attachManager, log: log)
 
@@ -394,8 +398,9 @@ if opts.menuBar {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)     // no Dock icon, no main menu; status item only
     let logPath = FirstRunSetup.logPath(home: firstRunHome ?? NSHomeDirectory())
-    let publicURL = opts.publicURL ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     let exposure = tailnetExposure
+    // With the exposure object the menu takes the tailnet URL from it (verified), so the base line is the local one.
+    let publicURL = (exposure == nil ? opts.publicURL : nil) ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     statusItem = MainActor.assumeIsolated {
         StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
                              attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,

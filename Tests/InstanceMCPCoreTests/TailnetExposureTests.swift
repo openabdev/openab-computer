@@ -13,6 +13,8 @@ final class FakeTailscale: @unchecked Sendable {
     var tcpForward: [Int: String] = [:]
     var funnel: Set<String> = []
     var dnsFails = false
+    /// Added to the status JSON as "BackendState" when set.
+    var backendState: String?
     var statusFails = false
     var serveFails = false
     var serveNoEffect = false
@@ -32,7 +34,8 @@ final class FakeTailscale: @unchecked Sendable {
         if timeoutFirstAttempt, !timedOut.contains(cli) { timedOut.insert(cli); return .timeout }
         if args == FirstRunSetup.tailscaleStatusArguments {
             guard !dnsFails, let dns else { return .finished(output: Data("The Tailscale GUI failed to start".utf8), status: 0) }
-            return .finished(output: Data(#"{"Self":{"DNSName":"\#(dns)","UserID":7},"User":{"7":{"LoginName":"owner@example.com"}}}"#.utf8), status: 0)
+            let state = backendState.map { #""BackendState":"\#($0)","# } ?? ""
+            return .finished(output: Data(#"{\#(state)"Self":{"DNSName":"\#(dns)","UserID":7},"User":{"7":{"LoginName":"owner@example.com"}}}"#.utf8), status: 0)
         }
         if args == ["serve", "status", "--json"] {
             if statusFails || (statusFailsAfterMutation && mutated) { return .finished(output: Data(), status: 1) }
@@ -325,10 +328,25 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertNil(make(none, login: false).withdrawWithoutLogin())
         XCTAssertTrue(none.mutating.isEmpty)
 
+        // Unreadable serve status while the daemon answers: an installer or older build may have left a mapping,
+        // with or without the new opt-in, so the launch fails closed either way.
         let unreadable = FakeTailscale()
         unreadable.statusFails = true
-        XCTAssertNil(make(unreadable, login: false).withdrawWithoutLogin(), "no opt-in: no mapping of ours can be live")
+        guard case .failed = make(unreadable, login: false).withdrawWithoutLogin() else { return XCTFail("no opt-in and unprovable fails closed too") }
         XCTAssertTrue(unreadable.mutating.isEmpty)
+
+        // The daemon itself is unreachable: nothing is served, so the launch may go on.
+        let down = FakeTailscale()
+        down.statusFails = true
+        down.dnsFails = true
+        XCTAssertNil(make(down, login: false).withdrawWithoutLogin())
+        XCTAssertTrue(down.mutating.isEmpty)
+
+        // The daemon reports it is not running (stopped or logged out): no mapping can be live.
+        let stopped = FakeTailscale()
+        stopped.statusFails = true
+        stopped.backendState = "Stopped"
+        XCTAssertNil(make(stopped, login: false).withdrawWithoutLogin())
 
         let optedIn = FakeTailscale()
         optedIn.statusFails = true
