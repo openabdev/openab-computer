@@ -70,19 +70,24 @@ public final class TailnetExposure: @unchecked Sendable {
 
     /// - runner: required, so no caller can start a real CLI by omission. Production passes
     ///   `FirstRunSetup.systemTailscaleCommandRunner`.
-    public init(defaults: UserDefaults, loginDetected: Bool, backendPort: UInt16,
+    public init(defaults: UserDefaults, loginDetected: Bool, tokenOnly: Bool = true, backendPort: UInt16,
                 runner: @escaping FirstRunSetup.TailscaleCommandRunner,
                 candidates: @escaping () -> [String] = { FirstRunSetup.tailscaleCandidates() },
                 sleep: @escaping (TimeInterval) -> Void = { usleep(UInt32($0 * 1_000_000)) },
                 log: @escaping (String) -> Void = { _ in }) {
         self.defaults = defaults
         self.loginDetected = loginDetected
+        self.tokenOnly = tokenOnly
         self.backend = "http://127.0.0.1:\(backendPort)"
         self.runner = runner
         self.candidates = candidates
         self.sleep = sleep
         self.log = log
     }
+
+    /// True when this process accepts the bearer token alone (no login allow list). With an allow list every request
+    /// also needs an allow-listed login, so a failed login probe never makes the server token-only.
+    public let tokenOnly: Bool
 
     /// The user chose "on" and it has not been turned off since.
     public var optedIn: Bool { defaults.bool(forKey: Self.optInKey) }
@@ -260,7 +265,8 @@ public final class TailnetExposure: @unchecked Sendable {
             defer { preserveChoiceOnFailure = false }
             return enable()
         case .success(.foreign(let existing)):
-            log("tailnet access: opted in, but port \(Self.httpsPort) maps to \(existing); not re-applying")
+            log("tailnet access: opted in, but port \(Self.httpsPort) maps to \(existing); not re-applying, opt-in cleared")
+            setChoice(false)
             return .conflict(existing: existing)
         case .failure(let why):
             log("tailnet access: opted in, could not read serve status at launch (\(why)); not re-applying")
@@ -276,16 +282,23 @@ public final class TailnetExposure: @unchecked Sendable {
     @discardableResult
     public func withdrawWithoutLogin() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
-        guard !loginDetected else { return nil }
+        guard !loginDetected, tokenOnly else { return nil }
         // (D) No CLI at any candidate path: nothing can be inspected; continue token-only. The periodic recheck covers a later install.
         guard !candidates().isEmpty else {
             logTransition("no-cli", "tailnet access: no login detected and no Tailscale command line tool found; continuing token-only, will recheck")
             return nil
         }
         // (C) Daemon unreachable or not Running: nothing can be served through tailscaled now. Continue, recheck later.
-        guard daemonIsRunning() else {
-            logTransition("daemon-down", "tailnet access: no login detected and the Tailscale daemon is not running or not reachable; continuing token-only, will recheck")
+        switch daemonState() {
+        case .notRunning:
+            logTransition("daemon-down", "tailnet access: no login detected and the Tailscale daemon reports it is not running; continuing token-only, will recheck")
             return nil
+        case .unreadable(let why):
+            // A failed or unparsable status read does not prove the daemon is down or that no mapping is live.
+            logTransition("status-unreadable", "tailnet access: no login detected and Tailscale status could not be read (\(why)); failing closed")
+            return .failed("Could not read Tailscale status to check for a leftover mapping on port \(Self.httpsPort).")
+        case .running:
+            break
         }
         switch readMapping(attempts: 3) {
         case .failure(let why):
@@ -350,15 +363,32 @@ public final class TailnetExposure: @unchecked Sendable {
         return false
     }
 
-    /// True only when `tailscale status --json` was read and parsed and BackendState is "Running". A command
-    /// failure, empty or unparsable output, or any other state counts as not running (nothing can be served).
-    private func daemonIsRunning() -> Bool {
+    /// Stable messages the CLI prints (stderr) when tailscaled is not running or not reachable. Matched case-insensitively
+    /// and only on a non-zero exit. Anything else (timeout, empty output, signal kill, unknown message) proves nothing.
+    static let daemonUnreachableMessages = [
+        "failed to connect to local tailscaled",
+        "is tailscale running?",
+        "tailscale is stopped",
+        "the tailscale gui failed to start",
+    ]
+
+    static func isDaemonUnreachable(output: Data) -> Bool {
+        let text = String(decoding: output, as: UTF8.self).lowercased()
+        return daemonUnreachableMessages.contains { text.contains($0) }
+    }
+
+    private enum DaemonState { case running, notRunning, unreadable(CLIFailure) }
+
+    /// `.notRunning` only when `tailscale status --json` was read and parsed and BackendState is a string other than
+    /// "Running". A command failure, empty or unparsable output is `.unreadable`, which proves nothing.
+    private func daemonState() -> DaemonState {
         switch tailscale(FirstRunSetup.tailscaleStatusArguments, timeout: 3, attempts: 2, allowEmpty: false) {
-        case .failure: return false
+        case .failure(.daemonUnreachable): return .notRunning
+        case .failure(let why): return .unreadable(why)
         case .success(let data):
             guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let state = root["BackendState"] as? String else { return false }
-            return state == "Running"
+                  let state = root["BackendState"] as? String else { return .unreadable(.unparsable) }
+            return state == "Running" ? .running : .notRunning
         }
     }
 
@@ -465,8 +495,11 @@ public final class TailnetExposure: @unchecked Sendable {
 
     enum CLIFailure: Error, Equatable, CustomStringConvertible {
         case noCLI, failed(String), unparsable
+        /// A non-zero exit whose output carried one of the known stable "tailscaled is not reachable" messages.
+        case daemonUnreachable
         var description: String {
             switch self {
+            case .daemonUnreachable: return "the Tailscale daemon is not reachable"
             case .noCLI: return "no tailscale CLI found"
             case .failed(let why): return why
             case .unparsable: return "unexpected output"
@@ -493,7 +526,7 @@ public final class TailnetExposure: @unchecked Sendable {
                     if mutating { return .failure(last) }
                 case let .finished(output, status):
                     if status != 0 {
-                        last = .failed("exit status \(status)")
+                        last = Self.isDaemonUnreachable(output: output) ? .daemonUnreachable : .failed("exit status \(status)")
                     } else if String(decoding: output, as: UTF8.self).contains("GUI failed to start") {
                         last = .failed("the Tailscale app binary did not act as a CLI")
                     } else if output.isEmpty && !allowEmpty {

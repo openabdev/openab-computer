@@ -292,16 +292,22 @@ public enum FirstRunSetup {
         process.arguments = arguments
         process.environment = tailscaleEnvironment(ProcessInfo.processInfo.environment)
         process.standardInput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
         let out = Pipe()
+        let err = Pipe()
         process.standardOutput = out
+        process.standardError = err
         let collected = NSMutableData()
+        let collectedErr = NSMutableData()
         let lock = NSLock()
         out.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
             lock.lock(); collected.append(chunk); lock.unlock()
         }
-        defer { out.fileHandleForReading.readabilityHandler = nil }
+        err.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            lock.lock(); collectedErr.append(chunk); lock.unlock()
+        }
+        defer { out.fileHandleForReading.readabilityHandler = nil; err.fileHandleForReading.readabilityHandler = nil }
         do { try process.run() } catch { return .launchFailed }
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline { usleep(20_000) }
@@ -316,7 +322,11 @@ public enum FirstRunSetup {
         process.waitUntilExit()
         usleep(20_000) // let the handler deliver the last chunk
         lock.lock(); defer { lock.unlock() }
-        return .finished(output: collected as Data, status: process.terminationStatus)
+        // Exit 0: stdout only (stderr can carry warnings that must not break JSON). A failing exit: stderr is appended
+        // so the caller can recognise a known "daemon unreachable" message. Output is never logged.
+        var result = collected as Data
+        if process.terminationStatus != 0 { result.append(collectedErr as Data) }
+        return .finished(output: result, status: process.terminationStatus)
     }
 
     /// Looks up the Tailscale login with up to `attempts` tries inside a total `budget`. Each try goes through

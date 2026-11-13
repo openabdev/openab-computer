@@ -326,7 +326,7 @@ let tailnetExposureDisabledForTests = false
 // Flag launches without an allow list also get the object (no login: it only withdraws a leftover mapping).
 let tailnetExposure: TailnetExposure? = (firstRunLaunch || ((opts.menuBar || opts.allowLogins.isEmpty) && !installerOwnsOtherPort))
     && !tailnetExposureDisabledForTests
-    ? TailnetExposure(defaults: .standard, loginDetected: exposureLoginDetected, backendPort: opts.port,
+    ? TailnetExposure(defaults: .standard, loginDetected: exposureLoginDetected, tokenOnly: opts.allowLogins.isEmpty, backendPort: opts.port,
                       runner: FirstRunSetup.systemTailscaleCommandRunner, log: log)
     : nil
 // Without a detected login this launch accepts the token alone. A leftover app-owned 8444 mapping would expose that

@@ -36,7 +36,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             guard launchdJobLabel == nil else { return true }
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            let wait = "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; shift; "
+            let wait = "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if kill -0 \"$1\" 2>/dev/null; then echo \"relaunch: the old process (pid $1) still holds the port after 10 s; not starting a second copy\" >&2; exit 1; fi; shift; "
             if Bundle.main.bundlePath.hasSuffix(".app") {
                 p.arguments = ["-c", wait + "exec /usr/bin/open -n \"$1\"", "sh", String(getpid()), Bundle.main.bundlePath]
             } else {
@@ -212,7 +212,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// withdrawn. If it cannot be withdrawn or checked while the daemon runs, show the alert and quit.
     private var recheckInFlight = false
     private func recheckWithoutLogin() {
-        guard let exposure, !exposure.loginDetected, !recheckInFlight else { return }
+        guard let exposure, !exposure.loginDetected, exposure.tokenOnly, !recheckInFlight else { return }
         recheckInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let outcome = exposure.withdrawWithoutLogin()
