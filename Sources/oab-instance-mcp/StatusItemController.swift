@@ -190,6 +190,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         coreWatchTimer = timer
+        // While tailscaled cannot be seen (no CLI, or not Running), a persisted mapping could come alive: recheck every 5 s.
+        let fast = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { if self?.exposure?.uncertain == true { self?.recheckWithoutLogin() } }
+        }
+        RunLoop.main.add(fast, forMode: .common)
     }
 
     private func tickCoreWatch() {
@@ -291,7 +296,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(label(notice))
         }
         let tailnet = MenuModel.tailnetMenu(offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL,
-                                          optedIn: exposure?.optedIn ?? false)
+                                          optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false))
         if let line = tailnet.stateLine {
             menu.addItem(label(line))
         }

@@ -64,6 +64,8 @@ public final class TailnetExposure: @unchecked Sendable {
     private let operation = NSRecursiveLock()
     private var url: String?
     private var lastTransition = ""
+    private var unconfirmedState = false
+    private var uncertainState = false
     /// True while the launch re-apply runs `enable()`: a failed attempt then keeps the stored opt-in, so one bad
     /// launch (tailscaled still starting) does not silently drop the user's choice.
     private var preserveChoiceOnFailure = false
@@ -91,6 +93,11 @@ public final class TailnetExposure: @unchecked Sendable {
 
     /// The user chose "on" and it has not been turned off since.
     public var optedIn: Bool { defaults.bool(forKey: Self.optInKey) }
+    /// In memory only: a mapping may be active but could not be read back. Never persisted as an opt-in.
+    public var unconfirmed: Bool { lock.lock(); defer { lock.unlock() }; return unconfirmedState }
+    /// True while the last no-login check could not see tailscaled (no CLI, or the daemon is not Running). A mapping
+    /// could come alive later, so the caller should recheck on a short interval while this is set.
+    public var uncertain: Bool { lock.lock(); defer { lock.unlock() }; return uncertainState }
 
     /// The verified tailnet URL while exposure is on; nil otherwise. This is what the menu shows and copies.
     public var publicURL: String? {
@@ -283,14 +290,18 @@ public final class TailnetExposure: @unchecked Sendable {
     public func withdrawWithoutLogin() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
         guard !loginDetected, tokenOnly else { return nil }
+        lock.lock(); uncertainState = false; lock.unlock()
+        func markUncertain() { lock.lock(); uncertainState = true; lock.unlock() }
         // (D) No CLI at any candidate path: nothing can be inspected; continue token-only. The periodic recheck covers a later install.
         guard !candidates().isEmpty else {
+            markUncertain()
             logTransition("no-cli", "tailnet access: no login detected and no Tailscale command line tool found; continuing token-only, will recheck")
             return nil
         }
         // (C) Daemon unreachable or not Running: nothing can be served through tailscaled now. Continue, recheck later.
         switch daemonState() {
         case .notRunning:
+            markUncertain()
             logTransition("daemon-down", "tailnet access: no login detected and the Tailscale daemon reports it is not running; continuing token-only, will recheck")
             return nil
         case .unreadable(let why):
@@ -408,13 +419,17 @@ public final class TailnetExposure: @unchecked Sendable {
     /// A mapping may exist but could not be read back. Never report that as Off: keep the stored choice, show no
     /// verified URL, and the menu says "not confirmed" until a later launch or a retry settles it.
     private func unverified(_ message: String) -> Outcome {
-        defaults.set(true, forKey: Self.optInKey)
+        // The persisted choice is never turned on by an unverified attempt: a failed verification leaves it off
+        // (a launch re-apply keeps whatever the user stored before). The in-memory flag drives the menu.
+        if !preserveChoiceOnFailure { defaults.set(false, forKey: Self.optInKey) }
         setURL(nil)
+        lock.lock(); unconfirmedState = true; lock.unlock()
         log("tailnet access: state not confirmed; the mapping on port \(Self.httpsPort) may be active")
         return .failed(message)
     }
 
     private func setChoice(_ on: Bool, url newURL: String? = nil) {
+        lock.lock(); unconfirmedState = false; lock.unlock()
         defaults.set(on, forKey: Self.optInKey)
         setURL(on ? newURL : nil)
     }
@@ -526,6 +541,10 @@ public final class TailnetExposure: @unchecked Sendable {
                     if mutating { return .failure(last) }
                 case let .finished(output, status):
                     if status != 0 {
+                        // A mutating command that ran and failed may have applied in part: stop here, the caller re-reads status.
+                        if mutating && !String(decoding: output, as: UTF8.self).contains("GUI failed to start") {
+                            return .failure(Self.isDaemonUnreachable(output: output) ? .daemonUnreachable : .failed("exit status \(status)"))
+                        }
                         last = Self.isDaemonUnreachable(output: output) ? .daemonUnreachable : .failed("exit status \(status)")
                     } else if String(decoding: output, as: UTF8.self).contains("GUI failed to start") {
                         last = .failed("the Tailscale app binary did not act as a CLI")

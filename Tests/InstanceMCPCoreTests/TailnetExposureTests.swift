@@ -228,10 +228,22 @@ final class TailnetExposureTests: XCTestCase {
         let b = make(blind)
         guard case .failed = b.enable() else { return XCTFail("expected a failure") }
         XCTAssertEqual(blind.mutating, [onArgs], "an unconfirmed mapping is not removed")
-        XCTAssertTrue(b.optedIn, "a possibly active mapping must not be recorded as off")
+        XCTAssertFalse(b.optedIn, "an unverified attempt never persists the opt-in")
+        XCTAssertTrue(b.unconfirmed, "the in-memory state says the mapping may be active")
         XCTAssertNil(b.publicURL)
-        XCTAssertEqual(MenuModel.tailnetMenu(offered: true, publicURL: b.publicURL, optedIn: b.optedIn).stateLine,
+        XCTAssertEqual(MenuModel.tailnetMenu(offered: true, publicURL: b.publicURL, optedIn: b.optedIn || b.unconfirmed).stateLine,
                        "Tailnet access: not confirmed (see the log)")
+    }
+
+    func testAFailedMutatingServeIsNotRepeatedOnTheNextCli() {
+        let fake = FakeTailscale()
+        fake.serveFails = true
+        let e = TailnetExposure(defaults: defaults, loginDetected: true, backendPort: 8795,
+                                runner: { cli, args, t in fake.run(cli, args, t) },
+                                candidates: { ["/fake/a", "/fake/b"] }, sleep: { _ in }, log: { _ in })
+        guard case .failed = e.enable() else { return XCTFail("expected a failure") }
+        XCTAssertFalse(e.optedIn)
+        XCTAssertLessThanOrEqual(fake.mutating.count, 2, "one try plus the single re-read retry, never one per CLI")
     }
 
     func testServeAndStatusErrorsLeaveTheChoiceOff() {
@@ -404,7 +416,9 @@ final class TailnetExposureTests: XCTestCase {
                 let fake = FakeTailscale()
                 fake.backendState = state
                 fake.statusFails = true
-                XCTAssertNil(make(fake, login: false).withdrawWithoutLogin(), "a launch before tailscaled is Running is not blocked: \(state)")
+                let e = make(fake, login: false)
+                XCTAssertNil(e.withdrawWithoutLogin(), "a launch before tailscaled is Running is not blocked: \(state)")
+                XCTAssertTrue(e.uncertain, "the caller must recheck on a short interval: \(state)")
                 XCTAssertTrue(fake.mutating.isEmpty)
             }
         }

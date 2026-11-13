@@ -124,7 +124,7 @@ final class MenuModelTests: XCTestCase {
 
     func testAStoredOptInThatWasNotAppliedIsNotShownAsPlainOff() {
         XCTAssertEqual(MenuModel.tailnetMenu(offered: true, publicURL: nil, optedIn: true),
-                       TailnetMenu(stateLine: "Tailnet access: not confirmed (see the log)", actionTitle: "Allow tailnet access…", action: .allow))
+                       TailnetMenu(stateLine: "Tailnet access: not confirmed (see the log)", actionTitle: "Turn Off Tailnet Access", action: .turnOff))
         XCTAssertEqual(MenuModel.tailnetMenu(offered: false, publicURL: nil, optedIn: true),
                        TailnetMenu(stateLine: nil, actionTitle: nil, action: nil))
     }
