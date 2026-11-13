@@ -4,7 +4,7 @@ import Foundation
 
 /// Pure rules behind the permission setup wizard. The AppKit window and the menu bar only render these
 /// values. Everything here is testable without a window or TCC.
-public enum WizardPage: Equatable, Sendable {
+public enum WizardPage: String, Equatable, Sendable {
     case core
     case optional
 }
@@ -15,8 +15,8 @@ public enum RowState: Equatable, Sendable {
     case waiting
     /// Returned to the app after Allow, and the permission is still denied.
     case stillOff
-    /// Settings shows the switch on but the probe still denies. Reserved until Q3 is tested.
-    // TODO(Q3): produce this state once a Mac test shows how to detect "on in Settings, needs restart".
+    /// Screen Recording is on in System Settings (or the user says so) and the running process still reports off.
+    /// macOS applies it only after a restart (Q3, confirmed). The row offers the Restart button.
     case needsRestart
     case allowed
     case cantTest
@@ -52,6 +52,9 @@ public enum WizardModel {
             return returnedSinceRequest ? .stillOff : .waiting
         }
     }
+
+    /// Accessibility first, then Screen Recording, so the restart that Screen Recording needs is the last permission action.
+    public static let coreOrder: [PermissionKind] = PermissionKind.coreKinds
 
     public static func rowButton(for row: RowState) -> RowButton {
         switch row {
@@ -145,6 +148,9 @@ public enum CoreWatch {
 /// Persisted wizard state. Closing the window never sets `hasShown`.
 public struct SetupWizardStore {
     public static let hasShownKey = "permissionSetupWizard.hasShown.v1"
+    public static let resumePageKey = "permissionSetupWizard.resumePage.v1"
+    public static let relaunchJustHappenedKey = "permissionSetupWizard.relaunchJustHappened.v1"
+    public static let autoRelaunchSpentKey = "permissionSetupWizard.autoRelaunchSpent.v1"
     public static let coreGrantedSeenKey = "permissionSetupWizard.coreGrantedSeen.v2"
 
     private let defaults: UserDefaults
@@ -161,6 +167,37 @@ public struct SetupWizardStore {
     public var coreGrantedSeen: Bool {
         get { defaults.bool(forKey: Self.coreGrantedSeenKey) }
         nonmutating set { defaults.set(newValue, forKey: Self.coreGrantedSeenKey) }
+    }
+
+    /// True between a relaunch request and the new instance reading the resume state.
+    public var relaunchJustHappened: Bool { defaults.bool(forKey: Self.relaunchJustHappenedKey) }
+
+    /// An automatic relaunch was spent for the current grant. Cleared when a process sees Screen Recording granted,
+    /// so a later revoke and re-grant can relaunch once more. This is what stops a relaunch loop.
+    public var autoRelaunchSpent: Bool {
+        get { defaults.bool(forKey: Self.autoRelaunchSpentKey) }
+        nonmutating set { defaults.set(newValue, forKey: Self.autoRelaunchSpentKey) }
+    }
+
+    /// Written before the old instance quits: the page to reopen on, the just-relaunched flag, and the spent flag.
+    public func recordRelaunch(page: WizardPage) {
+        defaults.set(page.rawValue, forKey: Self.resumePageKey)
+        defaults.set(true, forKey: Self.relaunchJustHappenedKey)
+        defaults.set(true, forKey: Self.autoRelaunchSpentKey)
+    }
+
+    /// Drops the resume page and the just-relaunched flag. The spent flag stays.
+    public func clearResume() {
+        defaults.removeObject(forKey: Self.resumePageKey)
+        defaults.removeObject(forKey: Self.relaunchJustHappenedKey)
+    }
+
+    /// The page to reopen on when this launch follows a relaunch. Clears the resume state, so it answers once.
+    public func consumeResume() -> WizardPage? {
+        guard relaunchJustHappened else { return nil }
+        let page = defaults.string(forKey: Self.resumePageKey).flatMap(WizardPage.init(rawValue:)) ?? .core
+        clearResume()
+        return page
     }
 }
 
@@ -183,6 +220,10 @@ public enum WizardCopy {
     public static let revokedAccessibility = "Accessibility is off. Agents can't click, type, or read windows until you turn it back on."
 
     public static let adHocBanner = "This build is not signed with the release certificate. macOS may drop these permissions after an update, and you will need to allow them again."
+
+    public static let restartButton = "Restart OpenAB Computer"
+    public static let restartExplanation = "macOS needs a restart for Screen Recording to take effect."
+    public static let restartFailed = "Could not restart automatically. Quit OpenAB Computer from the menu bar, then open it again."
 
     public static let checkAgain = "Check Again"
     public static let setupIncomplete = "Setup incomplete"

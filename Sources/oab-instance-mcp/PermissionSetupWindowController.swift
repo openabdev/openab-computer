@@ -7,9 +7,16 @@ import InstanceMCPCore
 /// disabled until both are granted. Page 2 is optional Full Disk Access with a Skip link.
 ///
 /// Allow calls the system request API for that permission, re-tests, and opens the matching System Settings
-/// pane when the permission is still not granted. The window never captures a screenshot and never polls on
-/// its own. It re-tests on app activation and on Check Again. While it is open, the menu bar's 30-second
-/// revocation watch also pushes the two core results to it (`refreshCore`).
+/// pane when the permission is still not granted. The window never captures a screenshot. It re-tests on app
+/// activation and on Check Again. While it is open, the menu bar's 30-second revocation watch also pushes the two
+/// core results to it (`refreshCore`).
+///
+/// Screen Recording needs a restart on macOS before a running process sees the grant (design Q3). After Allow, and
+/// while Screen Recording is not granted, the window asks a short-lived child process of this same executable
+/// (`ChildPermissionCheck`, schedule in `ChildCheckSchedule`) whether it is granted. A fresh process reads the live
+/// answer. When the child says granted and this process still says off, the app relaunches itself once and the new
+/// instance reopens on the same page (`RelaunchCoordinator`). If the child cannot answer, or the user presses
+/// Check Again and it still says off, the row offers a Restart button that does the same.
 @MainActor
 final class PermissionSetupWindowController: NSWindowController {
     private final class RowControls {
@@ -17,16 +24,24 @@ final class PermissionSetupWindowController: NSWindowController {
         let status: NSTextField
         let button: NSButton
         let checkAgain: NSButton
+        let detail: NSTextField
+        let statusWidth: NSLayoutConstraint
+        let buttonWidth: NSLayoutConstraint
 
-        init(box: NSBox, status: NSTextField, button: NSButton, checkAgain: NSButton) {
+        init(box: NSBox, status: NSTextField, button: NSButton, checkAgain: NSButton, detail: NSTextField,
+             statusWidth: NSLayoutConstraint, buttonWidth: NSLayoutConstraint) {
             self.box = box
             self.status = status
             self.button = button
             self.checkAgain = checkAgain
+            self.detail = detail
+            self.statusWidth = statusWidth
+            self.buttonWidth = buttonWidth
         }
     }
 
     private let store: SetupWizardStore
+    private let relaunch: RelaunchCoordinator
     private let adHoc: Bool
     private let corePage = NSStackView()
     private let optionalPage = NSStackView()
@@ -47,11 +62,19 @@ final class PermissionSetupWindowController: NSWindowController {
     private var returned: Set<PermissionKind> = []
     private var page: WizardPage = .core
     private var activationObserver: NSObjectProtocol?
+    private var childCheckTimer: Timer?
+    private var childCheckStartedAt: Date?
+    private var lastChildCheckAt: Date?
+    private var childCheckInFlight = false
+    private var lastChildResult: ChildCheckResult?
+    /// The user pressed Check Again for Screen Recording, which says the switch is on.
+    private var userConfirmedScreenRecording = false
     private(set) var snapshot = PermissionSnapshot(screenRecording: .denied, accessibility: .denied,
                                                   fullDiskAccess: .unknown)
 
-    init(store: SetupWizardStore) {
+    init(store: SetupWizardStore, relaunch: RelaunchCoordinator) {
         self.store = store
+        self.relaunch = relaunch
         let signing = SigningIdentity.lookup()
         if case let .failed(status) = signing {
             log("permission setup: could not read the code signature (OSStatus \(status)); ad-hoc banner hidden")
@@ -76,6 +99,7 @@ final class PermissionSetupWindowController: NSWindowController {
             MainActor.assumeIsolated {
                 self?.markReturned()
                 self?.refresh()
+                self?.runChildCheckIfNeeded()
             }
         }
         refresh()
@@ -84,14 +108,16 @@ final class PermissionSetupWindowController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
+        childCheckTimer?.invalidate()
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
     }
 
     var isWindowVisible: Bool { window?.isVisible ?? false }
 
-    /// Opens on the core page while a core permission is missing, and on the optional page otherwise.
-    func show() {
-        page = SetupGate.evaluate(snapshot: PermissionProbe.current()).blocksCore ? .core : .optional
+    /// Opens on the core page while a core permission is missing, and on the optional page otherwise. After a
+    /// relaunch, `resume` is the page the previous instance was on.
+    func show(resume: WizardPage? = nil) {
+        page = resume ?? (SetupGate.evaluate(snapshot: PermissionProbe.current()).blocksCore ? .core : .optional)
         refresh()
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
@@ -110,6 +136,8 @@ final class PermissionSetupWindowController: NSWindowController {
 
     private func refresh(with current: PermissionSnapshot) {
         snapshot = current
+        // A process that sees Screen Recording granted has consumed the grant: a later revoke may relaunch once more.
+        if current.screenRecording.isGranted, store.autoRelaunchSpent { store.autoRelaunchSpent = false }
 
         // Read the stored flag before this refresh updates it, so a grant made now is not shown as a revocation.
         let previouslySeen = store.coreGrantedSeen
@@ -130,6 +158,67 @@ final class PermissionSetupWindowController: NSWindowController {
 
         corePage.isHidden = page != .core
         optionalPage.isHidden = page != .optional
+        updateChildCheckTimer()
+    }
+
+    // MARK: Screen Recording child check
+
+    private var relaunchAction: RelaunchAction {
+        RelaunchPolicy.decide(child: lastChildResult, processGranted: snapshot.screenRecording.isGranted,
+                              autoRelaunchSpent: store.autoRelaunchSpent,
+                              userConfirmedEnabled: userConfirmedScreenRecording)
+    }
+
+    private var needsChildCheck: Bool {
+        requested.contains(.screenRecording) && !snapshot.screenRecording.isGranted && isWindowVisible
+    }
+
+    private func updateChildCheckTimer() {
+        if needsChildCheck {
+            if childCheckTimer == nil {
+                if childCheckStartedAt == nil { childCheckStartedAt = Date() }
+                let timer = Timer(timeInterval: ChildCheckSchedule.fastInterval, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.childCheckTick() }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                childCheckTimer = timer
+            }
+        } else {
+            childCheckTimer?.invalidate()
+            childCheckTimer = nil
+            if snapshot.screenRecording.isGranted || !isWindowVisible { childCheckStartedAt = nil }
+        }
+    }
+
+    private func childCheckTick() {
+        guard needsChildCheck, let started = childCheckStartedAt else { updateChildCheckTimer(); return }
+        guard let interval = ChildCheckSchedule.interval(elapsed: Date().timeIntervalSince(started)) else { return }
+        if let last = lastChildCheckAt, Date().timeIntervalSince(last) < interval - 0.01 { return }
+        runChildCheckIfNeeded()
+    }
+
+    /// Runs the child off the main thread. One check at a time. It never prompts or captures.
+    private func runChildCheckIfNeeded() {
+        guard needsChildCheck, !childCheckInFlight else { return }
+        childCheckInFlight = true
+        lastChildCheckAt = Date()
+        let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = ChildPermissionCheck.run(executable: executable)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.childCheckFinished(result) }
+            }
+        }
+    }
+
+    private func childCheckFinished(_ result: ChildCheckResult) {
+        childCheckInFlight = false
+        lastChildResult = result
+        if relaunchAction == .relaunch {
+            // On refusal the spent flag is set, so the next evaluation shows the Restart button.
+            if !relaunch.requestRelaunch(page: page, automatic: true) { log("permission setup: automatic relaunch not started") }
+        }
+        refresh()
     }
 
     /// Opens one System Settings pane. When macOS refuses the URL, the window shows the manual path and logs it.
@@ -146,9 +235,14 @@ final class PermissionSetupWindowController: NSWindowController {
 
     private func applyRow(_ kind: PermissionKind, state: PermissionState) {
         guard let controls = rows[kind] else { return }
-        let row = WizardModel.rowState(state: state, requested: requested.contains(kind),
+        var row = WizardModel.rowState(state: state, requested: requested.contains(kind),
                                        returnedSinceRequest: returned.contains(kind))
+        if kind == .screenRecording { row = RelaunchPolicy.effectiveRow(base: row, action: relaunchAction) }
         rowStates[kind] = row
+        let restart = row == .needsRestart
+        controls.detail.stringValue = restart ? WizardCopy.restartExplanation : kind.detail
+        controls.buttonWidth.constant = restart ? 190 : 110
+        controls.statusWidth.constant = restart ? 110 : 150
         controls.status.stringValue = row.statusText
         controls.status.textColor = row.statusColor
         controls.checkAgain.isHidden = !(row == .waiting || row == .stillOff)
@@ -161,8 +255,7 @@ final class PermissionSetupWindowController: NSWindowController {
             controls.button.title = "Open Settings"
             controls.button.isEnabled = true
         case .restart:
-            // TODO(Q3): unreachable until needsRestart is produced. Exit lets KeepAlive restart the agent.
-            controls.button.title = "Restart"
+            controls.button.title = WizardCopy.restartButton
             controls.button.isEnabled = true
         case .allowed:
             controls.button.title = "Allowed"
@@ -204,11 +297,19 @@ final class PermissionSetupWindowController: NSWindowController {
         }
         requested.insert(kind)
         returned.remove(kind)
+        if kind == .screenRecording {
+            // A new round of checks: the schedule restarts and the old child result no longer applies.
+            childCheckStartedAt = nil
+            lastChildCheckAt = nil
+            lastChildResult = nil
+            userConfirmedScreenRecording = false
+        }
         let current = PermissionProbe.current()
         refresh(with: current)
         if current[kind] != .granted {
             openPane(kind)
         }
+        if kind == .screenRecording { runChildCheckIfNeeded() }
     }
 
     private func finish(_ event: WizardEvent) {
@@ -224,7 +325,9 @@ final class PermissionSetupWindowController: NSWindowController {
         case .openSettings?:
             openPane(kind)
         case .restart?:
-            exit(0) // TODO(Q3): KeepAlive restarts the agent. Confirm that restarting clears a stale denial on macOS 15 and 26.
+            if relaunch.requestRelaunch(page: page, automatic: false) { return }
+            paneNotice = WizardCopy.restartFailed
+            refresh()
         case .allowed?:
             break
         case .allow?, nil:
@@ -233,8 +336,10 @@ final class PermissionSetupWindowController: NSWindowController {
     }
 
     @objc private func checkAgainTapped(_ sender: NSButton) {
+        if kind(for: sender) == .screenRecording { userConfirmedScreenRecording = true }
         markReturned()
         refresh()
+        runChildCheckIfNeeded()
     }
 
     @objc private func continueTapped() {
@@ -284,8 +389,7 @@ final class PermissionSetupWindowController: NSWindowController {
         corePage.addArrangedSubview(revocationLabel)
         corePage.addArrangedSubview(adHocCoreLabel)
         corePage.addArrangedSubview(headline(WizardCopy.corePageTitle, subtitle: WizardCopy.corePageSubtitle))
-        corePage.addArrangedSubview(row(for: .screenRecording))
-        corePage.addArrangedSubview(row(for: .accessibility))
+        for kind in WizardModel.coreOrder { corePage.addArrangedSubview(row(for: kind)) }
         configureNotice(coreNoticeLabel)
         corePage.addArrangedSubview(coreNoticeLabel)
         corePage.addArrangedSubview(note(WizardCopy.corePageNote))
@@ -396,7 +500,8 @@ final class PermissionSetupWindowController: NSWindowController {
         status.font = .systemFont(ofSize: 12, weight: .medium)
         status.maximumNumberOfLines = 2
         status.alignment = .right
-        status.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        let statusWidth = status.widthAnchor.constraint(equalToConstant: 150)
+        statusWidth.isActive = true
 
         let checkAgain = NSButton(title: WizardCopy.checkAgain, target: self, action: #selector(checkAgainTapped(_:)))
         checkAgain.isBordered = false
@@ -406,7 +511,8 @@ final class PermissionSetupWindowController: NSWindowController {
 
         let button = NSButton(title: "Allow", target: self, action: #selector(rowButtonTapped(_:)))
         button.tag = PermissionKind.allCases.firstIndex(of: kind) ?? 0
-        button.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        let buttonWidth = button.widthAnchor.constraint(equalToConstant: 110)
+        buttonWidth.isActive = true
 
         let content = NSStackView(views: [icon, labels, status, checkAgain, button])
         content.orientation = .horizontal
@@ -416,7 +522,8 @@ final class PermissionSetupWindowController: NSWindowController {
         content.widthAnchor.constraint(equalToConstant: 566).isActive = true
         box.contentView = content
 
-        rows[kind] = RowControls(box: box, status: status, button: button, checkAgain: checkAgain)
+        rows[kind] = RowControls(box: box, status: status, button: button, checkAgain: checkAgain, detail: detail,
+                                 statusWidth: statusWidth, buttonWidth: buttonWidth)
         return box
     }
 }
@@ -453,7 +560,7 @@ private extension RowState {
         case .notAllowed: return "Not allowed"
         case .waiting: return "Waiting for System Settings"
         case .stillOff: return "Still off. Turn it on in System Settings, then come back."
-        case .needsRestart: return "Turned on. Restart OpenAB Computer to finish."
+        case .needsRestart: return "Restart to finish."
         case .allowed: return "✓ Allowed"
         case .cantTest: return "Can't test. Check System Settings."
         }

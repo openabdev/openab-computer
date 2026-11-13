@@ -29,7 +29,9 @@ let package = Package(
         ),
         .testTarget(
             name: "InstanceMCPCoreTests",
-            dependencies: ["InstanceMCPCore"],
+            // The executable is a dependency only so it is built beside the tests: one test runs it with the hidden
+            // permission-check argument.
+            dependencies: ["InstanceMCPCore", "oab-instance-mcp"],
             path: "Tests/InstanceMCPCoreTests"
         ),
     ]

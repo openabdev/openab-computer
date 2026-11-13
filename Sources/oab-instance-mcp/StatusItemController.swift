@@ -22,6 +22,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let defaults: UserDefaults
     private let store: SetupWizardStore
     private var permissionSetupWindow: PermissionSetupWindowController?
+    /// Relaunches the app for Screen Recording (design Q3): the new instance is started first, then this one quits.
+    private lazy var relaunchCoordinator = RelaunchCoordinator(
+        store: store,
+        launch: { [relaunchesOnRestart] in
+            // Under a LaunchAgent, KeepAlive brings the app back after the exit. A Finder launch has no agent, so a
+            // detached shell waits for this pid to exit (which frees 127.0.0.1:8795) and then opens the bundle.
+            guard relaunchesOnRestart, Bundle.main.bundlePath.hasSuffix(".app") else { return true }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; exec /usr/bin/open -n \"$2\"",
+                           "sh", String(getpid()), Bundle.main.bundlePath]
+            return (try? p.run()) != nil
+        },
+        terminate: { exit(0) })
     /// Revocation watch: 30 seconds, preflight reads only (`CoreWatch`). Runs for the life of the menu bar process.
     private var coreWatchTimer: Timer?
     private let coreReader = SystemCorePermissionReader()
@@ -79,6 +93,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Show on the first launch that has anything missing. A machine that already has every grant is marked
     /// complete without a window. Missing core permissions show the wizard regardless of earlier closes.
     func showPermissionSetupIfNeeded() {
+        // Right after a relaunch: reopen on the page the previous instance was on, even when everything is granted.
+        if let page = store.consumeResume() {
+            openPermissionSetup(page: page)
+            return
+        }
         let snapshot = PermissionProbe.current()
         if snapshot.allGranted {
             store.hasShown = true
@@ -90,10 +109,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     @objc func showPermissionSetup() {
+        openPermissionSetup(page: nil)
+    }
+
+    private func openPermissionSetup(page: WizardPage?) {
         if permissionSetupWindow == nil {
-            permissionSetupWindow = PermissionSetupWindowController(store: store)
+            permissionSetupWindow = PermissionSetupWindowController(store: store, relaunch: relaunchCoordinator)
         }
-        permissionSetupWindow?.show()
+        permissionSetupWindow?.show(resume: page)
     }
 
     /// Reopens the wizard after the user closed it, while a core permission is still missing.

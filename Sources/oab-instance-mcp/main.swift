@@ -6,6 +6,12 @@ import InstanceMCPCore
 
 let version = "0.12.0"
 
+// Hidden child of the permission wizard (not in --help). Reads the Screen Recording preflight in this fresh process,
+// prints nothing, and exits 0 (granted) or 1. It runs before any other setup: no window, no log, no token, no port.
+if PermissionCheckCommand.isInvocation(Array(CommandLine.arguments.dropFirst())) {
+    exit(PermissionCheckCommand.exitCode(reader: SystemCorePermissionReader()))
+}
+
 struct Options {
     var host = "127.0.0.1"
     var port: UInt16 = 8795
@@ -176,6 +182,11 @@ if firstRunLaunch {
     }
     #endif
     // Checked before any token is touched: a taken port means the installed agent is already serving.
+    // Right after a permission relaunch the old instance may still be quitting, so wait briefly for its port.
+    // A genuinely separate copy keeps the port and still gets the alert and exit 75.
+    if SetupWizardStore().relaunchJustHappened {
+        _ = FirstRunSetup.waitForPortFree(host: opts.host, port: opts.port, timeout: 5)
+    }
     if FirstRunSetup.isPortInUse(host: opts.host, port: opts.port) {
         showFirstRunAlert(FirstRunSetup.portInUseMessage(host: opts.host, port: opts.port))
         exit(75)

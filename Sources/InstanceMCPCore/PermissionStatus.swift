@@ -105,8 +105,8 @@ public enum PermissionProbe {
 }
 
 public extension PermissionKind {
-    /// Screen Recording and Accessibility are required. Full Disk Access is optional.
-    static let coreKinds: [PermissionKind] = [.screenRecording, .accessibility]
+    /// Accessibility and Screen Recording are required, in wizard order: Screen Recording last, because it needs a restart. Full Disk Access is optional.
+    static let coreKinds: [PermissionKind] = [.accessibility, .screenRecording]
 
     /// The System Settings pane for this permission. The menu bar and the setup wizard both use this.
     // TODO(Q6): verify on macOS 15 and 26 with a Developer ID build whether the newer
