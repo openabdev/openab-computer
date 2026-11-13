@@ -63,6 +63,9 @@ public final class TailnetExposure: @unchecked Sendable {
     /// One operation at a time (wizard, menu and launch share the instance). Recursive: the launch re-apply calls `enable()`.
     private let operation = NSRecursiveLock()
     private var url: String?
+    /// True while the launch re-apply runs `enable()`: a failed attempt then keeps the stored opt-in, so one bad
+    /// launch (tailscaled still starting) does not silently drop the user's choice.
+    private var preserveChoiceOnFailure = false
 
     /// - runner: required, so no caller can start a real CLI by omission. Production passes
     ///   `FirstRunSetup.systemTailscaleCommandRunner`.
@@ -220,6 +223,8 @@ public final class TailnetExposure: @unchecked Sendable {
             return .on(url: result)
         case .success(.absent):
             log("tailnet access: opted in and the mapping on port \(Self.httpsPort) is missing; re-applying once")
+            preserveChoiceOnFailure = true
+            defer { preserveChoiceOnFailure = false }
             return enable()
         case .success(.foreign(let existing)):
             log("tailnet access: opted in, but port \(Self.httpsPort) maps to \(existing); not re-applying")
@@ -230,10 +235,54 @@ public final class TailnetExposure: @unchecked Sendable {
         }
     }
 
+    /// At launch without a detected login: a mapping this app created earlier (or the installer's, same target) is
+    /// still live in tailscaled, and this process would accept the bearer token alone through it. Remove it, but only
+    /// when it is exactly our own backend on 8444; a foreign mapping and every other port stay untouched. The stored
+    /// opt-in is kept, so a later launch that detects the login re-applies it. Call it before the server listens.
+    /// Needs no opt-in; with a detected login it does nothing and runs nothing.
+    @discardableResult
+    public func withdrawWithoutLogin() -> Outcome? {
+        operation.lock(); defer { operation.unlock() }
+        guard !loginDetected else { return nil }
+        switch readMapping() {
+        case .failure(let why):
+            log("tailnet access: no login detected and serve status could not be read (\(why)); cannot check for a leftover mapping")
+            return nil
+        case .success(.absent), .success(.foreign):
+            return nil
+        case .success(.ours):
+            break
+        }
+        log("tailnet access: no Tailscale login was detected, so the leftover mapping on port \(Self.httpsPort) would accept the token alone; removing it")
+        if case .failure(let why) = tailscale(serveOffArguments, timeout: 10, attempts: 2, allowEmpty: true) {
+            log("tailnet access: could not remove the leftover mapping (\(why)); remove it with: tailscale serve --https=\(Self.httpsPort) off")
+            return .failed("Could not remove the tailnet mapping on port \(Self.httpsPort).")
+        }
+        if case .success(.absent) = readMapping() {
+            log("tailnet access: leftover mapping on port \(Self.httpsPort) removed; the opt-in is kept for a launch with a login")
+            return .off
+        }
+        log("tailnet access: the leftover mapping on port \(Self.httpsPort) is still there after serve off")
+        return .failed("The tailnet mapping on port \(Self.httpsPort) is still there.")
+    }
+
+    /// At launch with a login but no stored opt-in: if 8444 already maps to this app's backend (set by hand or by an
+    /// older install), show it as on instead of "Off". Read-only: runs only `serve status` and the name lookup.
+    @discardableResult
+    public func adoptExistingMapping() -> Outcome? {
+        operation.lock(); defer { operation.unlock() }
+        guard loginDetected, !optedIn else { return nil }
+        guard case .success(.ours) = readMapping(), case .success(let dns) = selfDNSName() else { return nil }
+        let result = "https://\(dns):\(Self.httpsPort)/mcp"
+        setChoice(true, url: result)
+        log("tailnet access: port \(Self.httpsPort) already maps to this app; shown as on")
+        return .on(url: result)
+    }
+
     // MARK: state
 
     private func fail(_ message: String) -> Outcome {
-        setChoice(false)
+        if !preserveChoiceOnFailure { setChoice(false) }
         return .failed(message)
     }
 

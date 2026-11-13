@@ -6,9 +6,14 @@ public enum LaunchdJob {
     /// it is "0" in a terminal session, and an app opened from Finder or `open` gets "application.<bundle id>.<n>.<n>".
     /// Neither of those is a job we can boot out, so only a real job label counts. The parent pid is no help here:
     /// launchd is pid 1 and the parent of Finder launches too.
+    ///
+    /// The variable is inherited by every child of a job, so a shell inside another LaunchAgent (an Actions runner, a
+    /// coding agent) carries that job's label. Only this app's own label counts: booting out any other would stop an
+    /// unrelated service, and a restart would wait for a KeepAlive that does not exist.
+    public static let ownLabel = "dev.openab.instance-mcp"
+
     public static func jobLabel(environment: [String: String]) -> String? {
-        guard let name = environment["XPC_SERVICE_NAME"], !name.isEmpty, name != "0",
-              !name.hasPrefix("application.") else { return nil }
+        guard let name = environment["XPC_SERVICE_NAME"], name == ownLabel else { return nil }
         return name
     }
 

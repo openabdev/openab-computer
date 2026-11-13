@@ -31,14 +31,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Relaunches the app for Screen Recording (design Q3): the new instance is started first, then this one quits.
     private lazy var relaunchCoordinator = RelaunchCoordinator(
         store: store,
-        launch: { [relaunchesOnRestart, launchdJobLabel] in
-            // Under a LaunchAgent, KeepAlive brings the app back after the exit. A Finder launch has no agent, so a
-            // detached shell waits for this pid to exit (which frees 127.0.0.1:8795) and then opens the bundle.
-            guard relaunchesOnRestart, launchdJobLabel == nil, Bundle.main.bundlePath.hasSuffix(".app") else { return true }
+        launch: { [launchdJobLabel] in
+            // Under this app's LaunchAgent, KeepAlive brings the app back after the exit. Otherwise a detached shell
+            // waits for this pid to exit (which frees 127.0.0.1:8795) and then starts the same invocation again: the
+            // bundle for a Finder launch, the same executable and arguments for a flag launch from a terminal.
+            guard launchdJobLabel == nil else { return true }
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            p.arguments = ["-c", "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; exec /usr/bin/open -n \"$2\"",
-                           "sh", String(getpid()), Bundle.main.bundlePath]
+            let wait = "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; shift; "
+            if Bundle.main.bundlePath.hasSuffix(".app") {
+                p.arguments = ["-c", wait + "exec /usr/bin/open -n \"$1\"", "sh", String(getpid()), Bundle.main.bundlePath]
+            } else {
+                let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
+                p.arguments = ["-c", wait + "exec \"$@\"", "sh", String(getpid()), exe] + Array(CommandLine.arguments.dropFirst())
+            }
             return (try? p.run()) != nil
         },
         terminate: { exit(0) })

@@ -53,6 +53,23 @@ final class MenuModelTests: XCTestCase {
                        "an app opened from Finder is not a job that can be booted out")
     }
 
+    func testAForeignInheritedJobLabelIsNotThisAppsLaunchdJob() {
+        let foreign = ["XPC_SERVICE_NAME": "actions.runner.oablab.macmini-oablab"]
+        XCTAssertNil(LaunchdJob.jobLabel(environment: foreign))
+        XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: foreign))
+        // Quit then boots nothing out; it just exits.
+        var booted: [String] = [], exits = 0
+        MenuModel.quit(jobLabel: LaunchdJob.jobLabel(environment: foreign), bootout: { booted.append($0) }, exitProcess: { exits += 1 })
+        XCTAssertEqual(booted, [])
+        XCTAssertEqual(exits, 1)
+        // Restart goes through the relaunch coordinator, not an exit that waits for a KeepAlive that is not there.
+        var relaunches = 0, exitCalls = 0
+        MenuModel.restart(underLaunchd: LaunchdJob.isRunByLaunchd(environment: foreign),
+                          relaunch: { relaunches += 1; return true }, exitProcess: { exitCalls += 1 })
+        XCTAssertEqual(relaunches, 1)
+        XCTAssertEqual(exitCalls, 0)
+    }
+
     func testQuitAndRestartLabelsFollowLaunchd() {
         XCTAssertEqual(MenuModel.quitTitle(underLaunchd: false), "Quit OpenAB Computer")
         XCTAssertEqual(MenuModel.quitTitle(underLaunchd: true), "Quit Agent (stops launchd job)")

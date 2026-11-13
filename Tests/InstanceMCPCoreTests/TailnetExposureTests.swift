@@ -299,6 +299,82 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertTrue(foreign.mutating.isEmpty)
     }
 
+    // MARK: no login with a leftover mapping
+
+    func testALeftoverOwnMappingIsRemovedAtLaunchWithoutALoginAndTheOptInIsKept() {
+        defaults.set(true, forKey: TailnetExposure.optInKey)
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        fake.serve(443, to: "http://127.0.0.1:3000")
+        let exposure = make(fake, login: false)
+        XCTAssertEqual(exposure.withdrawWithoutLogin(), .off)
+        XCTAssertEqual(fake.mutating, [offArgs])
+        XCTAssertNil(fake.web["mac.tail1234.ts.net:8444"])
+        XCTAssertEqual(fake.web["mac.tail1234.ts.net:443"], "http://127.0.0.1:3000", "other ports stay")
+        XCTAssertTrue(exposure.optedIn, "kept for a later launch that detects the login")
+    }
+
+    func testWithoutALoginAForeignOrMissingMappingIsLeftAlone() {
+        let foreign = FakeTailscale()
+        foreign.serve(8444, to: "http://127.0.0.1:9000")
+        XCTAssertNil(make(foreign, login: false).withdrawWithoutLogin())
+        XCTAssertTrue(foreign.mutating.isEmpty)
+        XCTAssertEqual(foreign.web["mac.tail1234.ts.net:8444"], "http://127.0.0.1:9000")
+
+        let none = FakeTailscale()
+        XCTAssertNil(make(none, login: false).withdrawWithoutLogin())
+        XCTAssertTrue(none.mutating.isEmpty)
+
+        let unreadable = FakeTailscale()
+        unreadable.statusFails = true
+        XCTAssertNil(make(unreadable, login: false).withdrawWithoutLogin())
+        XCTAssertTrue(unreadable.mutating.isEmpty)
+    }
+
+    func testWithdrawReportsAMappingThatWillNotGoAway() {
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        fake.offNoEffect = true
+        guard case .failed = make(fake, login: false).withdrawWithoutLogin() else { return XCTFail("expected a failure") }
+    }
+
+    func testWithALoginTheWithdrawRunsNothing() {
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        XCTAssertNil(make(fake, login: true).withdrawWithoutLogin())
+        XCTAssertTrue(fake.calls.isEmpty)
+    }
+
+    // MARK: launch re-apply failure and an existing own mapping
+
+    func testAFailedLaunchReapplyKeepsTheStoredOptIn() {
+        defaults.set(true, forKey: TailnetExposure.optInKey)
+        let fake = FakeTailscale()
+        fake.serveFails = true
+        let exposure = make(fake)
+        guard case .failed = exposure.reapplyAtLaunch() else { return XCTFail("expected a failure") }
+        XCTAssertTrue(exposure.optedIn, "a transient failure at launch must not drop the choice")
+        // A user-driven attempt that fails still leaves the choice off.
+        guard case .failed = exposure.enable() else { return XCTFail("expected a failure") }
+        XCTAssertFalse(exposure.optedIn)
+    }
+
+    func testAnExistingOwnMappingWithoutAnOptInIsShownAsOnWithoutRunningServe() {
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        let exposure = make(fake)
+        XCTAssertEqual(exposure.adoptExistingMapping(), .on(url: expectedURL))
+        XCTAssertEqual(exposure.publicURL, expectedURL)
+        XCTAssertTrue(fake.mutating.isEmpty)
+
+        defaults.removeObject(forKey: TailnetExposure.optInKey)
+        let foreign = FakeTailscale()
+        foreign.serve(8444, to: "http://127.0.0.1:9000")
+        let other = make(foreign)
+        XCTAssertNil(other.adoptExistingMapping())
+        XCTAssertNil(other.publicURL)
+    }
+
     // MARK: parsing and the real runner
 
     func testServeStatusParsing() {
