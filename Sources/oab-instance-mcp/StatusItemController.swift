@@ -100,6 +100,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             return
         }
         let snapshot = PermissionProbe.current()
+        clearSpentIfGranted(snapshot)
         if snapshot.allGranted {
             store.hasShown = true
             return
@@ -118,6 +119,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             permissionSetupWindow = PermissionSetupWindowController(store: store, relaunch: relaunchCoordinator)
         }
         permissionSetupWindow?.show(resume: page)
+    }
+
+    /// A process that sees Screen Recording granted has consumed the grant, including after the silent Finish relaunch
+    /// (which reopens no wizard). A later revoke and re-grant may then relaunch once more.
+    private func clearSpentIfGranted(_ snap: PermissionSnapshot) {
+        if snap.screenRecording.isGranted, store.autoRelaunchSpent { store.autoRelaunchSpent = false }
     }
 
     /// Reopens the wizard after the user closed it, while a core permission is still missing.

@@ -70,6 +70,18 @@ final class RelaunchCoordinatorTests: XCTestCase {
         XCTAssertEqual(launches, 2)
     }
 
+    func testFailedLaunchLeavesTheAutomaticRelaunchUnspent() {
+        let (store, defaults, suite) = freshStore()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var ok = false
+        let coordinator = RelaunchCoordinator(store: store, launch: { ok }, terminate: {})
+        XCTAssertFalse(coordinator.requestRelaunch(page: nil, automatic: true))
+        XCTAssertFalse(store.autoRelaunchSpent, "a failed launch must not spend the relaunch")
+        ok = true
+        XCTAssertTrue(coordinator.requestRelaunch(page: nil, automatic: true))
+        XCTAssertTrue(store.autoRelaunchSpent)
+    }
+
     func testManualRestartWorksAfterTheAutomaticOneWasSpent() {
         let (store, defaults, suite) = freshStore()
         defer { defaults.removePersistentDomain(forName: suite) }

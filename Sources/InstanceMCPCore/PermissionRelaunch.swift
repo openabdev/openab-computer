@@ -146,10 +146,13 @@ public final class RelaunchCoordinator {
     public func requestRelaunch(page: WizardPage?, automatic: Bool) -> Bool {
         guard !requested else { return false }
         if automatic && store.autoRelaunchSpent { return false }
+        let wasSpent = store.autoRelaunchSpent
         store.recordRelaunch(page: page)
         requested = true
         guard launch() else {
             store.clearResume()
+            // A failed launch spends nothing: Finish or the Restart button can try again.
+            store.autoRelaunchSpent = wasSpent
             requested = false
             return false
         }
