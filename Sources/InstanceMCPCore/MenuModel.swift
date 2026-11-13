@@ -4,21 +4,23 @@ import Foundation
 public enum LaunchdJob {
     /// launchd sets `XPC_SERVICE_NAME` to the job label for the jobs it starts. The variable also exists elsewhere:
     /// it is "0" in a terminal session, and an app opened from Finder or `open` gets "application.<bundle id>.<n>.<n>".
-    /// Neither of those is a job we can boot out, so only a real job label counts. The parent pid is no help here:
-    /// launchd is pid 1 and the parent of Finder launches too.
+    /// Neither of those is a job we can boot out, so only a real job label counts. The parent pid alone is no help:
+    /// launchd is pid 1 and the parent of Finder launches too, so it is checked in addition to the label.
     ///
     /// The variable is inherited by every child of a job, so a shell inside another LaunchAgent (an Actions runner, a
     /// coding agent) carries that job's label. Only this app's own label counts: booting out any other would stop an
     /// unrelated service, and a restart would wait for a KeepAlive that does not exist.
     public static let ownLabel = "dev.openab.instance-mcp"
 
-    public static func jobLabel(environment: [String: String]) -> String? {
-        guard let name = environment["XPC_SERVICE_NAME"], name == ownLabel else { return nil }
+    /// A child of this app (a second copy started through the exec tool) inherits the label too, but its parent is the
+    /// app, not launchd (pid 1), so the parent pid must be 1 as well.
+    public static func jobLabel(environment: [String: String], parentPID: Int32 = getppid()) -> String? {
+        guard parentPID == 1, let name = environment["XPC_SERVICE_NAME"], name == ownLabel else { return nil }
         return name
     }
 
-    public static func isRunByLaunchd(environment: [String: String]) -> Bool {
-        jobLabel(environment: environment) != nil
+    public static func isRunByLaunchd(environment: [String: String], parentPID: Int32 = getppid()) -> Bool {
+        jobLabel(environment: environment, parentPID: parentPID) != nil
     }
 }
 

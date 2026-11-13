@@ -95,6 +95,13 @@ public final class TailnetExposure: @unchecked Sendable {
     /// Whether the wizard offers the page at all.
     public var offersExposure: Bool { loginDetected }
 
+    /// True when an installer passed a `--public-url` whose port is not 8444: the installer owns that mapping, so no
+    /// exposure object is created and the menu keeps showing the given URL (no second mapping is offered on 8444).
+    public static func installerOwnsOtherPort(publicURL: String?) -> Bool {
+        guard let publicURL else { return false }
+        return URL(string: publicURL)?.port != httpsPort
+    }
+
     // MARK: arguments
 
     public var serveOnArguments: [String] { ["serve", "--bg", "--https=\(Self.httpsPort)", backend] }

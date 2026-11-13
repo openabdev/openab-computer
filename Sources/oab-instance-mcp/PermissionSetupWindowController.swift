@@ -25,7 +25,7 @@ final class PermissionSetupWindowController: NSWindowController {
     private let store: SetupWizardStore
     private let relaunch: RelaunchCoordinator
     private let adHoc: Bool
-    /// Nil for flag launches (the installer owns exposure there); the tailnet page is then never shown.
+    /// Nil when there is no Tailscale login to rely on (no detected login, no allow list); the tailnet page is then never shown.
     private let exposure: TailnetExposure?
     private let tailnetPage = NSStackView()
     private let tailnetFooterButton = NSButton(title: "Skip", target: nil, action: nil)

@@ -298,7 +298,9 @@ let attachManager: AttachManager? = opts.attach
 // with flags and a login allow list (the installer's LaunchAgent) gets the same state line and Turn Off control, and
 // shows the installer's mapping as on; nothing here turns exposure on by itself in that mode either.
 let exposureLoginDetected = firstRunLaunch ? firstRunLoginDetected : !opts.allowLogins.isEmpty
-let tailnetExposure: TailnetExposure? = (firstRunLaunch || (opts.menuBar && !opts.allowLogins.isEmpty))
+// An installer --public-url on a port other than 8444 means the installer owns a mapping this code does not manage: leave it alone.
+let installerOwnsOtherPort = !firstRunLaunch && TailnetExposure.installerOwnsOtherPort(publicURL: opts.publicURL)
+let tailnetExposure: TailnetExposure? = (firstRunLaunch || (opts.menuBar && !opts.allowLogins.isEmpty && !installerOwnsOtherPort))
     && ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] == nil
     ? TailnetExposure(defaults: .standard, loginDetected: exposureLoginDetected, backendPort: opts.port,
                       runner: FirstRunSetup.systemTailscaleCommandRunner, log: log)

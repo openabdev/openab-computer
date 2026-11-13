@@ -443,4 +443,11 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertTrue(detail.contains("token"))
         XCTAssertTrue(WizardCopy.tailnetDetail(name: "mac.ts.net").contains("https://mac.ts.net:8444/mcp"))
     }
+
+    func testInstallerPublicURLOnAnotherPortIsLeftToTheInstaller() {
+        XCTAssertFalse(TailnetExposure.installerOwnsOtherPort(publicURL: nil))
+        XCTAssertFalse(TailnetExposure.installerOwnsOtherPort(publicURL: "https://mac.tail1.ts.net:8444/mcp"))
+        XCTAssertTrue(TailnetExposure.installerOwnsOtherPort(publicURL: "https://mac.tail1.ts.net:9443/mcp"))
+        XCTAssertTrue(TailnetExposure.installerOwnsOtherPort(publicURL: "https://mac.tail1.ts.net/mcp"))
+    }
 }

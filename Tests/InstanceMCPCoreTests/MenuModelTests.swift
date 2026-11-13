@@ -44,8 +44,10 @@ final class MenuModelTests: XCTestCase {
     }
 
     func testLaunchdDetectionUsesAJobLabelOnly() {
-        XCTAssertTrue(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "dev.openab.instance-mcp"]))
-        XCTAssertEqual(LaunchdJob.jobLabel(environment: ["XPC_SERVICE_NAME": "dev.openab.instance-mcp"]), "dev.openab.instance-mcp")
+        XCTAssertTrue(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "dev.openab.instance-mcp"], parentPID: 1))
+        XCTAssertEqual(LaunchdJob.jobLabel(environment: ["XPC_SERVICE_NAME": "dev.openab.instance-mcp"], parentPID: 1), "dev.openab.instance-mcp")
+        XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "dev.openab.instance-mcp"], parentPID: 4242),
+                       "a child of the app inherits the label but its parent is not launchd")
         XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: [:]))
         XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "0"]), "a terminal session")
         XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": ""]))
