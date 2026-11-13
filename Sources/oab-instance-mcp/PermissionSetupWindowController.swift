@@ -47,11 +47,10 @@ final class PermissionSetupWindowController: NSWindowController {
     private var childCheckStartedAt: Date?
     private var lastChildCheckAt: Date?
     private var childCheckInFlight = false
-    private var lastChildResult: ChildCheckResult?
     /// Shared with the menu bar item, so both read the same child result for Screen Recording.
     private let probeCache = ScreenRecordingProbeCache.shared
-    /// The child result both surfaces use: this window's own latest check, else the shared cached one.
-    private var childForStatus: ChildCheckResult? { lastChildResult ?? probeCache.latest }
+    /// The one child result both surfaces use: the shared cache (this window records its own checks into it).
+    private var childForStatus: ChildCheckResult? { probeCache.latest }
     /// The user pressed Check Again for Screen Recording, which says the switch is on.
     private var userConfirmedScreenRecording = false
     /// What this process itself reports, before the child result is applied.
@@ -213,7 +212,6 @@ final class PermissionSetupWindowController: NSWindowController {
     private func childCheckFinished(_ result: ChildCheckResult) {
         childCheckInFlight = false
         // A confirmed grant is not undone by one check that could not answer.
-        if !(result == .failed && lastChildResult == .granted) { lastChildResult = result }
         probeCache.record(result)
         refresh()
     }
@@ -290,7 +288,6 @@ final class PermissionSetupWindowController: NSWindowController {
             // A new round of checks: the schedule restarts and the old child result no longer applies.
             childCheckStartedAt = nil
             lastChildCheckAt = nil
-            lastChildResult = nil
             probeCache.invalidate()
             userConfirmedScreenRecording = false
         }

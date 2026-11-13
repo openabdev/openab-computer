@@ -64,6 +64,7 @@ public final class ScreenRecordingProbeCache: @unchecked Sendable {
     private var result: ChildCheckResult?
     private var checkedAt: Date?
     private var inFlight = false
+    private var waiting: [@Sendable (ChildCheckResult?) -> Void] = []
 
     public init(ttl: TimeInterval = ScreenRecordingProbeCache.defaultTTL,
                 now: @escaping @Sendable () -> Date = { Date() },
@@ -98,11 +99,18 @@ public final class ScreenRecordingProbeCache: @unchecked Sendable {
     /// `completion` runs on the probe queue.
     public func refreshIfStale(completion: (@Sendable (ChildCheckResult?) -> Void)? = nil) {
         lock.lock()
-        if inFlight || (checkedAt.map { now().timeIntervalSince($0) < ttl } ?? false) {
+        if inFlight {
+            // Join the running probe: every caller gets its repaint callback.
+            if let completion { waiting.append(completion) }
+            lock.unlock()
+            return
+        }
+        if checkedAt.map({ now().timeIntervalSince($0) < ttl }) ?? false {
             lock.unlock()
             return
         }
         inFlight = true
+        if let completion { waiting.append(completion) }
         lock.unlock()
         queue.async { [self] in
             // A probe on the main thread would block the UI: report nothing instead.
@@ -110,8 +118,10 @@ public final class ScreenRecordingProbeCache: @unchecked Sendable {
             lock.lock()
             if let value { store(value) }
             inFlight = false
+            let callbacks = waiting
+            waiting = []
             lock.unlock()
-            completion?(value)
+            for callback in callbacks { callback(value) }
         }
     }
 

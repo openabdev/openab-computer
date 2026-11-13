@@ -128,4 +128,30 @@ final class ScreenRecordingProbeCacheTests: XCTestCase {
         cache.invalidate()
         XCTAssertNil(cache.latest)
     }
+
+    func testTwoCallersJoinOneChildRunAndBothGetTheirCallback() {
+        let gate = DispatchSemaphore(value: 0)
+        let calls = Calls()
+        let cache = ScreenRecordingProbeCache(ttl: 5, probe: { calls.note(); gate.wait(); return .granted })
+        let first = expectation(description: "first"), second = expectation(description: "second")
+        nonisolated(unsafe) var a: ChildCheckResult?, b: ChildCheckResult?
+        cache.refreshIfStale { a = $0; first.fulfill() }
+        cache.refreshIfStale { b = $0; second.fulfill() }
+        gate.signal()
+        wait(for: [first, second], timeout: 5)
+        XCTAssertEqual(calls.count, 1, "one child run for both callers")
+        XCTAssertEqual(a, .granted)
+        XCTAssertEqual(b, .granted)
+    }
+
+    func testWizardChecksRecordedInTheCacheAreWhatTheMenuReads() {
+        // The wizard records its own check into the cache and reads the cache back; the menu reads the same cache.
+        let cache = ScreenRecordingProbeCache(probe: { .failed })
+        let process = PermissionSnapshot(screenRecording: .denied, accessibility: .granted, fullDiskAccess: .unknown)
+        cache.record(.granted)
+        XCTAssertEqual(SharedPermissionStatus.resolve(process: process, child: cache.latest).shown.screenRecording, .granted)
+        // A later revoke reported by the child replaces the old grant for both surfaces.
+        cache.record(.denied)
+        XCTAssertEqual(SharedPermissionStatus.resolve(process: process, child: cache.latest).shown.screenRecording, .denied)
+    }
 }

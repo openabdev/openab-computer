@@ -103,7 +103,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             openPermissionSetup(page: page)
             return
         }
-        let snapshot = PermissionProbe.current()
+        let snapshot = resolvedPermissions().shown
         clearSpentIfGranted(snapshot)
         if snapshot.allGranted {
             store.hasShown = true
@@ -134,7 +134,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Reopens the wizard after the user closed it, while a core permission is still missing.
     private func reopenSetupIfCoreMissing() {
         let visible = permissionSetupWindow?.isWindowVisible ?? false
-        if PermissionSetupPolicy.shouldReopenOnActivation(windowVisible: visible, snapshot: PermissionProbe.current()) {
+        if PermissionSetupPolicy.shouldReopenOnActivation(windowVisible: visible, snapshot: resolvedPermissions().shown) {
             showPermissionSetup()
         }
     }
