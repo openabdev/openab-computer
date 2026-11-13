@@ -23,8 +23,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let token: String?
     /// Shown in the menu when the no-flag launch found no Tailscale login (token-only auth).
     private let notice: String?
-    /// True for a no-flag (Finder) launch, which has no LaunchAgent to restart it after an exit.
-    private let relaunchesOnRestart: Bool
     private let defaults: UserDefaults
     private let store: SetupWizardStore
     private var permissionSetupWindow: PermissionSetupWindowController?
@@ -77,7 +75,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     init(version: String, url: String, logPath: String, token: String? = nil,
          defaults: UserDefaults = .standard, attach: AttachManager? = nil,
-         switchboard: SwitchboardSupervisor? = nil, notice: String? = nil, relaunchesOnRestart: Bool = false,
+         switchboard: SwitchboardSupervisor? = nil, notice: String? = nil,
          exposure: TailnetExposure? = nil,
          environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.exposure = exposure
@@ -87,7 +85,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.logPath = logPath
         self.token = token
         self.notice = notice
-        self.relaunchesOnRestart = relaunchesOnRestart
         self.defaults = defaults
         self.store = SetupWizardStore(defaults: defaults)
         self.attach = attach

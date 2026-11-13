@@ -296,12 +296,16 @@ let attachManager: AttachManager? = opts.attach
     : nil
 // Opt-in tailnet exposure exists only for the no-flag launch; flag launches keep the installer's own serve mapping.
 let tailnetExposure: TailnetExposure? = firstRunLaunch
+    && ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] == nil
     ? TailnetExposure(defaults: .standard, loginDetected: firstRunLoginDetected, backendPort: opts.port,
                       runner: FirstRunSetup.systemTailscaleCommandRunner, log: log)
     : nil
 // Without a detected login this launch accepts the token alone. A leftover app-owned 8444 mapping would expose that
-// to the tailnet, so it is removed before the listener starts.
-tailnetExposure?.withdrawWithoutLogin()
+// to the tailnet, so it is removed before the listener starts. If it is there and cannot be removed, fail closed.
+if case .failed(let why)? = tailnetExposure?.withdrawWithoutLogin() {
+    log("refusing to start: \(why) No Tailscale login was detected, so the token alone would guard it. Run: tailscale serve --https=8444 off")
+    fputs("refusing to start: \(why)\n", stderr); exit(3)
+}
 let endpoint = MCPHTTPEndpoint(path: opts.path, server: server, auth: auth, attach: attachManager, log: log)
 
 // Must be a global: a `let` inside `do {}` is released after the block and the
@@ -395,7 +399,7 @@ if opts.menuBar {
     statusItem = MainActor.assumeIsolated {
         StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
                              attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,
-                             relaunchesOnRestart: firstRunLaunch, exposure: exposure)
+                             exposure: exposure)
     }
     // A stored opt-in is re-applied once per launch, off the main thread, and only when the mapping is missing.
     if let exposure {

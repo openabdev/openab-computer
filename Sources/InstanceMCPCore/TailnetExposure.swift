@@ -153,8 +153,15 @@ public final class TailnetExposure: @unchecked Sendable {
             return fail("Tailscale did not report the mapping on port \(Self.httpsPort) after setting it. The choice stays off.")
         case .failure(let why):
             log("tailnet access: could not verify the mapping (\(why))")
-            if before == .absent { rollback() }
-            return fail("Could not verify the mapping with Tailscale Serve status, so it was undone. The choice stays off.")
+            // Undo only a mapping that is confirmed to be ours; if status is still unreadable, leave 8444 alone.
+            if before == .absent {
+                if case .success(.ours) = readMapping() {
+                    rollback()
+                    return fail("Could not verify the mapping with Tailscale Serve status, so it was undone. The choice stays off.")
+                }
+                log("tailnet access: status unreadable after serve; port \(Self.httpsPort) left as is (not confirmed to be ours)")
+            }
+            return fail("Could not verify the mapping with Tailscale Serve status. The choice stays off. Check with: tailscale serve status")
         }
     }
 
@@ -238,13 +245,15 @@ public final class TailnetExposure: @unchecked Sendable {
     /// At launch without a detected login: a mapping this app created earlier (or the installer's, same target) is
     /// still live in tailscaled, and this process would accept the bearer token alone through it. Remove it, but only
     /// when it is exactly our own backend on 8444; a foreign mapping and every other port stay untouched. The stored
-    /// opt-in is kept, so a later launch that detects the login re-applies it. Call it before the server listens.
+    /// opt-in is kept, so a later launch that detects the login re-applies it. Call it before the server listens; a `.failed` result means the mapping is positively there and could not be removed, and the caller must not listen.
     /// Needs no opt-in; with a detected login it does nothing and runs nothing.
     @discardableResult
     public func withdrawWithoutLogin() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
         guard !loginDetected else { return nil }
-        switch readMapping() {
+        switch readMapping(attempts: 1) {
+        case .failure(.noCLI):
+            return nil
         case .failure(let why):
             log("tailnet access: no login detected and serve status could not be read (\(why)); cannot check for a leftover mapping")
             return nil
@@ -254,11 +263,11 @@ public final class TailnetExposure: @unchecked Sendable {
             break
         }
         log("tailnet access: no Tailscale login was detected, so the leftover mapping on port \(Self.httpsPort) would accept the token alone; removing it")
-        if case .failure(let why) = tailscale(serveOffArguments, timeout: 10, attempts: 2, allowEmpty: true) {
+        if case .failure(let why) = tailscale(serveOffArguments, timeout: 5, attempts: 1, allowEmpty: true) {
             log("tailnet access: could not remove the leftover mapping (\(why)); remove it with: tailscale serve --https=\(Self.httpsPort) off")
             return .failed("Could not remove the tailnet mapping on port \(Self.httpsPort).")
         }
-        if case .success(.absent) = readMapping() {
+        if case .success(.absent) = readMapping(attempts: 1) {
             log("tailnet access: leftover mapping on port \(Self.httpsPort) removed; the opt-in is kept for a launch with a login")
             return .off
         }
@@ -274,8 +283,9 @@ public final class TailnetExposure: @unchecked Sendable {
         guard loginDetected, !optedIn else { return nil }
         guard case .success(.ours) = readMapping(), case .success(let dns) = selfDNSName() else { return nil }
         let result = "https://\(dns):\(Self.httpsPort)/mcp"
-        setChoice(true, url: result)
-        log("tailnet access: port \(Self.httpsPort) already maps to this app; shown as on")
+        // In memory only: observing a mapping is not consent. The opt-in is written only by the user's Allow action.
+        setURL(result)
+        log("tailnet access: port \(Self.httpsPort) already maps to this app; shown as on (opt-in not recorded)")
         return .on(url: result)
     }
 
@@ -308,8 +318,8 @@ public final class TailnetExposure: @unchecked Sendable {
         }
     }
 
-    private func readMapping() -> Result<ServeMapping, CLIFailure> {
-        tailscale(Self.serveStatusArguments, timeout: 3, attempts: 3, allowEmpty: true).flatMap { data in
+    private func readMapping(attempts: Int = 3) -> Result<ServeMapping, CLIFailure> {
+        tailscale(Self.serveStatusArguments, timeout: 3, attempts: attempts, allowEmpty: true).flatMap { data in
             Self.mapping(serveStatusJSON: data, httpsPort: Self.httpsPort, backend: backend)
                 .map { .success($0) } ?? .failure(.unparsable)
         }

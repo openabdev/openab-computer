@@ -199,12 +199,12 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertFalse(a.optedIn)
         XCTAssertNil(a.publicURL)
 
-        // Status cannot be read after the change: the mapping is undone and the choice stays off.
+        // Status cannot be read after the change: ownership is unconfirmed, so 8444 is left alone and the choice stays off.
         let blind = FakeTailscale()
         blind.statusFailsAfterMutation = true
         let b = make(blind)
         guard case .failed = b.enable() else { return XCTFail("expected a failure") }
-        XCTAssertEqual(blind.mutating, [onArgs, offArgs], "an unverifiable mapping is rolled back")
+        XCTAssertEqual(blind.mutating, [onArgs], "an unconfirmed mapping is not removed")
         XCTAssertFalse(b.optedIn)
         XCTAssertNil(b.publicURL)
     }
@@ -366,6 +366,9 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertEqual(exposure.adoptExistingMapping(), .on(url: expectedURL))
         XCTAssertEqual(exposure.publicURL, expectedURL)
         XCTAssertTrue(fake.mutating.isEmpty)
+        XCTAssertFalse(exposure.optedIn, "observing a mapping is not consent")
+        XCTAssertNil(defaults.object(forKey: TailnetExposure.optInKey))
+        XCTAssertNil(exposure.reapplyAtLaunch(), "so a later launch never re-creates it")
 
         defaults.removeObject(forKey: TailnetExposure.optInKey)
         let foreign = FakeTailscale()
