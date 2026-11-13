@@ -14,9 +14,11 @@ import InstanceMCPCore
 /// Screen Recording needs a restart on macOS before a running process sees the grant (design Q3). After Allow, and
 /// while Screen Recording is not granted, the window asks a short-lived child process of this same executable
 /// (`ChildPermissionCheck`, schedule in `ChildCheckSchedule`) whether it is granted. A fresh process reads the live
-/// answer. When the child says granted and this process still says off, the app relaunches itself once and the new
-/// instance reopens on the same page (`RelaunchCoordinator`). If the child cannot answer, or the user presses
-/// Check Again and it still says off, the row offers a Restart button that does the same.
+/// answer. When the child says granted, the row shows its check mark at once, with no relaunch, so the flow works
+/// even if the user chose Later in the macOS "Quit & Reopen" dialog. The restart waits for Finish: if this process
+/// still reports off then, the window closes and the app relaunches once, silently, so the backend starts after the
+/// grant. If the child cannot answer, or the user presses Check Again and it still says off, the row offers a
+/// Restart button that relaunches and reopens the wizard on the same page (`RelaunchCoordinator`).
 @MainActor
 final class PermissionSetupWindowController: NSWindowController {
     private final class RowControls {
@@ -69,6 +71,9 @@ final class PermissionSetupWindowController: NSWindowController {
     private var lastChildResult: ChildCheckResult?
     /// The user pressed Check Again for Screen Recording, which says the switch is on.
     private var userConfirmedScreenRecording = false
+    /// What this process itself reports, before the child result is applied.
+    private var rawSnapshot = PermissionSnapshot(screenRecording: .denied, accessibility: .denied, fullDiskAccess: .unknown)
+    /// What the window shows: `rawSnapshot` with Screen Recording granted when the child check says so.
     private(set) var snapshot = PermissionSnapshot(screenRecording: .denied, accessibility: .denied,
                                                   fullDiskAccess: .unknown)
 
@@ -131,13 +136,16 @@ final class PermissionSetupWindowController: NSWindowController {
     /// Called by the menu bar's revocation watch while the window is open. Takes only the two core results and keeps
     /// the last Full Disk Access value, so the watch never probes Full Disk Access.
     func refreshCore(_ core: PermissionSnapshot) {
-        refresh(with: CoreWatch.merged(core, into: snapshot))
+        refresh(with: CoreWatch.merged(core, into: rawSnapshot))
     }
 
-    private func refresh(with current: PermissionSnapshot) {
+    private func refresh(with raw: PermissionSnapshot) {
+        rawSnapshot = raw
+        var current = raw
+        current.screenRecording = RelaunchPolicy.shownScreenRecording(process: raw.screenRecording, child: lastChildResult)
         snapshot = current
         // A process that sees Screen Recording granted has consumed the grant: a later revoke may relaunch once more.
-        if current.screenRecording.isGranted, store.autoRelaunchSpent { store.autoRelaunchSpent = false }
+        if raw.screenRecording.isGranted, store.autoRelaunchSpent { store.autoRelaunchSpent = false }
 
         // Read the stored flag before this refresh updates it, so a grant made now is not shown as a revocation.
         let previouslySeen = store.coreGrantedSeen
@@ -164,13 +172,13 @@ final class PermissionSetupWindowController: NSWindowController {
     // MARK: Screen Recording child check
 
     private var relaunchAction: RelaunchAction {
-        RelaunchPolicy.decide(child: lastChildResult, processGranted: snapshot.screenRecording.isGranted,
-                              autoRelaunchSpent: store.autoRelaunchSpent,
+        RelaunchPolicy.decide(child: lastChildResult, processGranted: rawSnapshot.screenRecording.isGranted,
                               userConfirmedEnabled: userConfirmedScreenRecording)
     }
 
     private var needsChildCheck: Bool {
-        requested.contains(.screenRecording) && !snapshot.screenRecording.isGranted && isWindowVisible
+        requested.contains(.screenRecording) && !rawSnapshot.screenRecording.isGranted
+            && lastChildResult != .granted && isWindowVisible
     }
 
     private func updateChildCheckTimer() {
@@ -186,7 +194,7 @@ final class PermissionSetupWindowController: NSWindowController {
         } else {
             childCheckTimer?.invalidate()
             childCheckTimer = nil
-            if snapshot.screenRecording.isGranted || !isWindowVisible { childCheckStartedAt = nil }
+            if rawSnapshot.screenRecording.isGranted || !isWindowVisible { childCheckStartedAt = nil }
         }
     }
 
@@ -213,11 +221,8 @@ final class PermissionSetupWindowController: NSWindowController {
 
     private func childCheckFinished(_ result: ChildCheckResult) {
         childCheckInFlight = false
-        lastChildResult = result
-        if relaunchAction == .relaunch {
-            // On refusal the spent flag is set, so the next evaluation shows the Restart button.
-            if !relaunch.requestRelaunch(page: page, automatic: true) { log("permission setup: automatic relaunch not started") }
-        }
+        // A confirmed grant is not undone by one check that could not answer.
+        if !(result == .failed && lastChildResult == .granted) { lastChildResult = result }
         refresh()
     }
 
@@ -312,11 +317,20 @@ final class PermissionSetupWindowController: NSWindowController {
         if kind == .screenRecording { runChildCheckIfNeeded() }
     }
 
+    /// Skip or Done. The restart that Screen Recording needs happens here, not when the grant is detected: the window
+    /// closes, then the app relaunches once without reopening the wizard. A process that already reports Screen
+    /// Recording granted skips it.
     private func finish(_ event: WizardEvent) {
         if WizardModel.recordsCompletion(event) {
             store.hasShown = true
         }
+        let relaunchNow = RelaunchPolicy.shouldRelaunchOnFinish(
+            child: lastChildResult, processGranted: rawSnapshot.screenRecording.isGranted,
+            autoRelaunchSpent: store.autoRelaunchSpent)
         window?.close()
+        if relaunchNow, !relaunch.requestRelaunch(page: nil, automatic: true) {
+            log("permission setup: relaunch after Finish not started")
+        }
     }
 
     @objc private func rowButtonTapped(_ sender: NSButton) {

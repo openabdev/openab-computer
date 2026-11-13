@@ -179,9 +179,14 @@ public struct SetupWizardStore {
         nonmutating set { defaults.set(newValue, forKey: Self.autoRelaunchSpentKey) }
     }
 
-    /// Written before the old instance quits: the page to reopen on, the just-relaunched flag, and the spent flag.
-    public func recordRelaunch(page: WizardPage) {
-        defaults.set(page.rawValue, forKey: Self.resumePageKey)
+    /// Written before the old instance quits. `page` is the wizard page to reopen on; nil is a silent relaunch (after
+    /// Finish) that reopens nothing. The spent flag is set either way.
+    public func recordRelaunch(page: WizardPage?) {
+        if let page {
+            defaults.set(page.rawValue, forKey: Self.resumePageKey)
+        } else {
+            defaults.removeObject(forKey: Self.resumePageKey)
+        }
         defaults.set(true, forKey: Self.relaunchJustHappenedKey)
         defaults.set(true, forKey: Self.autoRelaunchSpentKey)
     }
@@ -192,12 +197,17 @@ public struct SetupWizardStore {
         defaults.removeObject(forKey: Self.relaunchJustHappenedKey)
     }
 
-    /// The page to reopen on when this launch follows a relaunch. Clears the resume state, so it answers once.
-    public func consumeResume() -> WizardPage? {
+    /// What a launch that follows a relaunch finds. Clears the resume state, so it answers once.
+    public struct Resume: Equatable {
+        /// The page to reopen the wizard on, or nil for a silent relaunch.
+        public let page: WizardPage?
+    }
+
+    public func consumeRelaunch() -> Resume? {
         guard relaunchJustHappened else { return nil }
-        let page = defaults.string(forKey: Self.resumePageKey).flatMap(WizardPage.init(rawValue:)) ?? .core
+        let page = defaults.string(forKey: Self.resumePageKey).flatMap(WizardPage.init(rawValue:))
         clearResume()
-        return page
+        return Resume(page: page)
     }
 }
 
