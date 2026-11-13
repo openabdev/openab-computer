@@ -93,9 +93,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Show on the first launch that has anything missing. A machine that already has every grant is marked
     /// complete without a window. Missing core permissions show the wizard regardless of earlier closes.
     func showPermissionSetupIfNeeded() {
-        // Right after a relaunch from the Restart button: reopen on the page the previous instance was on, even when
-        // everything is granted. A silent relaunch after Finish has no page and falls through to the normal rules.
-        if let page = store.consumeRelaunch()?.page {
+        // Right after a relaunch: reopen on the page the previous instance was on, even when everything is granted.
+        if let page = store.consumeResume() {
             openPermissionSetup(page: page)
             return
         }

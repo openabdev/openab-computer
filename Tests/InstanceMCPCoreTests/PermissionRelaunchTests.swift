@@ -12,39 +12,29 @@ final class RelaunchResumeStateTests: XCTestCase {
     func testResumeStateIsWrittenAndClearedAfterOneRead() {
         let (store, defaults, suite) = freshStore()
         defer { defaults.removePersistentDomain(forName: suite) }
-        XCTAssertNil(store.consumeRelaunch(), "nothing written yet")
+        XCTAssertNil(store.consumeResume(), "nothing written yet")
 
         store.recordRelaunch(page: .core)
         XCTAssertTrue(store.relaunchJustHappened)
         XCTAssertEqual(defaults.string(forKey: SetupWizardStore.resumePageKey), "core")
 
-        XCTAssertEqual(store.consumeRelaunch(), SetupWizardStore.Resume(page: .core))
+        XCTAssertEqual(store.consumeResume(), .core)
         XCTAssertFalse(store.relaunchJustHappened, "the flag is cleared after use")
         XCTAssertNil(defaults.string(forKey: SetupWizardStore.resumePageKey))
-        XCTAssertNil(store.consumeRelaunch(), "the second read finds nothing")
+        XCTAssertNil(store.consumeResume(), "the second read finds nothing")
         XCTAssertTrue(store.autoRelaunchSpent, "the spent flag outlives the resume state")
-    }
-
-    func testSilentRelaunchAfterFinishReopensNoPage() {
-        let (store, defaults, suite) = freshStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
-        store.recordRelaunch(page: .optional)
-        store.recordRelaunch(page: nil)
-        XCTAssertNil(defaults.string(forKey: SetupWizardStore.resumePageKey))
-        XCTAssertEqual(store.consumeRelaunch(), SetupWizardStore.Resume(page: nil), "the flag is there, the page is not")
-        XCTAssertFalse(store.relaunchJustHappened)
     }
 
     func testResumeKeepsTheOptionalPage() {
         let (store, defaults, suite) = freshStore()
         defer { defaults.removePersistentDomain(forName: suite) }
         store.recordRelaunch(page: .optional)
-        XCTAssertEqual(store.consumeRelaunch()?.page, .optional)
+        XCTAssertEqual(store.consumeResume(), .optional)
     }
 }
 
 final class RelaunchCoordinatorTests: XCTestCase {
-    func testRelaunchIsRequestedAtMostOncePerGrant() {
+    func testAutomaticRelaunchIsRequestedAtMostOncePerGrant() {
         let (store, defaults, suite) = freshStore()
         defer { defaults.removePersistentDomain(forName: suite) }
         var launches = 0, terminations = 0
@@ -53,27 +43,27 @@ final class RelaunchCoordinatorTests: XCTestCase {
         }
 
         let first = make()
-        XCTAssertTrue(first.requestRelaunch(page: nil, automatic: true))
-        XCTAssertFalse(first.requestRelaunch(page: nil, automatic: true), "same process, second request")
+        XCTAssertTrue(first.requestRelaunch(page: .core, automatic: true))
+        XCTAssertFalse(first.requestRelaunch(page: .core, automatic: true), "same process, second request")
         XCTAssertFalse(first.requestRelaunch(page: .core, automatic: false), "same process, manual request")
 
-        // The new instance still reports off: no second automatic relaunch.
+        // The new instance still reports off and its child check says granted: no second automatic relaunch.
         let second = make()
-        XCTAssertNotNil(store.consumeRelaunch())
-        XCTAssertFalse(second.requestRelaunch(page: nil, automatic: true), "no relaunch loop")
+        XCTAssertEqual(store.consumeResume(), .core)
+        XCTAssertFalse(second.requestRelaunch(page: .core, automatic: true), "no relaunch loop")
         XCTAssertEqual(launches, 1)
         XCTAssertEqual(terminations, 1)
 
         // A process that sees the grant clears the spent flag, so a later revoke and re-grant can relaunch once.
         store.autoRelaunchSpent = false
-        XCTAssertTrue(make().requestRelaunch(page: nil, automatic: true))
+        XCTAssertTrue(make().requestRelaunch(page: .core, automatic: true))
         XCTAssertEqual(launches, 2)
     }
 
     func testManualRestartWorksAfterTheAutomaticOneWasSpent() {
         let (store, defaults, suite) = freshStore()
         defer { defaults.removePersistentDomain(forName: suite) }
-        store.recordRelaunch(page: nil)
+        store.recordRelaunch(page: .core)
         var launches = 0
         let coordinator = RelaunchCoordinator(store: store, launch: { launches += 1; return true }, terminate: {})
         XCTAssertTrue(coordinator.requestRelaunch(page: .core, automatic: false))
@@ -88,64 +78,24 @@ final class RelaunchCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.requestRelaunch(page: .core, automatic: true))
         XCTAssertEqual(terminations, 0, "the old instance must not quit when the new one did not start")
         XCTAssertFalse(store.relaunchJustHappened)
-        XCTAssertNil(store.consumeRelaunch())
+        XCTAssertNil(store.consumeResume())
+        XCTAssertTrue(store.autoRelaunchSpent, "so the row falls back to the Restart button")
+        XCTAssertEqual(RelaunchPolicy.decide(child: .granted, processGranted: false, autoRelaunchSpent: store.autoRelaunchSpent,
+                                             userConfirmedEnabled: false), .showRestart)
+        XCTAssertTrue(coordinator.requestRelaunch(page: .core, automatic: false) == false)
     }
 }
 
 final class RelaunchPolicyTests: XCTestCase {
-    private func decide(_ child: ChildCheckResult?, processGranted: Bool = false,
+    private func decide(_ child: ChildCheckResult?, processGranted: Bool = false, spent: Bool = false,
                         confirmed: Bool = false) -> RelaunchAction {
-        RelaunchPolicy.decide(child: child, processGranted: processGranted, userConfirmedEnabled: confirmed)
+        RelaunchPolicy.decide(child: child, processGranted: processGranted, autoRelaunchSpent: spent,
+                              userConfirmedEnabled: confirmed)
     }
 
-    /// The Muse-style flow: the user turns it on and picks Later in the macOS dialog. The check mark appears and
-    /// nothing relaunches at that moment.
-    func testCheckMarkAppearsWhenTheChildSaysGrantedWithoutAnyRelaunch() {
-        XCTAssertEqual(RelaunchPolicy.shownScreenRecording(process: .denied, child: .granted), .granted)
-        XCTAssertEqual(decide(.granted), .none, "no restart button and no relaunch at detection")
-        let row = WizardModel.rowState(state: RelaunchPolicy.shownScreenRecording(process: .denied, child: .granted),
-                                       requested: true, returnedSinceRequest: false)
-        XCTAssertEqual(row, .allowed)
-        XCTAssertEqual(WizardModel.rowButton(for: RelaunchPolicy.effectiveRow(base: row, action: decide(.granted))), .allowed)
-        // With both core granted the wizard can move on.
-        let shown = PermissionSnapshot(screenRecording: RelaunchPolicy.shownScreenRecording(process: .denied, child: .granted),
-                                       accessibility: .granted, fullDiskAccess: .denied)
-        XCTAssertEqual(WizardModel.footerAction(page: .core, snapshot: shown), .continueToOptional(enabled: true))
-    }
-
-    func testShownStateIsTheProcessStateUnlessTheChildConfirmsTheGrant() {
-        XCTAssertEqual(RelaunchPolicy.shownScreenRecording(process: .denied, child: nil), .denied)
-        XCTAssertEqual(RelaunchPolicy.shownScreenRecording(process: .denied, child: .denied), .denied)
-        XCTAssertEqual(RelaunchPolicy.shownScreenRecording(process: .denied, child: .failed), .denied)
-        XCTAssertEqual(RelaunchPolicy.shownScreenRecording(process: .granted, child: .denied), .granted)
-        XCTAssertEqual(RelaunchPolicy.shownScreenRecording(process: .unknown, child: .granted), .unknown)
-    }
-
-    func testRelaunchIsRequestedOnlyOnFinish() {
-        // Child confirmed, process stale: Finish relaunches once.
-        XCTAssertTrue(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: false, autoRelaunchSpent: false))
-        // Finish with a process that already reports granted skips the relaunch.
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: true, autoRelaunchSpent: false))
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: nil, processGranted: true, autoRelaunchSpent: false))
-        // Nothing confirmed, or already spent: no relaunch.
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .denied, processGranted: false, autoRelaunchSpent: false))
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .failed, processGranted: false, autoRelaunchSpent: false))
-        XCTAssertFalse(RelaunchPolicy.shouldRelaunchOnFinish(child: .granted, processGranted: false, autoRelaunchSpent: true))
-    }
-
-    func testDetectionNeverRequestsARelaunch() {
-        let (store, defaults, suite) = freshStore()
-        defer { defaults.removePersistentDomain(forName: suite) }
-        var launches = 0
-        _ = RelaunchCoordinator(store: store, launch: { launches += 1; return true }, terminate: {})
-        // The policy has no action that relaunches; only the coordinator does, and only Finish or the button call it.
-        for child in [nil, .granted, .denied, .failed] as [ChildCheckResult?] {
-            for confirmed in [false, true] {
-                XCTAssertNotEqual(String(describing: decide(child, confirmed: confirmed)), "relaunch")
-            }
-        }
-        XCTAssertEqual(launches, 0)
-        XCTAssertFalse(store.relaunchJustHappened)
+    func testChildGrantedWhileProcessStillOffRelaunchesOnce() {
+        XCTAssertEqual(decide(.granted), .relaunch)
+        XCTAssertEqual(decide(.granted, spent: true), .showRestart)
     }
 
     func testNothingHappensWhileTheProcessAlreadySeesTheGrant() {
