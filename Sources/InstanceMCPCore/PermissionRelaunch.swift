@@ -84,23 +84,21 @@ public enum ChildCheckSchedule {
 
 public enum RelaunchAction: Equatable, Sendable {
     case none
-    /// Relaunch the app now, without asking.
-    case relaunch
     /// Show the "Restart OpenAB Computer" button on the Screen Recording row.
     case showRestart
 }
 
 public enum RelaunchPolicy {
+    /// What the Screen Recording row does about the restart. A child that reports granted is not handled here: the
+    /// row shows its check mark at once (no relaunch), and the restart waits for Finish (`shouldRelaunchOnFinish`).
     /// - child: the latest child check, nil before the first one.
     /// - processGranted: what the running process reports.
-    /// - autoRelaunchSpent: an automatic relaunch already happened for this grant.
     /// - userConfirmedEnabled: the user pressed Check Again, which says the switch is on.
-    public static func decide(child: ChildCheckResult?, processGranted: Bool, autoRelaunchSpent: Bool,
+    public static func decide(child: ChildCheckResult?, processGranted: Bool,
                               userConfirmedEnabled: Bool) -> RelaunchAction {
         if processGranted { return .none }
         switch child {
-        case nil: return .none
-        case .granted?: return autoRelaunchSpent ? .showRestart : .relaunch
+        case nil, .granted?: return .none
         case .failed?: return .showRestart
         case .denied?: return userConfirmedEnabled ? .showRestart : .none
         }
@@ -111,9 +109,24 @@ public enum RelaunchPolicy {
         guard action == .showRestart, base != .allowed else { return base }
         return .needsRestart
     }
+
+    /// The Screen Recording state the wizard shows: granted when this process says so, or when a fresh child process
+    /// does. The check mark never waits for a restart, so the flow still works if the user chose Later in the macOS
+    /// "Quit & Reopen" dialog.
+    public static func shownScreenRecording(process: PermissionState, child: ChildCheckResult?) -> PermissionState {
+        process == .denied && child == .granted ? .granted : process
+    }
+
+    /// At Finish: relaunch once, silently, when the child confirmed the grant and this process still reports off, so
+    /// the backend that captures the screen starts after the grant. A process that already reports granted skips it,
+    /// and so does a grant whose automatic relaunch was already spent.
+    public static func shouldRelaunchOnFinish(child: ChildCheckResult?, processGranted: Bool,
+                                              autoRelaunchSpent: Bool) -> Bool {
+        !processGranted && child == .granted && !autoRelaunchSpent
+    }
 }
 
-/// Requests one relaunch. It writes the resume state first, starts the new instance, and only then quits.
+/// Requests one relaunch (at Finish, or from the fallback button). It writes the resume state first, starts the new instance, and only then quits.
 /// `launch` returns false when the new instance could not be started; the old one then keeps running.
 public final class RelaunchCoordinator {
     private let store: SetupWizardStore
@@ -130,7 +143,7 @@ public final class RelaunchCoordinator {
     /// An automatic request is refused when one was already spent for this grant, so a grant that the new
     /// instance still reports as off cannot loop. Either kind is refused once this process has requested one.
     @discardableResult
-    public func requestRelaunch(page: WizardPage, automatic: Bool) -> Bool {
+    public func requestRelaunch(page: WizardPage?, automatic: Bool) -> Bool {
         guard !requested else { return false }
         if automatic && store.autoRelaunchSpent { return false }
         store.recordRelaunch(page: page)
