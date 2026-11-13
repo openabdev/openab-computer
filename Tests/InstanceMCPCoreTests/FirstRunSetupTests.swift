@@ -65,7 +65,7 @@ final class FirstRunSetupTests: XCTestCase {
     // MARK: no-flag startup (the same `prepare` call main.swift makes)
 
     func testNoFlagStartupCreatesTokenWithMode600AndLaterStartupReusesIt() throws {
-        let first = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let first = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertEqual(first.tokenPath, FirstRunSetup.tokenPath(home: home))
         XCTAssertTrue(first.tokenCreated)
         XCTAssertEqual(try mode(of: first.tokenPath), 0o600)
@@ -75,7 +75,7 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertTrue(token.allSatisfy { $0.isHexDigit && !$0.isUppercase })
         XCTAssertEqual(stored, token + "\n", "same format as `openssl rand -hex 32` written by the installer")
 
-        let second = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let second = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertFalse(second.tokenCreated)
         XCTAssertEqual(try String(contentsOfFile: second.tokenPath, encoding: .utf8), stored,
                        "a later launch reuses the stored token")
@@ -83,14 +83,14 @@ final class FirstRunSetupTests: XCTestCase {
     }
 
     func testNoFlagStartupWithoutTailscaleLoginSaysSoAndStillStarts() throws {
-        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertNil(plan.allowLogin)
         XCTAssertEqual(plan.notice, FirstRunSetup.tokenOnlyNotice)
         XCTAssertTrue(plan.logLines.contains { $0.contains(FirstRunSetup.tokenOnlyNotice) })
     }
 
     func testNoFlagStartupAppliesADetectedLoginAndLogsNoToken() throws {
-        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { "owner@example.com" })
+        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { _ in "owner@example.com" })
         XCTAssertEqual(plan.allowLogin, "owner@example.com")
         XCTAssertNil(plan.notice)
         let token = try String(contentsOfFile: plan.tokenPath, encoding: .utf8)
@@ -110,7 +110,7 @@ final class FirstRunSetupTests: XCTestCase {
         let legacy = FirstRunSetup.legacyTokenPath(home: home)
         try writeToken(old, at: legacy, mode: 0o644)
 
-        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertEqual(plan.tokenPath, FirstRunSetup.tokenPath(home: home))
         XCTAssertFalse(plan.tokenCreated, "a copied token is not a new one")
         XCTAssertEqual(try String(contentsOfFile: plan.tokenPath, encoding: .utf8), old + "\n",
@@ -154,11 +154,11 @@ final class FirstRunSetupTests: XCTestCase {
         let old = String(repeating: "a", count: 64)
         let legacy = FirstRunSetup.legacyTokenPath(home: home)
         try writeToken(old, at: legacy, mode: 0o600)
-        let first = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let first = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertEqual(try String(contentsOfFile: first.tokenPath, encoding: .utf8), old + "\n")
 
         try FileManager.default.removeItem(atPath: first.tokenPath)
-        let second = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let second = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertTrue(second.tokenCreated, "a fresh token is generated")
         let fresh = try String(contentsOfFile: second.tokenPath, encoding: .utf8)
         XCTAssertNotEqual(fresh, old + "\n", "the legacy token is not copied back")
@@ -187,20 +187,20 @@ final class FirstRunSetupTests: XCTestCase {
         XCTAssertEqual(sources, [FirstRunSetup.legacyTokenPath(home: home), FirstRunSetup.oldestTokenPath(home: home)])
         try writeToken(eleven, at: sources[0], mode: 0o600)
         try writeToken(ancient, at: sources[1], mode: 0o600)
-        let both = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let both = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertEqual(try String(contentsOfFile: both.tokenPath, encoding: .utf8), eleven + "\n")
         XCTAssertEqual(try String(contentsOfFile: sources[1], encoding: .utf8), ancient + "\n", "the oldest file is untouched")
 
         // Only the pre-0.4.0 file usable (the 0.11.0 one is whitespace only): it is copied.
         try FileManager.default.removeItem(atPath: (both.tokenPath as NSString).deletingLastPathComponent)
         try "  \n".write(toFile: sources[0], atomically: false, encoding: .utf8)
-        let onlyOldest = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let onlyOldest = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertEqual(try String(contentsOfFile: onlyOldest.tokenPath, encoding: .utf8), ancient + "\n")
 
         // Both whitespace only: a fresh token.
         try FileManager.default.removeItem(atPath: (both.tokenPath as NSString).deletingLastPathComponent)
         try "\n".write(toFile: sources[1], atomically: false, encoding: .utf8)
-        let neither = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let neither = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertTrue(neither.tokenCreated)
     }
 
@@ -210,7 +210,7 @@ final class FirstRunSetupTests: XCTestCase {
         try writeToken(current, at: path, mode: 0o600)
         try writeToken(String(repeating: "a", count: 64), at: FirstRunSetup.legacyTokenPath(home: home), mode: 0o600)
 
-        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { nil })
+        let plan = try FirstRunSetup.prepare(home: home, detectLogin: { _ in nil })
         XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), current + "\n")
         XCTAssertTrue(plan.logLines.contains { $0.contains("reused") })
     }

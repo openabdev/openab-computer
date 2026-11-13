@@ -116,12 +116,13 @@ public enum FirstRunSetup {
 
     /// Prepares a no-flag launch: creates or reuses the token file under `home`, then looks up the Tailscale
     /// login. A missing login is not an error: the launch continues with the token alone and says so.
-    public static func prepare(home: String, detectLogin: () -> String? = { FirstRunSetup.detectTailscaleLogin() }) throws -> Plan {
+    public static func prepare(home: String,
+                               detectLogin: (_ note: (String) -> Void) -> String? = { FirstRunSetup.detectTailscaleLogin(note: $0) }) throws -> Plan {
         let path = tokenPath(home: home)
         let made = try loadOrCreateToken(at: path, legacyPaths: legacyTokenPaths(home: home))
         let state = made.copiedFrom.map { "copied from \($0)" } ?? (made.created ? "created" : "reused")
         var lines = ["no-flag launch: token file \(path) \(state) (mode 600; token not logged)"]
-        if let login = detectLogin() {
+        if let login = detectLogin({ lines.append("no-flag launch: \($0)") }) {
             lines.append("no-flag launch: Tailscale login detected, applied as --allow-login")
             return Plan(tokenPath: path, tokenCreated: made.created, allowLogin: login, notice: nil, logLines: lines)
         }
@@ -236,35 +237,144 @@ public enum FirstRunSetup {
         return login
     }
 
-    /// Runs the Tailscale CLI the way the installer does and parses its status. The app bundle's CLI
-    /// is tried first, then `tailscale` on PATH and the usual Homebrew and /usr/local locations, because
-    /// a GUI launch does not inherit the shell PATH. Returns nil on any failure, including a timeout.
-    public static func detectTailscaleLogin(timeout: TimeInterval = 5) -> String? {
-        for cli in tailscaleCandidates() {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cli)
-            process.arguments = ["status", "--self", "--peers=false", "--json"]
-            let out = Pipe()
-            process.standardOutput = out
-            process.standardError = FileHandle.nullDevice
-            do { try process.run() } catch { continue }
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning && Date() < deadline { usleep(50_000) }
-            if process.isRunning {
-                process.terminate()
-                return nil
+    /// Why one run of the Tailscale CLI gave no login. Logged by name; none of these carries output or a login.
+    public enum TailscaleFailure: Equatable, Sendable {
+        case launchFailed
+        case timeout
+        case nonZeroExit(Int32)
+        case emptyOutput
+        /// Exit 0 but the output is not a status JSON with a login. The Tailscale.app binary prints
+        /// "The Tailscale GUI failed to start" and exits 0 when it is not started from a terminal.
+        case parseNil
+    }
+
+    /// One run of `cli`: its stdout and exit status, or the reason it did not finish.
+    public enum TailscaleRun: Equatable, Sendable {
+        case finished(output: Data, status: Int32)
+        case timeout
+        case launchFailed
+    }
+
+    public typealias TailscaleRunner = (_ cli: String, _ timeout: TimeInterval) -> TailscaleRun
+
+    static let tailscaleStatusArguments = ["status", "--self", "--peers=false", "--json"]
+
+    /// The environment for the CLI. The Tailscale.app binary acts as the command-line tool only when TERM_PROGRAM
+    /// is set (as in any terminal); without it, as in a Finder or launchd launch, it prints a GUI error to stdout
+    /// and exits 0, so the status could never be parsed. Measured on two Macs: only that variable decides it.
+    static func tailscaleEnvironment(_ base: [String: String]) -> [String: String] {
+        var env = base
+        if (env["TERM_PROGRAM"] ?? "").isEmpty { env["TERM_PROGRAM"] = "oab-instance-mcp" }
+        return env
+    }
+
+    /// The real runner: starts `cli` with the status arguments and `tailscaleEnvironment`, drains stdout while it
+    /// waits (a full pipe cannot stall it), and kills it at the timeout.
+    public static let systemTailscaleRunner: TailscaleRunner = { cli, timeout in
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = tailscaleStatusArguments
+        process.environment = tailscaleEnvironment(ProcessInfo.processInfo.environment)
+        process.standardInput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let out = Pipe()
+        process.standardOutput = out
+        let collected = NSMutableData()
+        let lock = NSLock()
+        out.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            lock.lock(); collected.append(chunk); lock.unlock()
+        }
+        defer { out.fileHandleForReading.readabilityHandler = nil }
+        do { try process.run() } catch { return .launchFailed }
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning && Date() < deadline { usleep(20_000) }
+        if process.isRunning {
+            process.terminate()
+            let grace = Date().addingTimeInterval(0.5)
+            while process.isRunning && Date() < grace { usleep(10_000) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            process.waitUntilExit()
+            return .timeout
+        }
+        process.waitUntilExit()
+        usleep(20_000) // let the handler deliver the last chunk
+        lock.lock(); defer { lock.unlock() }
+        return .finished(output: collected as Data, status: process.terminationStatus)
+    }
+
+    /// Looks up the Tailscale login with up to `attempts` tries inside a total `budget`. Each try goes through
+    /// every CLI candidate (the app bundle CLI first, then PATH and the Homebrew locations), and a failing
+    /// candidate no longer ends the search. Between tries it waits `backoff[n]` seconds. `note` receives one line
+    /// per failure (attempt number, CLI path, reason); a line never contains the output or the login.
+    /// Returns nil when every try failed, and the launch then serves with the bearer token only.
+    public static func detectTailscaleLogin(
+        timeout: TimeInterval = 3,
+        budget: TimeInterval = 8,
+        attempts: Int = 3,
+        backoff: [TimeInterval] = [0.5, 1.0],
+        candidates: () -> [String] = { FirstRunSetup.tailscaleCandidates() },
+        runner: TailscaleRunner = FirstRunSetup.systemTailscaleRunner,
+        now: () -> Date = { Date() },
+        sleep: (TimeInterval) -> Void = { usleep(UInt32($0 * 1_000_000)) },
+        note: (String) -> Void = { _ in }
+    ) -> String? {
+        let start = now()
+        let clis = candidates()
+        if clis.isEmpty { note("Tailscale login: no tailscale CLI found"); return nil }
+        for attempt in 1...max(1, attempts) {
+            for cli in clis {
+                let remaining = budget - now().timeIntervalSince(start)
+                guard remaining > 0.05 else {
+                    note("Tailscale login: attempt \(attempt) skipped, the \(Int(budget)) s budget is used up")
+                    return nil
+                }
+                let run = runner(cli, min(timeout, remaining))
+                switch classify(run) {
+                case .success(let login):
+                    if attempt > 1 { note("Tailscale login: found on attempt \(attempt)") }
+                    return login
+                case .failure(let why):
+                    note("Tailscale login: attempt \(attempt) with \(cli) failed: \(describe(why))")
+                }
             }
-            guard process.terminationStatus == 0 else { return nil }
-            let data = out.fileHandleForReading.readDataToEndOfFile()
-            return tailscaleLogin(statusJSON: data)
+            if attempt < attempts, attempt - 1 < backoff.count {
+                let wait = min(backoff[attempt - 1], max(0, budget - now().timeIntervalSince(start)))
+                if wait > 0 { sleep(wait) }
+            }
         }
         return nil
+    }
+
+    static func classify(_ run: TailscaleRun) -> Result<String, TailscaleFailureBox> {
+        switch run {
+        case .launchFailed: return .failure(.init(.launchFailed))
+        case .timeout: return .failure(.init(.timeout))
+        case let .finished(output, status):
+            if status != 0 { return .failure(.init(.nonZeroExit(status))) }
+            if output.isEmpty { return .failure(.init(.emptyOutput)) }
+            guard let login = tailscaleLogin(statusJSON: output) else { return .failure(.init(.parseNil)) }
+            return .success(login)
+        }
+    }
+
+    /// `Result` needs an `Error` failure type.
+    struct TailscaleFailureBox: Error { let failure: TailscaleFailure; init(_ f: TailscaleFailure) { failure = f } }
+
+    static func describe(_ box: TailscaleFailureBox) -> String {
+        switch box.failure {
+        case .launchFailed: return "could not start"
+        case .timeout: return "timeout"
+        case .nonZeroExit(let code): return "exit status \(code)"
+        case .emptyOutput: return "empty output"
+        case .parseNil: return "output had no login (parse returned nil)"
+        }
     }
 
     /// Shown in the menu and logged when no Tailscale login is found. The launch continues with the token alone.
     public static let tokenOnlyNotice = "Tailscale login not detected: serving with the bearer token only."
 
-    static func tailscaleCandidates() -> [String] {
+    public static func tailscaleCandidates() -> [String] {
         var found: [String] = []
         let app = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
         if FileManager.default.isExecutableFile(atPath: app) { found.append(app) }
