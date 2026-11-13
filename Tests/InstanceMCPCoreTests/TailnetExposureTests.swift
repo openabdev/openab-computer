@@ -335,11 +335,11 @@ final class TailnetExposureTests: XCTestCase {
         guard case .failed = make(unreadable, login: false).withdrawWithoutLogin() else { return XCTFail("no opt-in and unprovable fails closed too") }
         XCTAssertTrue(unreadable.mutating.isEmpty)
 
-        // The daemon itself is unreachable: nothing is served, so the launch may go on.
+        // Every status command failing proves nothing (launch failure, timeout, GUI error): fail closed.
         let down = FakeTailscale()
         down.statusFails = true
         down.dnsFails = true
-        XCTAssertNil(make(down, login: false).withdrawWithoutLogin())
+        guard case .failed = make(down, login: false).withdrawWithoutLogin() else { return XCTFail("failed status commands are not proof of absence") }
         XCTAssertTrue(down.mutating.isEmpty)
 
         // The daemon reports it is not running (stopped or logged out): no mapping can be live.
