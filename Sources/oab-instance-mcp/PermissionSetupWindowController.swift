@@ -279,6 +279,8 @@ final class PermissionSetupWindowController: NSWindowController {
         case .skip, .skipToTailnet, .continueToOptional: optionalFooterButton.title = "Skip"
         }
         tailnetFooterButton.title = tailnetOn ? "Done" : "Skip"
+        // While enable() runs, Skip would close the wizard as skipped and the mapping could still appear afterwards.
+        tailnetFooterButton.isEnabled = !tailnetBusy
     }
 
     private var tailnetOn: Bool { exposure?.publicURL != nil }
@@ -325,6 +327,7 @@ final class PermissionSetupWindowController: NSWindowController {
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.tailnetBusy = false
+                    self.applyFooters(self.snapshot)
                     switch outcome {
                     case .on, .off: self.tailnetMessage = nil
                     default: self.tailnetMessage = outcome.message
@@ -336,6 +339,7 @@ final class PermissionSetupWindowController: NSWindowController {
     }
 
     @objc private func tailnetFooterTapped() {
+        guard !tailnetBusy else { return }
         finish(tailnetOn ? .done : .skip)
     }
 

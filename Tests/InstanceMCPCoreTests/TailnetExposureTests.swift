@@ -216,14 +216,17 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertFalse(a.optedIn)
         XCTAssertNil(a.publicURL)
 
-        // Status cannot be read after the change: ownership is unconfirmed, so 8444 is left alone and the choice stays off.
+        // Status cannot be read after the change: ownership is unconfirmed, so 8444 is left alone. The mapping may be
+        // active, so the state is "not confirmed" (stored choice kept, no verified URL), never a plain Off.
         let blind = FakeTailscale()
         blind.statusFailsAfterMutation = true
         let b = make(blind)
         guard case .failed = b.enable() else { return XCTFail("expected a failure") }
         XCTAssertEqual(blind.mutating, [onArgs], "an unconfirmed mapping is not removed")
-        XCTAssertFalse(b.optedIn)
+        XCTAssertTrue(b.optedIn, "a possibly active mapping must not be recorded as off")
         XCTAssertNil(b.publicURL)
+        XCTAssertEqual(MenuModel.tailnetMenu(offered: true, publicURL: b.publicURL, optedIn: b.optedIn).stateLine,
+                       "Tailnet access: not confirmed (see the log)")
     }
 
     func testServeAndStatusErrorsLeaveTheChoiceOff() {

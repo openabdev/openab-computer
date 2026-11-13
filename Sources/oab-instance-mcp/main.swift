@@ -297,7 +297,23 @@ let attachManager: AttachManager? = opts.attach
 // Tailnet exposure state and controls. A no-flag launch gets the opt-in page (off by default). A menu-bar launch
 // with flags and a login allow list (the installer's LaunchAgent) gets the same state line and Turn Off control, and
 // shows the installer's mapping as on; nothing here turns exposure on by itself in that mode either.
-let exposureLoginDetected = firstRunLaunch ? firstRunLoginDetected : !opts.allowLogins.isEmpty
+// First run: the login was read from Tailscale just now. Flag launch: an allow list must be configured AND a login must
+// be read from Tailscale now; a configured allow list alone is not proof that a login exists at this launch.
+// (Skipped under the debug-only test switch below, so test-launched binaries never run the Tailscale CLI.)
+#if DEBUG
+let exposureProbeSkipped = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] != nil
+#else
+let exposureProbeSkipped = false
+#endif
+let exposureLoginDetected: Bool
+if firstRunLaunch {
+    exposureLoginDetected = firstRunLoginDetected
+} else if opts.allowLogins.isEmpty || exposureProbeSkipped || !opts.menuBar {
+    exposureLoginDetected = false
+} else {
+    exposureLoginDetected = FirstRunSetup.detectTailscaleLogin(note: { log("tailnet access: \($0)") }) != nil
+    if !exposureLoginDetected { log("tailnet access: an allow list is configured but no Tailscale login could be read now; tailnet access is not offered this launch") }
+}
 // An installer --public-url on a port other than 8444 means the installer owns a mapping this code does not manage: leave it alone.
 let installerOwnsOtherPort = !firstRunLaunch && TailnetExposure.installerOwnsOtherPort(publicURL: opts.publicURL)
 // Debug builds only: the process tests set an environment variable so a test-launched binary never touches Tailscale.
@@ -315,6 +331,8 @@ let tailnetExposure: TailnetExposure? = (firstRunLaunch || ((opts.menuBar || opt
     : nil
 // Without a detected login this launch accepts the token alone. A leftover app-owned 8444 mapping would expose that
 // to the tailnet, so it is removed before the listener starts. If it is there and cannot be removed, fail closed.
+// Note: with a hung Tailscale daemon this check can delay startup by several seconds (bounded timeouts); it fails closed.
+// A token-only launch also removes a mapping on 8444 that is exactly this app's own (decision of record, see design.md).
 if case .failed(let why)? = tailnetExposure?.withdrawWithoutLogin() {
     let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Start Tailscale and open OpenAB Computer again, or remove the mapping with: tailscale serve --https=8444 off"
     log("refusing to start: \(reason)")

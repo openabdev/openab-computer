@@ -183,11 +183,11 @@ public final class TailnetExposure: @unchecked Sendable {
                     if case .success(.absent) = readMapping() {
                         return fail("Could not verify the mapping with Tailscale Serve status, so it was undone. The choice stays off.")
                     }
-                    return fail("Could not verify the mapping, and it may still be there. The choice stays off. Check with: tailscale serve status")
+                    return unverified("Could not verify the mapping, and it may still be there. The menu shows it as not confirmed. Check with: tailscale serve status")
                 }
                 log("tailnet access: status unreadable after serve; port \(Self.httpsPort) left as is (not confirmed to be ours)")
             }
-            return fail("Could not verify the mapping with Tailscale Serve status. The choice stays off. Check with: tailscale serve status")
+            return unverified("Could not verify the mapping with Tailscale Serve status. It may be active, so the menu shows it as not confirmed. Check with: tailscale serve status")
         }
     }
 
@@ -372,6 +372,15 @@ public final class TailnetExposure: @unchecked Sendable {
 
     private func fail(_ message: String) -> Outcome {
         if !preserveChoiceOnFailure { setChoice(false) }
+        return .failed(message)
+    }
+
+    /// A mapping may exist but could not be read back. Never report that as Off: keep the stored choice, show no
+    /// verified URL, and the menu says "not confirmed" until a later launch or a retry settles it.
+    private func unverified(_ message: String) -> Outcome {
+        defaults.set(true, forKey: Self.optInKey)
+        setURL(nil)
+        log("tailnet access: state not confirmed; the mapping on port \(Self.httpsPort) may be active")
         return .failed(message)
     }
 

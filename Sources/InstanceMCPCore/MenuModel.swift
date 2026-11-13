@@ -95,7 +95,7 @@ public enum MenuModel {
         }
         if offered {
             if optedIn {
-                return TailnetMenu(stateLine: "Tailnet access: not applied (see the log)", actionTitle: "Allow tailnet access…", action: .allow)
+                return TailnetMenu(stateLine: "Tailnet access: not confirmed (see the log)", actionTitle: "Allow tailnet access…", action: .allow)
             }
             return TailnetMenu(stateLine: "Tailnet access: Off", actionTitle: "Allow tailnet access…", action: .allow)
         }
