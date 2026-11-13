@@ -12,7 +12,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let menu = NSMenu()
     private let version: String
     private let url: String
-    private let launchdLabel = "dev.openab.instance-mcp"
+    /// What the menu shows and copies as the URL: the verified tailnet URL while access is on, else the local one.
+    private var currentURL: String { exposure?.publicURL ?? url }
+    /// The launchd job label when this process is a launchd job (`XPC_SERVICE_NAME`), nil for a Finder or terminal run.
+    private let launchdJobLabel: String?
+    private var underLaunchd: Bool { launchdJobLabel != nil }
+    /// The opt-in tailnet exposure; nil for flag launches, where the installer owns `tailscale serve`.
+    private let exposure: TailnetExposure?
     private let logPath: String
     private let token: String?
     /// Shown in the menu when the no-flag launch found no Tailscale login (token-only auth).
@@ -25,10 +31,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Relaunches the app for Screen Recording (design Q3): the new instance is started first, then this one quits.
     private lazy var relaunchCoordinator = RelaunchCoordinator(
         store: store,
-        launch: { [relaunchesOnRestart] in
+        launch: { [relaunchesOnRestart, launchdJobLabel] in
             // Under a LaunchAgent, KeepAlive brings the app back after the exit. A Finder launch has no agent, so a
             // detached shell waits for this pid to exit (which frees 127.0.0.1:8795) and then opens the bundle.
-            guard relaunchesOnRestart, Bundle.main.bundlePath.hasSuffix(".app") else { return true }
+            guard relaunchesOnRestart, launchdJobLabel == nil, Bundle.main.bundlePath.hasSuffix(".app") else { return true }
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
             p.arguments = ["-c", "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; exec /usr/bin/open -n \"$2\"",
@@ -65,7 +71,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     init(version: String, url: String, logPath: String, token: String? = nil,
          defaults: UserDefaults = .standard, attach: AttachManager? = nil,
-         switchboard: SwitchboardSupervisor? = nil, notice: String? = nil, relaunchesOnRestart: Bool = false) {
+         switchboard: SwitchboardSupervisor? = nil, notice: String? = nil, relaunchesOnRestart: Bool = false,
+         exposure: TailnetExposure? = nil,
+         environment: [String: String] = ProcessInfo.processInfo.environment) {
+        self.exposure = exposure
+        self.launchdJobLabel = LaunchdJob.jobLabel(environment: environment)
         self.version = version
         self.url = url
         self.logPath = logPath
@@ -82,6 +92,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         item.button?.image?.isTemplate = true
         item.button?.toolTip = "OpenAB Computer \(version)"
         menu.delegate = self
+        // Items set their own isEnabled. With auto-enabling on, AppKit validates each item by whether its target
+        // answers the action and ignores isEnabled, so Reconnect and Disconnect & forget could not be grayed out.
+        menu.autoenablesItems = false
         item.menu = menu
         startCoreWatch()
         refreshPermissionStatus()
@@ -118,9 +131,33 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         openPermissionSetup(page: nil)
     }
 
+    /// "Allow tailnet access…": the wizard on its tailnet page (a missing core permission still shows page 1 first).
+    @objc private func showTailnetSetup() {
+        openPermissionSetup(page: .tailnet)
+    }
+
+    /// "Turn Off Tailnet Access": runs the CLI off the main thread and reports a failure in a dialog.
+    @objc private func turnOffTailnet() {
+        guard let exposure else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcome = exposure.disable()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard outcome != .off else { return }
+                    let alert = NSAlert()
+                    alert.messageText = "Tailnet access"
+                    alert.informativeText = outcome.message
+                    alert.addButton(withTitle: "OK")
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
     private func openPermissionSetup(page: WizardPage?) {
         if permissionSetupWindow == nil {
-            permissionSetupWindow = PermissionSetupWindowController(store: store, relaunch: relaunchCoordinator)
+            permissionSetupWindow = PermissionSetupWindowController(store: store, relaunch: relaunchCoordinator, exposure: exposure)
         }
         permissionSetupWindow?.show(resume: page)
     }
@@ -216,12 +253,26 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         refreshPermissionStatus()
 
         menu.addItem(label("OpenAB Computer \(version)"))
-        menu.addItem(label(url, action: #selector(copyURL), tip: "Click to copy"))
+        menu.addItem(label(currentURL, action: #selector(copyURL), tip: "Click to copy"))
         if let token, !token.isEmpty {
             menu.addItem(label("Token: \(Self.mask(token))", action: #selector(copyToken), tip: "Click to copy the bearer token"))
         }
         if let notice {
             menu.addItem(label(notice))
+        }
+        let tailnet = MenuModel.tailnetMenu(offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL)
+        if let line = tailnet.stateLine {
+            menu.addItem(label(line))
+        }
+        switch tailnet.action {
+        case .allow?:
+            menu.addItem(label(tailnet.actionTitle ?? "", action: #selector(showTailnetSetup),
+                               tip: "Lets other devices on your tailnet reach this Mac. Off until you allow it."))
+        case .turnOff?:
+            menu.addItem(label(tailnet.actionTitle ?? "", action: #selector(turnOffTailnet),
+                               tip: "Removes the tailscale serve mapping on port \(TailnetExposure.httpsPort)"))
+        case nil:
+            break
         }
         menu.addItem(.separator())
 
@@ -244,7 +295,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         menu.addItem(label("Open Log", action: #selector(openLog)))
         menu.addItem(label("Restart Agent", action: #selector(restart)))
-        menu.addItem(label("Quit Agent (stops launchd job)", action: #selector(quit)))
+        menu.addItem(label(MenuModel.quitTitle(underLaunchd: underLaunchd), action: #selector(quit)))
         startRefreshTimer()
     }
 
@@ -315,16 +366,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
         // With no config there is nothing to reconnect or forget. A process dialling from
         // explicit flags cannot edit the saved files, so Configure and Forget are off there.
-        let hasConfig = switchboardStatus?.hasConfig ?? false
-        let managesSaved = switchboardStatus?.managesSaved ?? false
+        let enabled = MenuModel.switchboardEnablement(switchboardStatus)
         let configure = label("Configure…", action: #selector(configureSwitchboard))
-        configure.isEnabled = managesSaved
+        configure.isEnabled = enabled.configure
         menu.addItem(configure)
         let reconnect = label("Reconnect", action: #selector(reconnectSwitchboard))
-        reconnect.isEnabled = hasConfig
+        reconnect.isEnabled = enabled.reconnect
         menu.addItem(reconnect)
         let forget = label("Disconnect & forget…", action: #selector(forgetSwitchboard))
-        forget.isEnabled = hasConfig && managesSaved
+        forget.isEnabled = enabled.forget
         menu.addItem(forget)
         menu.addItem(.separator())
     }
@@ -443,7 +493,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func copyURL() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url, forType: .string)
+        NSPasteboard.general.setString(currentURL, forType: .string)
     }
     @objc private func copyToken() {
         guard let token else { return }
@@ -468,21 +518,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
     }
     @objc private func restart() {
-        // Under a LaunchAgent, KeepAlive brings us straight back; exiting is the restart.
-        guard relaunchesOnRestart, Bundle.main.bundlePath.hasSuffix(".app") else { exit(0) }
-        // A Finder launch has no LaunchAgent. A detached shell reopens the bundle once this process has exited.
-        // If the shell cannot start, keep running rather than quit with nothing to bring the app back.
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "sleep 1; exec /usr/bin/open -n \"$0\"", Bundle.main.bundlePath]
-        guard (try? p.run()) != nil else { return }
-        exit(0)
+        let started = MenuModel.restart(
+            underLaunchd: underLaunchd,
+            relaunch: { relaunchCoordinator.requestRelaunch(page: nil, automatic: false) },
+            exitProcess: { exit(0) })
+        if !started { log("menu: restart not started") }
     }
     @objc private func quit() {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        p.arguments = ["bootout", "gui/\(getuid())/\(launchdLabel)"]
-        try? p.run()          // bootout SIGTERMs us; if it fails (not under launchd) just exit
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(0) }
+        MenuModel.quit(jobLabel: launchdJobLabel, bootout: { label in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            p.arguments = ["bootout", "gui/\(getuid())/\(label)"]
+            try? p.run()          // bootout SIGTERMs us; if it fails just exit
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(0) }
+        }, exitProcess: { exit(0) })
     }
 }

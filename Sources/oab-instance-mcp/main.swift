@@ -162,6 +162,8 @@ func showFirstRunAlert(_ message: String) {
 }
 
 var firstRunNotice: String? = nil
+/// True when the no-flag launch found a Tailscale login. The tailnet access step is offered only then.
+var firstRunLoginDetected = false
 var firstRunLines: [String] = []
 /// The home directory a no-flag launch writes under; nil for flag launches, which keep their defaults.
 var firstRunHome: String? = nil
@@ -194,7 +196,7 @@ if firstRunLaunch {
     do {
         let plan = try FirstRunSetup.prepare(home: home)
         opts.tokenFile = plan.tokenPath
-        if let login = plan.allowLogin { opts.allowLogins.insert(login) }
+        if let login = plan.allowLogin { opts.allowLogins.insert(login); firstRunLoginDetected = true }
         firstRunNotice = plan.notice
         firstRunLines = plan.logLines
     } catch {
@@ -381,10 +383,19 @@ if opts.menuBar {
     app.setActivationPolicy(.accessory)     // no Dock icon, no main menu; status item only
     let logPath = FirstRunSetup.logPath(home: firstRunHome ?? NSHomeDirectory())
     let publicURL = opts.publicURL ?? "http://\(opts.host):\(opts.port)\(opts.path)"
+    // Opt-in tailnet exposure exists only for the no-flag launch; flag launches keep the installer's own serve mapping.
+    let exposure: TailnetExposure? = firstRunLaunch
+        ? TailnetExposure(defaults: .standard, loginDetected: firstRunLoginDetected, backendPort: opts.port,
+                          runner: FirstRunSetup.systemTailscaleCommandRunner, log: log)
+        : nil
     statusItem = MainActor.assumeIsolated {
         StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
                              attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,
-                             relaunchesOnRestart: firstRunLaunch)
+                             relaunchesOnRestart: firstRunLaunch, exposure: exposure)
+    }
+    // A stored opt-in is re-applied once per launch, off the main thread, and only when the mapping is missing.
+    if let exposure {
+        DispatchQueue.global(qos: .utility).async { _ = exposure.reapplyAtLaunch() }
     }
     Task {
         await switchboardSupervisor.setOnChange { s in

@@ -237,6 +237,15 @@ public enum FirstRunSetup {
         return login
     }
 
+    /// The machine's tailnet name from the same status JSON: Self.DNSName without its trailing dot. Nil when missing.
+    public static func tailscaleSelfDNSName(statusJSON: Data) -> String? {
+        guard let root = (try? JSONSerialization.jsonObject(with: statusJSON)) as? [String: Any],
+              let me = root["Self"] as? [String: Any],
+              let dns = me["DNSName"] as? String else { return nil }
+        let name = dns.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+        return name.isEmpty ? nil : name
+    }
+
     /// Why one run of the Tailscale CLI gave no login. Logged by name; none of these carries output or a login.
     public enum TailscaleFailure: Equatable, Sendable {
         case launchFailed
@@ -256,6 +265,8 @@ public enum FirstRunSetup {
     }
 
     public typealias TailscaleRunner = (_ cli: String, _ timeout: TimeInterval) -> TailscaleRun
+    /// Like `TailscaleRunner` for any argument list. `TailnetExposure` uses it for `serve` and the status reads.
+    public typealias TailscaleCommandRunner = (_ cli: String, _ arguments: [String], _ timeout: TimeInterval) -> TailscaleRun
 
     static let tailscaleStatusArguments = ["status", "--self", "--peers=false", "--json"]
 
@@ -271,9 +282,14 @@ public enum FirstRunSetup {
     /// The real runner: starts `cli` with the status arguments and `tailscaleEnvironment`, drains stdout while it
     /// waits (a full pipe cannot stall it), and kills it at the timeout.
     public static let systemTailscaleRunner: TailscaleRunner = { cli, timeout in
+        systemTailscaleCommandRunner(cli, tailscaleStatusArguments, timeout)
+    }
+
+    /// The same runner for any arguments (same environment, drain, timeout and kill). The only place that starts the CLI.
+    public static let systemTailscaleCommandRunner: TailscaleCommandRunner = { cli, arguments, timeout in
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cli)
-        process.arguments = tailscaleStatusArguments
+        process.arguments = arguments
         process.environment = tailscaleEnvironment(ProcessInfo.processInfo.environment)
         process.standardInput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
