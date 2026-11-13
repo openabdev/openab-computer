@@ -157,7 +157,10 @@ public final class TailnetExposure: @unchecked Sendable {
             if before == .absent {
                 if case .success(.ours) = readMapping() {
                     rollback()
-                    return fail("Could not verify the mapping with Tailscale Serve status, so it was undone. The choice stays off.")
+                    if case .success(.absent) = readMapping() {
+                        return fail("Could not verify the mapping with Tailscale Serve status, so it was undone. The choice stays off.")
+                    }
+                    return fail("Could not verify the mapping, and it may still be there. The choice stays off. Check with: tailscale serve status")
                 }
                 log("tailnet access: status unreadable after serve; port \(Self.httpsPort) left as is (not confirmed to be ours)")
             }
@@ -251,12 +254,14 @@ public final class TailnetExposure: @unchecked Sendable {
     public func withdrawWithoutLogin() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
         guard !loginDetected else { return nil }
-        switch readMapping(attempts: 1) {
+        // With a stored opt-in this app may have a live mapping, so read with the full retry budget.
+        switch readMapping(attempts: optedIn ? 3 : 1) {
         case .failure(.noCLI):
             return nil
         case .failure(let why):
             log("tailnet access: no login detected and serve status could not be read (\(why)); cannot check for a leftover mapping")
-            return nil
+            // An opt-in means a mapping from this app may be live: fail closed. Without one, none can be ours.
+            return optedIn ? .failed("Could not read Tailscale Serve status to check for a leftover mapping on port \(Self.httpsPort).") : nil
         case .success(.absent), .success(.foreign):
             return nil
         case .success(.ours):

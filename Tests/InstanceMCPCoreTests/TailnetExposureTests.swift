@@ -327,8 +327,14 @@ final class TailnetExposureTests: XCTestCase {
 
         let unreadable = FakeTailscale()
         unreadable.statusFails = true
-        XCTAssertNil(make(unreadable, login: false).withdrawWithoutLogin())
+        XCTAssertNil(make(unreadable, login: false).withdrawWithoutLogin(), "no opt-in: no mapping of ours can be live")
         XCTAssertTrue(unreadable.mutating.isEmpty)
+
+        let optedIn = FakeTailscale()
+        optedIn.statusFails = true
+        defaults.set(true, forKey: TailnetExposure.optInKey)
+        guard case .failed = make(optedIn, login: false).withdrawWithoutLogin() else { return XCTFail("opted in and unprovable fails closed") }
+        XCTAssertTrue(optedIn.mutating.isEmpty)
     }
 
     func testWithdrawReportsAMappingThatWillNotGoAway() {
