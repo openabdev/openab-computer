@@ -151,6 +151,29 @@ has "$e" "WARNING" && has "$e" "port 8795" \
 if grep -q 'daemon: ok' "$T/lin-active.out" || ! grep -q 'daemon: not checked' "$e"; then fail "linux active: the installer vouched for the daemon while the old unit may hold the port"; else ok "linux: no 'daemon: ok' while the old unit is present"; fi
 if grep -q 'daemon: ok' "$T/lin-clean.out"; then ok "linux: 'daemon: ok' printed when no old unit exists"; else fail "linux clean: daemon check missing"; fi
 
+# Token: an old token is copied (old file untouched, new mode 600); a new token is never overwritten;
+# with neither, one is generated. The values are fixtures, not real tokens.
+tok_case() { # tok_case NAME OLD_TOKEN|- NEW_TOKEN|-
+  local name="$1" old="$2" new="$3" home="$T/lin-tok-$1/home"
+  mkdir -p "$home/.config/oab-instance-mcp" "$home/.config/oab-computer"
+  [ "$old" = - ] || printf '%s' "$old" >"$home/.config/oab-instance-mcp/token"
+  [ "$new" = - ] || printf '%s' "$new" >"$home/.config/oab-computer/token"
+  rm -rf "$home/.local"; mkdir -p "$home/.local/oab-computer/pw-mcp/node_modules/.bin" "$home/.config/systemd/user"
+  : >"$LOG"
+  (cd "$PKG" && HOME="$home" USER="${USER:-$(id -un)}" PATH="$STUBS:$PATH" STUB_UNITS="" \
+     ./install-linux.sh --no-browser) </dev/null >"$T/lin-tok-$name.out" 2>&1 || { cat "$T/lin-tok-$name.out" >&2; fail "linux token $name: installer failed"; }
+}
+tok_case copy "fixture-old-token" -
+[ "$(cat "$T/lin-tok-copy/home/.config/oab-computer/token")" = "fixture-old-token" ] \
+  && [ "$(cat "$T/lin-tok-copy/home/.config/oab-instance-mcp/token")" = "fixture-old-token" ] \
+  && ok "linux: old token copied to the new path, old file kept" || fail "linux token copy: token not copied or old file changed"
+tok_case keep "fixture-old-token" "fixture-new-token"
+[ "$(cat "$T/lin-tok-keep/home/.config/oab-computer/token")" = "fixture-new-token" ] \
+  && ok "linux: existing new token is not overwritten" || fail "linux token keep: new token overwritten"
+tok_case gen - -
+[ -s "$T/lin-tok-gen/home/.config/oab-computer/token" ] && [ ! -e "$T/lin-tok-gen/home/.config/oab-instance-mcp/token" ] \
+  && ok "linux: token generated when neither exists" || fail "linux token gen: no token generated"
+
 linux_case pwonly "oab-pw-mcp.service" 1
 has "$T/lin-pwonly.err" "WARNING" && has "$T/lin-pwonly.err" "oab-pw-mcp.service" \
   && ok "linux: old pw-mcp unit alone warns" || fail "linux pwonly: no warning"

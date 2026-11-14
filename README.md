@@ -567,10 +567,11 @@ To upgrade:
 2. macOS: grant Screen Recording and Accessibility again (and Full Disk Access if you use it). TCC
    grants are keyed to the bundle id, which changed. To drop the stale entries, run
    `tccutil reset ScreenCapture dev.openab.instance-mcp` and
-   `tccutil reset Accessibility dev.openab.instance-mcp`.
+   `tccutil reset Accessibility dev.openab.instance-mcp` (and `tccutil reset SystemPolicyAllFiles dev.openab.instance-mcp` for Full Disk Access).
 3. macOS: the bearer token is copied automatically from `~/.config/oab-instance-mcp/token` to
    `~/.config/oab-computer/token` when the new config directory is first created. The old file stays in place.
-   Linux: the installer creates a new token, so update the clients that use it.
+   Linux: `install-linux.sh` does the same copy when `~/.config/oab-computer/token` does not exist yet, so
+   clients keep their token.
 4. Not migrated, so redo them by hand, but only after the new installer or app has run once, because the token
    copy in step 3 happens only when it creates `~/.config/oab-computer`: switchboard settings (`switchboard.url`, `switchboard.secret`,
    `switchboard.profile`, `switchboard.secure-set-value`), saved grants and their Keychain secrets (lend again),
@@ -587,11 +588,13 @@ To upgrade:
    # only if you used the Playwright agent:
    launchctl bootout gui/$(id -u)/dev.openab.instance-mcp.pw-mcp
    rm ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist
-   # if you used the Playwright agent, install the new one too (browser tools need it):
-   poc/pw-mcp/install.sh
    # then restart the new agent, which could not bind port 8795 while the old one held it:
    launchctl kickstart -k gui/$(id -u)/dev.openab.computer
    ```
+
+   If you used the Playwright agent, install the new one from a clone of this repo (`poc/pw-mcp/install.sh`),
+   then run the main installer (the `.pkg` or `install-prebuilt.sh`) again. The installer adds the browser
+   upstream to the agent only when the new Playwright agent is already loaded, and a restart alone does not.
 
    Linux:
 

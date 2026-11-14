@@ -1,4 +1,4 @@
-# reverse-attach (Linux hands node, Rust PoC)
+# oab-computer (Linux hands node, Rust PoC)
 
 Step-by-step install on a fresh box: [`docs/linux-setup.md`](../../docs/linux-setup.md).
 

@@ -44,7 +44,7 @@ done
 if [ "${#LEGACY_FOUND[@]}" -gt 0 ]; then
   {
     echo "install: WARNING: the old unit(s) ${LEGACY_FOUND[*]} (0.11 or earlier) are still active or enabled."
-    echo "The old oab-instance-mcp.service listens on port $PORT like the new oab-computer.service and will fight it for that port;"
+    echo "The old oab-instance-mcp.service listens on port 8795 (the default); if the new oab-computer.service uses the same port ($PORT), they will fight over it;"
     echo "the old oab-pw-mcp.service holds the Playwright port (8794) that oab-computer-pw-mcp.service needs."
     echo "This installer does not touch them. To stop and remove them, run:"
     echo "  systemctl --user disable --now ${LEGACY_FOUND[*]}"
@@ -103,6 +103,13 @@ if [ -z "$ALLOW_LOGIN" ]; then
 fi
 
 install -m 755 "$HERE/oab-computer" "$BASE/oab-computer"
+# 0.11 and earlier kept the token under ~/.config/oab-instance-mcp. Copy it (source only, the old file
+# stays) so existing clients keep working; generate a token only when neither file has one.
+OLD_TOKEN="$HOME/.config/oab-instance-mcp/token"
+if [ ! -s "$CFG/token" ] && [ -s "$OLD_TOKEN" ]; then
+  mkdir -p "$CFG"; ( umask 077; cp "$OLD_TOKEN" "$CFG/token" ); chmod 600 "$CFG/token"
+  echo "copied the bearer token from $OLD_TOKEN to $CFG/token"
+fi
 if [ ! -s "$CFG/token" ]; then
   head -c 32 /dev/urandom | base64 | tr -d '=+/\n' | head -c 40 > "$CFG/token"; chmod 600 "$CFG/token"
   echo "generated bearer token at $CFG/token"
