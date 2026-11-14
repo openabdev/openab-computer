@@ -253,17 +253,19 @@ build may differ. Checked by reading the code and by a read-only look at a runni
 
 | Address:port | Protocol | Who can reach it | What it is for | How it is enabled | Auth |
 |---|---|---|---|---|---|
-| `127.0.0.1:8795` (`--host`, `--port`) | TCP, plain HTTP/1.1 | Processes on this Mac only | `/mcp` (POST, DELETE), `/attach` (reverse attach; off with `--no-attach`), `/healthz`. Anything else is 404 | Always. No-flag launch from Finder, the installer's LaunchAgent, or a manual launch | `/mcp` and `/attach`: [Auth](#auth). `/healthz`: none |
-| `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | Not opened by the app. `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. A Finder launch alone does not | Tailscale login on the allow list **and** the bearer token |
-| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac only | Playwright MCP, a **separate process** the app only connects to (`--upstream`) | Its own LaunchAgent (`poc/pw-mcp/install.sh`). The app never starts it | None in the app. Loopback only |
+| `127.0.0.1:8795` (`--host`, `--port`; `--path` for the `/mcp` route) | TCP, plain HTTP/1.1 | Processes on this Mac only | `/mcp` (POST, DELETE), `/attach` (reverse attach; off with `--no-attach`), `/healthz`. Anything else is 404 | Always, on IPv4 loopback by default. No-flag launch from Finder, the installer's LaunchAgent, or a manual launch. A no-flag launch also briefly binds the port to test it is free, without listening | `/mcp` and `/attach`: [Auth](#auth). `/healthz`: none |
+| `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | Not opened by the app. `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. A Finder launch alone does not | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
+| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac. Your tailnet too, if the `:8443` mapping below exists | Playwright MCP, a **separate process** the app only connects to (`--upstream`) | Its own LaunchAgent (`poc/pw-mcp/install.sh`). The app never starts it | None in the app |
+| `https://<host>.<tailnet>.ts.net:8443` → `127.0.0.1:8794` | HTTPS, terminated by Tailscale | Your whole tailnet | Direct access to Playwright MCP (a proof-of-concept path) | Only `poc/pw-mcp/install.sh` runs `tailscale serve --bg --https=8443`. Not the app, not `install-prebuilt.sh` | **None.** No bearer token, login check or tool profile. It bypasses the agent's auth |
 
-The app opens one listening socket. It uses no UDP and no Unix domain sockets.
+The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The `:8443`
+mapping belongs to the Playwright installer, not to the app.
 
 ### Outbound connections
 
 | What | To where | When | What it is for |
 |---|---|---|---|
-| Upstream MCP, HTTP | `http://127.0.0.1:8794/mcp` | Only with `--upstream`. The installer adds it when the Playwright agent is loaded | Browser tools |
+| Upstream MCP, HTTP(S) | The URL given to `--upstream`. The installer uses `http://127.0.0.1:8794/mcp`. The app does not require loopback | Only with `--upstream`. The installer adds it when the Playwright agent is loaded | Browser tools |
 | Switchboard, WebSocket | `wss://<switchboard-host>.<tailnet>.ts.net/vm/attach`. `ws://` only to loopback | Only with `--switchboard` or a saved switchboard config. Redials for the life of the process | [Serving a switchboard](#serving-a-switchboard---switchboard) |
 | Reverse attach, WebSocket | `ws(s)://<runtime>/tools/attach/<session>`. The runtime and port come from the grant | Only after a `POST /attach`. Saved grants are redialled at launch | [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) |
 | Mint call, HTTP(S) | `http(s)://<runtime>/admin/sessions/<session>/tools-attach` | Only when the `/attach` body carries an `admin_credential` | Get a one-time attach secret |
@@ -273,6 +275,9 @@ The menu bar and the permission wizard also start local processes (`open`, `laun
 `--permission-check` re-run of the app). These make no network connections.
 
 ### What the app never does
+
+This is about the macOS app process. Tools such as `exec` start child processes that can do anything
+your user can.
 
 - It opens no UDP socket and no Unix domain socket.
 - It does not bind a non-loopback address unless you pass `--host`.
@@ -285,7 +290,11 @@ The menu bar and the permission wizard also start local processes (`open`, `laun
 The tailnet mapping belongs to `tailscaled`, not to the app. Removing it
 (`tailscale serve --https=8444 off`) closes the tailnet path and leaves the loopback listener.
 
-A tailnet caller needs an allow-listed Tailscale login **and** the bearer token. The app does not
+A caller must pass every configured check. The installer always sets both, so a tailnet caller needs
+an allow-listed Tailscale login **and** the bearer token. A no-flag launch falls back to the token
+alone if it cannot find your login, and so does a manual launch without `--allow-login`. The `:8443`
+Playwright mapping has no auth: remove it with `tailscale serve --https=8443 off`. Browser tools
+still work, because the agent reaches Playwright over loopback. The app does not
 guard `--host`: a non-loopback value binds silently, in plain HTTP, with no warning. The app
 trusts a `Tailscale-User-Login` header from any peer, so on a non-loopback bind only the bearer
 token stops a forged header. Keep the default, and always set a token.
@@ -301,9 +310,15 @@ differences:
 - There is no switchboard and no menu bar.
 - `install-linux.sh` runs `sudo tailscale serve` for `:8444` only with passwordless sudo.
   Otherwise it prints the command.
+- `install-linux.sh` also starts Playwright MCP on `127.0.0.1:8794` (user unit `oab-pw-mcp.service`)
+  when `node` and `npm` are present, and sets `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp`. Skip
+  it with `--no-browser`. It makes no tailnet mapping for 8794. `MCP_UPSTREAM` takes plain `http://`
+  URLs only.
+- The Linux node does use a Unix domain socket: it connects, as a client, to the Wayland socket for
+  display and pointer control. It does not listen on one.
 - The mint call is plain `http://` only. A `wss://` runtime with `admin_credential` is refused.
 
-Not verified: the Linux node was not run. Whether the first-run launch also binds IPv6.
+Not verified: the Linux node was not run.
 
 ## Lending this Mac to a sandboxed agent (reverse attach)
 
