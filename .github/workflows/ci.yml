@@ -26,6 +26,16 @@ jobs:
           globs: |
             docs/**/*.md
 
+  pw-mcp-loopback:
+    name: Playwright MCP stays on loopback (#115)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: ShellCheck
+        run: shellcheck poc/pw-mcp/install.sh poc/pw-mcp/check-legacy-mapping.sh scripts/test-pw-mcp-check.sh
+      - name: No tailscale serve for 8794/8443, and the read-only check against a stub CLI
+        run: bash scripts/test-pw-mcp-check.sh
+
   swift:
     name: Swift build & test
     runs-on: macos-15

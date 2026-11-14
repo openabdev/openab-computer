@@ -1,9 +1,15 @@
 # Step 1 PoC — Playwright MCP on macmini, driven from the tailnet
 
 > Done 2026-09-22. Design context: openabdev/openab#1544.
-> Proves the transport half of the relay-agent design before any Swift is written:
-> a headed browser living in macmini's Aqua session, exposed as a remote MCP server
-> through `tailscale serve`, consumed by kiro-cli on the laptop.
+> Proves the browser half of the relay-agent design before any Swift is written:
+> a headed browser living in macmini's Aqua session, served as an MCP server on loopback.
+>
+> **Playwright MCP is loopback only (`127.0.0.1:8794`) and has no authentication.** It is not
+> mapped onto the tailnet and has no `:8443` access path (#115). Browser tools are reached only
+> through `oab-instance-mcp` (`--upstream browser=http://127.0.0.1:8794/mcp`), which adds the
+> Tailscale login check, the bearer token and the owner-only tool profile. The first version of
+> this PoC mapped `:8443` with `tailscale serve`; see
+> [Older installs](#older-installs-may-still-have-a-8443-mapping).
 
 ## What is deployed on macmini
 
@@ -15,14 +21,16 @@
 | Persistent browser profile | `~/.local/oab-instance-mcp/pw-profile/` |
 | Screenshot / snapshot output | `~/.local/oab-instance-mcp/pw-output/` |
 | Logs | `~/Library/Logs/oab-instance-mcp/pw-mcp.{log,err}` |
-| Listener | `127.0.0.1:8794` (loopback only) |
-| Tailnet URL | `https://<host>.<tailnet>.ts.net:8443/mcp` via `tailscale serve --bg --https=8443 http://127.0.0.1:8794` |
+| Listener | `127.0.0.1:8794` (loopback only; the wrapper passes `--host 127.0.0.1`) |
+| Tailnet URL | None. `install.sh` creates no `tailscale serve` mapping |
 
 Browser: Playwright's bundled Chromium (`~/Library/Caches/ms-playwright/chromium-1246`),
 **headed**, spawned as a child of the LaunchAgent pid, so it is a real window in the
 logged-in desktop session. No Google Chrome is installed on macmini.
 
-Client side (laptop): `kiro-cli mcp add --name macmini-browser --url https://<host>.<tailnet>.ts.net:8443/mcp --scope global --timeout 20000`.
+Client side: do not point a client at Playwright directly. Connect to `oab-instance-mcp`, which
+re-serves the `browser_*` tools under its `owner` profile (top-level README, "Browser tools for
+lent sessions").
 
 ## Install / operate
 
@@ -34,17 +42,27 @@ ssh macmini 'cd ~/src/oab-instance-mcp && bash poc/pw-mcp/install.sh'   # idempo
 ssh macmini launchctl print gui/501/dev.openab.instance-mcp.pw-mcp | grep -E 'state|pid'
 ssh macmini launchctl kickstart -k gui/501/dev.openab.instance-mcp.pw-mcp   # restart
 ssh macmini tail -20 ~/Library/Logs/oab-instance-mcp/pw-mcp.err
-ssh macmini /Applications/Tailscale.app/Contents/MacOS/Tailscale serve status
+ssh macmini lsof -nP -iTCP:8794 -sTCP:LISTEN   # one listener, on 127.0.0.1
 ```
 
-Smoke test from the laptop (no LLM in the loop):
+At the end, `install.sh` runs a read-only check (`tailscale serve status`) and prints a warning
+if a `:8443` mapping to `127.0.0.1:8794` exists. It never changes a mapping.
+
+### Older installs may still have a :8443 mapping
+
+Earlier versions of `install.sh` ran `tailscale serve --bg --https=8443 http://127.0.0.1:8794`.
+Re-running the new installer does not remove it. That mapping lets any device on the tailnet call
+every browser tool without a login check or token, including `browser_run_code_unsafe`. Check and
+remove it on each Mac that ran the old installer:
 
 ```sh
-kiro-cli chat --no-interactive --trust-tools=@macmini-browser --agent kiro_default \
-  "Use macmini-browser only: navigate to https://example.com, browser_snapshot, report the title."
+tailscale serve status              # look for :8443 pointing at http://127.0.0.1:8794
+tailscale serve --https=8443 off    # remove only that mapping
 ```
 
-## Measurements (laptop → macmini over tailnet, direct connection)
+Browser tools keep working through `oab-instance-mcp`, which reaches Playwright over loopback.
+
+## Measurements (first PoC, laptop → macmini through the since-removed :8443 mapping)
 
 | Call | Latency |
 |---|---|
@@ -61,9 +79,9 @@ Latency is not the bottleneck; the LLM round trip is. Good enough for the thin-e
 ## Gotchas (each cost a restart)
 
 1. **`--allowed-hosts` is an exact string match on the `Host` header, port included.**
-   `<host>.<tailnet>.ts.net` does *not* cover `<host>.<tailnet>.ts.net:8443`, and
-   `127.0.0.1` does not cover `127.0.0.1:8794`. List every form the proxy will forward.
-   (`tailscale serve` forwards the original Host, with port.)
+   `127.0.0.1` does not cover `127.0.0.1:8794`. List every form a client will send. (The
+   wrapper still lists a `<host>.<tailnet>.ts.net:8443` form left over from the removed mapping.
+   It opens nothing: the listener is loopback only.)
 2. **Default browser channel is `chrome`, not bundled Chromium.** Without
    `--browser chromium` the first tool call fails with
    `Chromium distribution 'chrome' is not found at /Applications/Google Chrome.app`. The
@@ -73,9 +91,8 @@ Latency is not the bottleneck; the LLM round trip is. Good enough for the thin-e
    Each MCP client session (every kiro-cli run is a new one) tries to launch its own browser
    on the shared `--user-data-dir`. Fix: `--shared-browser-context`. Alternative `--isolated`
    loses login state between sessions, which defeats the point of a resident browser.
-4. **Dedicated HTTPS port rather than a path on :443.** The existing `:443` mappings are
-   path-prefixed (`/wdyt`, `/lossic`, …); the MCP server expects `/mcp` at root and the SSE
-   endpoint at `/sse`, so `--https=8443` avoids any path rewriting question.
+4. **History: the first PoC used a dedicated HTTPS port** (`--https=8443`) because the MCP
+   server expects `/mcp` at root. That mapping was removed from the design in #115.
 5. **RAID/TCC reminder held.** Everything lives on the internal disk (`~/.local/...`), per the
    home.md rule that LaunchAgents cannot read the external RAID. The `.zshenv: .cargo/env:
    operation not permitted` line in `pw-mcp.err` is that same restriction firing on the
@@ -83,27 +100,25 @@ Latency is not the bottleneck; the LLM round trip is. Good enough for the thin-e
 6. `launchctl print` shows `state = running` even when the wrapper is about to die; check
    the `.err` log, and check `lsof -nP -iTCP:8794 -sTCP:LISTEN`.
 
-## Security posture of this PoC
+## Security posture
 
-- Reachable only inside the tailnet (`tailscale serve`, not `funnel`). Anyone on the tailnet
-  can drive the browser; there is no token check yet. Add a Tailscale ACL restricting
-  `macmini:8443` to the laptop before leaving this running unattended, or front it with the
-  Swift daemon that checks `Tailscale-User-Login`.
-- `browser_run_code_unsafe` is in the tool list — arbitrary Playwright JS on the box. Fine
-  for "my CLI on my Mac". A lent session reaches the browser only through the daemon's
-  `--upstream`, and only under the `owner` profile: `observe` gets no browser tool (#59).
+- Playwright MCP has no authentication. It listens on `127.0.0.1:8794` only, so only processes
+  on this Mac reach it. There is no `tailscale serve` mapping for it and no `:8443` access path.
+- Browser tools reach other machines only through `oab-instance-mcp`'s `--upstream`, behind its
+  login check and bearer token, and only under the `owner` profile: `observe` gets no browser
+  tool (#59). A switchboard's per-caller allowlist applies on top.
+- `browser_run_code_unsafe` is in the tool list: arbitrary Playwright JS in the logged-in
+  browser profile. That is why Playwright must not be reachable without the daemon's auth.
 
 ## What this proves for the design
 
-- The Aqua-session LaunchAgent + loopback listener + `tailscale serve` shape works and
-  needs no custom transport. The Swift `oab-instance-mcp` (exec / screenshot / mouse / key /
-  osascript) will sit behind the same pattern on the next port.
+- The Aqua-session LaunchAgent + loopback listener shape works and needs no custom transport.
+  The Swift `oab-instance-mcp` re-serves the browser tools to remote callers.
 - Playwright MCP covers the browser half completely; the Swift daemon does not need to
   touch CDP. `connectOverCDP` from the sandbox was never needed.
 
 ## Next
 
-Step 2 shipped 2026-09-22: the Swift `oab-instance-mcp` daemon (see top-level README) runs beside
-this on `127.0.0.1:8795` → `tailscale serve --https=8444`, same LaunchAgent pattern, with
-`exec` / `screenshot` / `sys_info` and Tailscale-identity auth. Remaining for the browser
-half: a Tailscale ACL on :8443. Lent callers get the browser only under `owner` (#59).
+The Swift `oab-instance-mcp` daemon (see top-level README) runs beside this on `127.0.0.1:8795`,
+same LaunchAgent pattern, with Tailscale-identity auth, and re-serves these tools through
+`--upstream`. Lent callers get the browser only under `owner` (#59).
