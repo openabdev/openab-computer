@@ -525,7 +525,7 @@ Tagged releases publish a universal, Developer-ID-signed and Apple-notarized ins
    both are on. Click Allow on each row, turn the switch on in System Settings, and return to the
    wizard, which re-tests on its own. Use Check Again if the row does not update. Page 2 is optional
    Full Disk Access, which has a Skip link. Browser tools work without any of them. Future releases
-   keep the same Developer ID + bundle id, so grants survive.
+   keep the same Developer ID + bundle id, so grants survive (the 0.12 rename changed the bundle id once; see [Upgrading from 0.11 or earlier](#upgrading-from-011-or-earlier)).
 5. The same wizard remains available from the menu bar as **Set Up Permissions…**; use the menu
    item to copy the MCP URL and bearer token into OpenAB Connect/Remote.
 
@@ -587,6 +587,8 @@ To upgrade:
    # only if you used the Playwright agent:
    launchctl bootout gui/$(id -u)/dev.openab.instance-mcp.pw-mcp
    rm ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist
+   # if you used the Playwright agent, install the new one too (browser tools need it):
+   poc/pw-mcp/install.sh
    # then restart the new agent, which could not bind port 8795 while the old one held it:
    launchctl kickstart -k gui/$(id -u)/dev.openab.computer
    ```

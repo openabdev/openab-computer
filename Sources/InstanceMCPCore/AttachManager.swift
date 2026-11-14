@@ -5,7 +5,7 @@ import Foundation
 /// A grant is created by a human through `POST /attach` (from OpenAB Connect or
 /// Remote, or a curl) and lives **here**, on the Mac. The granting device does not
 /// need to stay online; the Mac dials, redials and gives up on its own. Design:
-/// oab-computer `docs/requirements/reverse-attach.md`, "How a grant works".
+/// openab-computer `docs/requirements/reverse-attach.md`, "How a grant works".
 ///
 /// One grant per (runtime, session): a new one for the same target replaces the
 /// old, which is also how renewal works. The profile is fixed for a grant's life.
