@@ -8,11 +8,11 @@
 
 ## Problem
 
-`oab-instance-mcp` runs on macmini bound to loopback; `tailscale serve --https=8444` terminates
+`oab-instance-mcp` runs on the Mac bound to loopback; `tailscale serve --https=8444` terminates
 TLS and injects `Tailscale-User-Login`, and `AuthPolicy` checks it against
 `--allow-login <owner-login>`. Today that is the *only* control (no `--token` in the
 deployed LaunchAgent). OpenAB Connect's `MacAgentClient` connects straight to
-`https://macmini.<tailnet>.ts.net:8444/mcp` and sends **no** `Authorization` header — its own
+`https://<host>.<tailnet>.ts.net:8444/mcp` and sends **no** `Authorization` header — its own
 comment states "nothing here is a secret — auth is the caller's Tailscale identity".
 
 ### Threat: a leaked tailnet credential is sufficient
@@ -54,12 +54,12 @@ attributable in logs), unlike a tailnet key whose revocation needs the admin con
   additive, not a rewrite.
 - **mTLS / short-lived certs** — heavier than warranted for a single-operator mesh.
 - **SSH-tunnel-based auth** — rejected: the sandbox agent's connectivity model is tsnet on the
-  tailnet (per `connect-closed-loop.md`), not SSH, and giving a sandbox an SSH key to macmini
+  tailnet (per `connect-closed-loop.md`), not SSH, and giving a sandbox an SSH key to the Mac
   would grant *more* than the MCP endpoint, not less.
 
 ## Token lifecycle
 
-**Generation & storage (agent side, macmini).** `deploy.sh` generates a random token on first
+**Generation & storage (agent side, the Mac).** `deploy.sh` generates a random token on first
 deploy if one does not already exist, stores it at `~/.config/oab-instance-mcp/token` (mode 600),
 and passes `--token-file` to the LaunchAgent (alongside the existing `--allow-login`). Re-deploys
 reuse the existing file so the token is stable across upgrades (like the TCC grants). Rotation =
@@ -103,7 +103,7 @@ profile.
 
 - Unit: `AuthPolicy` AND semantics already tested (token required even for an allow-listed
   login; wrong token denied).
-- Live on macmini: with the agent deployed with `--token-file`,
+- Live on the Mac: with the agent deployed with `--token-file`,
   - a request with correct login header but **no** `Authorization` → `401`;
   - the same request **with** `Authorization: Bearer <token>` → `200`;
   - Connect can watch the screen only after its profile's token is set.

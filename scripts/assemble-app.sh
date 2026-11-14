@@ -58,7 +58,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cp "$SCRIPT_DIR/install-prebuilt.sh" "$APP/Contents/Resources/install-prebuilt.sh"
 chmod 755 "$APP/Contents/Resources/install-prebuilt.sh"
 
-# User-visible name. The bundle id, executable and .app file name are
+# User-visible name. The bundle id (dev.openab.computer), executable and .app file name are
 # oab-computer (TCC grants and installed paths depend on them, see #63).
 # macOS shows a name other than the file name only when the bundle localizes
 # it AND the file name equals the base CFBundleDisplayName, so the base names

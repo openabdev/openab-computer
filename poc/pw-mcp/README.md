@@ -1,8 +1,8 @@
-# Step 1 PoC — Playwright MCP on macmini, driven from the tailnet
+# Step 1 PoC — Playwright MCP on the Mac, driven from the tailnet
 
 > Done 2026-09-22. Design context: openabdev/openab#1544.
 > Proves the browser half of the relay-agent design before any Swift is written:
-> a headed browser living in macmini's Aqua session, served as an MCP server on loopback.
+> a headed browser living in the Mac's Aqua session, served as an MCP server on loopback.
 >
 > **Playwright MCP is loopback only (`127.0.0.1:8794`) and has no authentication.** It is not
 > mapped onto the tailnet and has no `:8443` access path (#115). Browser tools are reached only
@@ -11,7 +11,7 @@
 > this PoC mapped `:8443` with `tailscale serve`; see
 > [Older installs](#older-installs-may-still-have-a-8443-mapping).
 
-## What is deployed on macmini
+## What is deployed on the Mac
 
 | Piece | Location |
 |---|---|
@@ -26,7 +26,7 @@
 
 Browser: Playwright's bundled Chromium (`~/Library/Caches/ms-playwright/chromium-1246`),
 **headed**, spawned as a child of the LaunchAgent pid, so it is a real window in the
-logged-in desktop session. No Google Chrome is installed on macmini.
+logged-in desktop session. No Google Chrome is installed on the Mac.
 
 Client side: do not point a client at Playwright directly. Connect to `oab-computer`, which
 re-serves the `browser_*` tools under its `owner` profile (top-level README, "Browser tools for
@@ -35,14 +35,14 @@ lent sessions").
 ## Install / operate
 
 ```sh
-ssh macmini 'cd ~/src/oab-computer && bash poc/pw-mcp/install.sh'   # idempotent
+ssh <mac> 'cd ~/src/oab-computer && bash poc/pw-mcp/install.sh'   # idempotent
 ```
 
 ```sh
-ssh macmini launchctl print gui/501/dev.openab.computer.pw-mcp | grep -E 'state|pid'
-ssh macmini launchctl kickstart -k gui/501/dev.openab.computer.pw-mcp   # restart
-ssh macmini tail -20 ~/Library/Logs/oab-computer/pw-mcp.err
-ssh macmini lsof -nP -iTCP:8794 -sTCP:LISTEN   # one listener, on 127.0.0.1
+ssh <mac> launchctl print gui/501/dev.openab.computer.pw-mcp | grep -E 'state|pid'
+ssh <mac> launchctl kickstart -k gui/501/dev.openab.computer.pw-mcp   # restart
+ssh <mac> tail -20 ~/Library/Logs/oab-computer/pw-mcp.err
+ssh <mac> lsof -nP -iTCP:8794 -sTCP:LISTEN   # one listener, on 127.0.0.1
 ```
 
 At the end, `install.sh` runs a read-only check (`tailscale serve status`) and prints a warning
@@ -62,7 +62,7 @@ tailscale serve --https=8443 off    # remove only that mapping
 
 Browser tools keep working through `oab-computer`, which reaches Playwright over loopback.
 
-## Measurements (first PoC, laptop → macmini through the since-removed :8443 mapping)
+## Measurements (first PoC, laptop → the Mac through the since-removed :8443 mapping)
 
 | Call | Latency |
 |---|---|

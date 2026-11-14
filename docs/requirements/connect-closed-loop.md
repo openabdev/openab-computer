@@ -47,7 +47,7 @@ loop — Connect is where the human both talks to the agent and sees the consequ
 ## Reachability
 
 - Connect (human's Mac / iPhone) → Mac mini screen session: direct over the tailnet,
-  `wss://macmini.<tailnet>.ts.net:<port>/…`. Video stream must not transit the sandbox.
+  `wss://the Mac.<tailnet>.ts.net:<port>/…`. Video stream must not transit the sandbox.
 - Agent (inside the `openab-pty` sandbox, k8s/ECS) → Mac mini: needs the sandbox on the
   tailnet — `tsnet` embedded in the pod, Tailscale k8s operator, or `tailscaled` sidecar
   (issue §1). Locally today the "sandbox" is just kiro-cli on the laptop, which already
@@ -63,7 +63,7 @@ loop — Connect is where the human both talks to the agent and sees the consequ
 | 2b | Capture pipeline split into shared component; H.264 stream endpoint over WSS with a `ffplay`/`mpv` smoke test | 2 |
 | 3 | Connect: new session kind "Mac screen", attach + render via `AVSampleBufferDisplayLayer`; read-only | 2b + openab-pty contract review |
 | 3b | Connect: mouse/keyboard passthrough (human intervention) | 3 |
-| 4 | Connect's agent (in sandbox) reaches macmini MCP over tailnet — `tsnet` or sidecar in the `openab-pty` image | openab-pty change |
+| 4 | Connect's agent (in sandbox) reaches the Mac MCP over tailnet — `tsnet` or sidecar in the `openab-pty` image | openab-pty change |
 
 ## Open questions
 

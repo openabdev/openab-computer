@@ -150,7 +150,7 @@ curl -s https://<switchboard>.<tailnet>.ts.net/mcp/<computer> \
 ([full guide](docs/linux-setup.md)):
 
 ```sh
-V=$(curl -fsSL https://api.github.com/repos/openabdev/openab-computer/releases/latest | python3 -c 'import sys,json;print(json.load(sys.stdin)["tag_name"][1:])')
+V=0.12.0   # the first release with oab-computer-* assets (v0.11.0 and older use the old names)
 A=$(dpkg --print-architecture)   # arm64 | amd64
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
 tar xzf oab-computer-$V-linux-$A.tar.gz && cd oab-computer-$V-linux-$A
@@ -571,10 +571,12 @@ To upgrade:
 3. macOS: the bearer token is copied automatically from `~/.config/oab-instance-mcp/token` to
    `~/.config/oab-computer/token` when the new config directory is first created. The old file stays in place.
    Linux: the installer creates a new token, so update the clients that use it.
-4. Not migrated, so redo them by hand, but only after the first launch of the new app (step 1) has run, because the token
+4. Not migrated, so redo them by hand, but only after the new installer or app has run once, because the token
    copy in step 3 happens only when it creates `~/.config/oab-computer`: switchboard settings (`switchboard.url`, `switchboard.secret`,
    `switchboard.profile`, `switchboard.secure-set-value`), saved grants and their Keychain secrets (lend again),
-   logs and audit files. Copy any of them from the old directory if you want them.
+   logs and audit files. You may copy the switchboard files, logs and audit files from the old directory
+   if you want them. Do not copy `grants.json`: the grant secrets stay under the old Keychain service, so
+   lend each grant again.
 5. Remove the old agent. It still holds port 8795 and fights the new one.
 
    macOS:

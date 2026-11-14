@@ -30,7 +30,7 @@ That is the *higher-risk* majority of the work. The genuinely de-riskable part (
 grim/ydotool/proc") is the ~640-line platform-specific *minority*. Effort and risk must be
 sized against re-implementing and re-securing the core, not against the small platform shim.
 
-Target environment verified on `rpi1` (Raspberry Pi 5): aarch64, Debian 13 (trixie), labwc
+Target environment verified on a Raspberry Pi (Raspberry Pi 5): aarch64, Debian 13 (trixie), labwc
 (Wayland) + lightdm, `grim`/`wlr-randr`/`scrot` installed, `/dev/uinput` present (root-only),
 Swift not installed. **Caveat: this is one hand-configured node.** It does not establish that
 cheap headless Linux VMs (often no compositor, no `WAYLAND_DISPLAY`, no seat) can run the
@@ -123,6 +123,6 @@ only after a reimplementation reaches parity is strangler-fig migration.
 - Headless fleet — **decided (2026-09-28, #23): virtual compositor supported.**
   `install-linux.sh --headless-seat` runs sway with the headless wlroots backend as a user unit
   (one 1920×1080 output, pixman, no GPU/monitor) — the provisioning story; verified on a fresh
-  Ubuntu 24.04 server with no desktop (`black`, #34). Boxes that already run a wlroots desktop
+  Ubuntu 24.04 server with no desktop (a headless server, #34). Boxes that already run a wlroots desktop
   (Raspberry Pi OS) need nothing extra.
 - macOS release: cross-compile feasibility + CI runners for signing/notarization from Rust.

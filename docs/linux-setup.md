@@ -5,8 +5,8 @@ How to turn a Linux desktop box into an `oab-computer` hands node with the Rust 
 both verified end to end on 2026-09-28 (lending to an openab-pty session, the OpenAB Connect
 Screens pane, browser tools):
 
-- `rpi1` — Raspberry Pi OS / Debian 13, aarch64, the stock labwc desktop (a display exists).
-- `black` — Ubuntu 24.04 Server, Intel N95, **no desktop at all**: a headless sway seat is created
+- Pi node: Raspberry Pi OS / Debian 13, aarch64, the stock labwc desktop (a display exists).
+- Headless server: Ubuntu 24.04 Server, Intel N95, **no desktop at all**: a headless sway seat is created
   by the installer (`--headless-seat`).
 
 Read the trust warning at the top of the [README](../README.md) first. On Linux it is stricter,
@@ -60,7 +60,7 @@ terminates TLS and stamps the caller's Tailscale identity. Same shape as the Mac
     [Raspberry Pi notes](#raspberry-pi-notes) for the no-monitor case;
   - **none** — pass `--headless-seat` to the installer and it runs `sway` with the headless
     wlroots backend as user unit `oab-seat.service`: one 1920×1080 virtual output, no input
-    devices, no GPU or monitor needed (verified on `black`, Ubuntu 24.04 Server).
+    devices, no GPU or monitor needed (verified on a headless server, Ubuntu 24.04 Server).
 - The node on the tailnet with **MagicDNS + HTTPS certificates** enabled (needed for
   `tailscale serve`). Do **not** do this on a k3s node that hosts openab-pty pods: host-level
   `tailscaled` gives every pod tailnet egress as the node (measured, see
@@ -98,7 +98,7 @@ and `-linux-amd64.tar.gz` (built and smoke-tested in CI on native runners) besid
 installer, with a `.sha256` each:
 
 ```sh
-V=$(curl -fsSL https://api.github.com/repos/openabdev/openab-computer/releases/latest | python3 -c 'import sys,json;print(json.load(sys.stdin)["tag_name"][1:])')
+V=0.12.0   # the first release with oab-computer-* assets (v0.11.0 and older use the old names)
 A=$(dpkg --print-architecture)          # arm64 or amd64
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz.sha256"
@@ -346,7 +346,7 @@ ls -lt ~/.local/state/oab-computer/jobs/            # <job_id>.out / .err
 tail -f ~/.local/state/oab-computer/jobs/<job_id>.out
 ```
 
-## Headless server notes (Ubuntu 24.04 on `black`)
+## Headless server notes (Ubuntu 24.04)
 
 What a box with no desktop needed beyond the Pi, all handled by `install-linux.sh --headless-seat`:
 
@@ -367,7 +367,7 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   `locale: en-US` / `LANG=en_US.UTF-8`.
 - **Node from fnm/nvm**: `/usr/bin/node` was a symlink into `~/.local/share/fnm/...` with no
   `npm` on the system PATH; `PW_NODE_BIN` in the unit carries that directory.
-- **Pod-host rule still applies**: `black` runs k3s (ARC controller, traefik) *and* host
+- **Pod-host rule still applies**: The headless server runs k3s (ARC controller, traefik) *and* host
   `tailscaled`. That is fine only because it hosts no openab-pty pods; it must never start to.
 
 ## Raspberry Pi notes
@@ -398,7 +398,7 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   `/run/user/<uid>` when unset, the units set them explicitly, and `pw-mcp.sh` adds `DISPLAY`.
 - **`grim -t jpeg` → "jpeg support disabled"** on Debian's build. The daemon never asks grim
   for JPEG: it takes raw PPM from grim and encodes the JPEG itself.
-- **A seat with no physical input silently drops transient virtual devices.** Headless sway (black)
+- **A seat with no physical input silently drops transient virtual devices.** Headless sway
   and a Pi with no mouse advertise no pointer/keyboard capability, so a `wlrctl`/`wtype` call that
   creates a device, sends and exits within milliseconds is lost: Chromium never binds
   `wl_pointer`/`wl_keyboard` in time, yet the tool exits 0 and `mouse`/`key` report `ok: true`.
@@ -419,6 +419,6 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   Use `pkill -x <name>` — but `-x` matches at most 15 characters of the process name, so
   `pkill -x oab-computer` silently matches nothing.
 - **Chromium `No usable sandbox!` / `Trace/breakpoint trap`** on Ubuntu 24.04+: AppArmor
-  userns restriction; see [Headless server notes](#headless-server-notes-ubuntu-2404-on-black).
+  userns restriction; see [Headless server notes](#headless-server-notes-ubuntu-2404-on-the server).
 - **Headed browser "without having a XServer"** on a headless seat: Chromium picked X11; add
   `--ozone-platform=wayland` (the installer's `pw-config.json` does).
