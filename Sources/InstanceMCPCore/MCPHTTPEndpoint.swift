@@ -75,7 +75,9 @@ public actor MCPHTTPEndpoint {
             // Be lenient: stateless clients (curl probes) still work; the daemon has no per-session state yet.
         }
 
-        guard let response = await server.handle(rpc) else {
+        guard let response = await server.withBrowserConnection(
+            key: sid ?? "http:\(principal)",
+            override: req.header("oab-browser-backend").flatMap { BrowserPreference(rawValue: $0) }).handle(rpc) else {
             return .init(status: 202, headers: extraHeaders)   // notification
         }
         if rpc.method == "tools/call" {
