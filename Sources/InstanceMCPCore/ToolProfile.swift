@@ -143,7 +143,9 @@ extension MCPServer {
             instructions: instructions ?? self.instructions,
             tools: allTools.filter { profile.allows($0.name) },
             upstreams: upstreams,
-            upstreamFilter: profile
+            upstreamFilter: profile,
+            browser: browser,
+            browserConnection: browserConnection
         )
     }
 
@@ -155,7 +157,9 @@ extension MCPServer {
             instructions: instructions,
             tools: allTools.map(transform),
             upstreams: upstreams,
-            upstreamFilter: upstreamFilter
+            upstreamFilter: upstreamFilter,
+            browser: browser,
+            browserConnection: browserConnection
         )
     }
 }

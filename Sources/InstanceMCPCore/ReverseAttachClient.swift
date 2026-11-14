@@ -417,7 +417,7 @@ public actor ReverseAttachClient {
         case .success(let r): rpc = r
         }
         if let refusal = refuseLongExec(rpc) { return encode(refusal) }
-        guard let response = await server.handle(rpc) else { return nil }
+        guard let response = await server.withBrowserConnection(key: "attach:\(config.session)").handle(rpc) else { return nil }
         if rpc.method == "tools/call" {
             let name = rpc.params?["name"]?.stringValue ?? "?"
             log("sandbox[\(config.session)] tools/call \(name)\(response.error != nil ? " -> rpc error" : "")")

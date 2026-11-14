@@ -138,6 +138,12 @@ while !args.isEmpty {
         let v = next(a)
         guard let eq = v.firstIndex(of: "="), let u = URL(string: String(v[v.index(after: eq)...])),
               u.host != nil else { fputs("--upstream wants name=http://host:port/path\n", stderr); usage() }
+        // The upstream named `browser` is an external Playwright: literal loopback only (R7.5.2).
+        if String(v[..<eq]) == "browser" {
+            do { try BrowserUpstreamURL.validate(u) } catch {
+                fputs("--upstream browser: \(error)\n", stderr); exit(64)
+            }
+        }
         opts.upstreams.append((String(v[..<eq]), u))
     case "--version": print(version); exit(0)
     case "-h", "--help": usage()
@@ -254,6 +260,15 @@ let log: @Sendable (String) -> Void = { msg in
     }
 }
 
+// `--upstream browser=URL` is handed to the Playwright tier as an external Playwright, trusted
+// because the operator passed the flag (R1.7, R7.8). Other upstreams stay generic.
+let browserRouter: BrowserRouter? = opts.upstreams.first(where: { $0.0 == "browser" }).map { b in
+    let playwright = PlaywrightBackend(external: ExternalPlaywrightClient(url: b.1),
+                                       port: UInt16(b.1.port ?? 80), probe: LibprocPortOwnerProbe(),
+                                       trust: .operatorFlag, log: log)
+    return BrowserRouter(playwright: playwright,
+                         store: UserDefaultsBrowserPreferenceStore(log: log), log: log)
+}
 let server = MCPServer(
     name: "oab-computer",
     version: version,
@@ -275,7 +290,7 @@ let server = MCPServer(
         back to `screenshot` for custom-drawn content. To act on a node, call `ui_action` with its \
         `snapshot_id`, `ref` and `action` (press, set_value, focus, …): no pointer movement, no focus \
         stealing; then take a new `ui_snapshot` to confirm. Use `mouse` for drags and custom-drawn \
-        content.\(opts.upstreams.isEmpty ? "" : """
+        content.\(opts.upstreams.isEmpty && browserRouter == nil ? "" : """
          A browser is available through the `browser_*` tools (Playwright, a real window on this Mac's \
         desktop): prefer `browser_navigate` + `browser_snapshot` (accessibility tree as text) to read a \
         page, and `browser_click` / `browser_type` / `browser_fill_form` to act — they are exact and need \
@@ -283,7 +298,8 @@ let server = MCPServer(
         """)
         """,
     tools: ToolCatalog.local(agentVersion: version),
-    upstreams: opts.upstreams.map { UpstreamMCP(name: $0.0, url: $0.1, log: log) }
+    upstreams: opts.upstreams.filter { $0.0 != "browser" }.map { UpstreamMCP(name: $0.0, url: $0.1, log: log) },
+    browser: browserRouter
 )
 /// Every `desktop` → `observe` mapping is recorded here as well as in the log (#59).
 let auditLog = FileAuditLog(log: log)

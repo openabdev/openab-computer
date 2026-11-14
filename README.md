@@ -501,8 +501,12 @@ The sandbox has no path to any browser, so browser control is served **from this
 LaunchAgent from [`poc/pw-mcp`](poc/pw-mcp/README.md) is installed) the daemon re-serves
 Playwright's tools under its own `tools/list`, filtered by the connection's profile:
 
-- `owner` sees all 32 `browser_*` tools, and any that Playwright adds later; `observe` sees none
-  (#59). The browser is this computer's persistent profile, with its cookies, so browser access is
+- `owner` sees the 32 `browser_*` tools the catalog lists; `observe` sees none (#59). On macOS the
+  tools go through a router ([ADR](docs/adr/browser-tiers.md)); a tool Playwright adds later is
+  filtered out until the catalog, the vector file and the tests are updated together. Port 8794 is
+  loopback, not private: any process on this Mac can reach it, and the daemon uses it only when
+  you pass `--upstream browser=…` (literal `127.0.0.1` or `::1`, no redirects) and the listener
+  runs as your user. The browser is this computer's persistent profile, with its cookies, so browser access is
   owner-level: `browser_evaluate` and `browser_run_code_unsafe` run arbitrary JavaScript there.
 - `browser_navigate` + `browser_snapshot` returns the page as an accessibility tree — the first
   video title on a channel page is one text line, no screenshot, no OCR. The browser is a real
