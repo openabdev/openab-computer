@@ -65,6 +65,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// The separator after the switchboard and grant rows; grant rows are inserted before it.
     private var grantAnchorItem: NSMenuItem?
     private var attachRowItem: NSMenuItem?
+    private var tailnetRowItem: NSMenuItem?
+    /// Last live-grant count seen; nil until the first async count lands.
+    private var lastGrantCount: Int?
     private let bindHost: String
     private let bindPort: Int
     private let path: String
@@ -361,22 +364,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let tailnet = MenuModel.tailnetMenu(offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL,
                                           optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
                                           existingMapping: exposure?.existingMapping ?? false)
-        let tailnetState: NetworkTailnetState = exposure == nil
-            ? MenuModel.tailnetStateWithoutExposure(publicURL: externalPublicURL)
-            : MenuModel.networkTailnetState(
-                publicURL: exposure?.publicURL,
-                optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
-                existingMapping: exposure?.existingMapping ?? false,
-                uncertain: (exposure?.uncertain ?? false)
-                    || (exposure.map { MenuModel.tailnetStatusUnreadable(offered: $0.offersExposure, tokenOnly: $0.tokenOnly) } ?? false))
-        let section = MenuModel.networkSection(
-            bindHost: bindHost, bindPort: bindPort, path: path, upstreams: upstreams, tailnet: tailnetState,
-            switchboard: switchboardSupervisor == nil ? nil : switchboardRowInput(),
-            liveGrants: nil, attachEnabled: attachEnabled, publicURL: externalPublicURL)
+        let section = currentNetworkSection()
         menu.addItem(.separator())
         menu.addItem(label(section.header))
         switchboardTitleItem = nil
         attachRowItem = nil
+        tailnetRowItem = nil
         for row in section.rows {
             if row.kind == .reverseAttach && attachEnabled && attach == nil { continue }
             let item = label(row.text, action: row.copyValue == nil ? nil : #selector(copyRow(_:)),
@@ -386,7 +379,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             switch row.kind {
             case .switchboard: switchboardTitleItem = item
             case .reverseAttach: attachRowItem = item
-            case .tailnet: addTailnetActions(tailnet)
+            case .tailnet: tailnetRowItem = item; addTailnetActions(tailnet)
             default: break
             }
         }
@@ -519,8 +512,34 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         NetworkSwitchboard(status: switchboardStatus) { Self.timeFormatter.string(from: $0) }
     }
 
+    /// The one place the Network rows are computed, for the first draw and every in-place refresh.
+    private func currentNetworkSection() -> NetworkSection {
+        let tailnetState: NetworkTailnetState = exposure == nil
+            ? MenuModel.tailnetStateWithoutExposure(publicURL: externalPublicURL)
+            : MenuModel.networkTailnetState(
+                publicURL: exposure?.publicURL,
+                optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
+                existingMapping: exposure?.existingMapping ?? false,
+                uncertain: (exposure?.uncertain ?? false)
+                    || (exposure.map { MenuModel.tailnetStatusUnreadable(offered: $0.offersExposure, tokenOnly: $0.tokenOnly) } ?? false),
+                checking: exposure?.checking ?? false)
+        return MenuModel.networkSection(
+            bindHost: bindHost, bindPort: bindPort, path: path, upstreams: upstreams, tailnet: tailnetState,
+            switchboard: switchboardSupervisor == nil ? nil : switchboardRowInput(),
+            liveGrants: lastGrantCount, attachEnabled: attachEnabled, publicURL: externalPublicURL)
+    }
+
+    /// Update the Tailnet, Switchboard and Reverse attach rows in place from the single model function.
     private func refreshSwitchboardTitle() {
-        switchboardTitleItem?.title = switchboardRowInput().text
+        let section = currentNetworkSection()
+        for row in section.rows {
+            switch row.kind {
+            case .tailnet: tailnetRowItem?.title = row.text; tailnetRowItem?.representedObject = row.copyValue
+            case .switchboard: switchboardTitleItem?.title = row.text
+            case .reverseAttach: attachRowItem?.title = row.text
+            default: break
+            }
+        }
     }
 
     @objc private func configureSwitchboard() {
@@ -556,12 +575,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         guard let anchor = grantAnchorItem, menu.index(of: anchor) >= 0 else { return }
         for item in grantRowItems { menu.removeItem(item) }
         grantRowItems = []
-        if attachEnabled {
-            let section = MenuModel.networkSection(
-                bindHost: bindHost, bindPort: bindPort, path: path, upstreams: [], tailnet: .off,
-                switchboard: nil, liveGrants: grants.count, attachEnabled: true)
-            if let text = section.rows.first(where: { $0.kind == .reverseAttach })?.text { attachRowItem?.title = text }
-        }
+        lastGrantCount = grants.count
+        refreshSwitchboardTitle()
         var index = menu.index(of: anchor)
         func insert(_ item: NSMenuItem) {
             menu.insertItem(item, at: index)

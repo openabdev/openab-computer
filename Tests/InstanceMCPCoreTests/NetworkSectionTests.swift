@@ -53,7 +53,7 @@ final class NetworkSectionTests: XCTestCase {
         XCTAssertEqual(text(existing, .tailnet), "Tailnet: On (existing mapping, not managed by this app), \(tailURL)")
         XCTAssertEqual(existing.rows[1].copyValue, tailURL)
         XCTAssertEqual(text(section(tailnet: .optedInNotApplied), .tailnet), "Tailnet: opted in, not applied (see the log)")
-        XCTAssertEqual(text(section(tailnet: .unknown), .tailnet), "Tailnet: unknown (Tailscale status unreadable)")
+        XCTAssertEqual(text(section(tailnet: .unknown), .tailnet), "Tailnet: unknown (not checked by this app)")
         XCTAssertNil(section(tailnet: .unknown).rows[1].copyValue)
     }
 
@@ -89,7 +89,7 @@ final class NetworkSectionTests: XCTestCase {
                                          tailnet: MenuModel.tailnetStateWithoutExposure(publicURL: generic),
                                          switchboard: nil, liveGrants: 0, attachEnabled: true, publicURL: generic)
         XCTAssertEqual(text(s, .publicURL), "Public URL: https://example.com/mcp (as configured with --public-url, not checked)")
-        XCTAssertEqual(text(s, .tailnet), "Tailnet: unknown (Tailscale status unreadable)")
+        XCTAssertEqual(text(s, .tailnet), "Tailnet: unknown (not checked by this app)")
         XCTAssertFalse(s.rows.contains { $0.text.contains("existing mapping") })
         XCTAssertFalse(s.rows.contains { $0.text.contains("Bearer") || $0.text.lowercased().contains("token") })
     }
@@ -104,6 +104,28 @@ final class NetworkSectionTests: XCTestCase {
         XCTAssertEqual(MenuModel.networkTailnetState(publicURL: tailURL, optedIn: false, existingMapping: false, uncertain: false),
                        .on(url: tailURL))
         XCTAssertEqual(MenuModel.networkTailnetState(publicURL: nil, optedIn: false, existingMapping: false, uncertain: true), .unknown)
+    }
+
+    func testCheckingStateNeverShowsADefiniteValue() {
+        XCTAssertEqual(text(section(tailnet: .checking), .tailnet), "Tailnet: checking…")
+        XCTAssertNil(section(tailnet: .checking).rows[1].copyValue)
+        // Whatever else is known, a pending first read wins.
+        for (url, opted, existing, unc) in [(nil, false, false, false), (tailURL, false, false, false), (tailURL, false, true, false),
+                                            (nil, true, false, false), (nil, false, false, true)] as [(String?, Bool, Bool, Bool)] {
+            XCTAssertEqual(MenuModel.networkTailnetState(publicURL: url, optedIn: opted, existingMapping: existing,
+                                                         uncertain: unc, checking: true), .checking)
+        }
+    }
+
+    func testTransitionFromCheckingToEachDefiniteState() {
+        func state(_ url: String?, opted: Bool = false, existing: Bool = false, unc: Bool = false) -> NetworkTailnetState {
+            MenuModel.networkTailnetState(publicURL: url, optedIn: opted, existingMapping: existing, uncertain: unc, checking: false)
+        }
+        XCTAssertEqual(state(nil), .off)
+        XCTAssertEqual(state(tailURL), .on(url: tailURL))
+        XCTAssertEqual(state(tailURL, existing: true), .onExisting(url: tailURL))
+        XCTAssertEqual(state(nil, opted: true), .optedInNotApplied)
+        XCTAssertEqual(state(nil, unc: true), .unknown)   // an unreadable or foreign-only read is never Off by guess
     }
 
     func testBrowserRow() {
@@ -121,7 +143,7 @@ final class NetworkSectionTests: XCTestCase {
         XCTAssertEqual(text(section(grants: 0), .reverseAttach), "Reverse attach: 0 live grants")
         XCTAssertEqual(text(section(grants: 1), .reverseAttach), "Reverse attach: 1 live grant")
         XCTAssertEqual(text(section(grants: 3), .reverseAttach), "Reverse attach: 3 live grants")
-        XCTAssertEqual(text(section(grants: nil), .reverseAttach), "Reverse attach: checking…")
+        XCTAssertEqual(text(section(grants: nil), .reverseAttach), "Reverse attach: on")
         XCTAssertEqual(text(section(grants: 3, attach: false), .reverseAttach), "Reverse attach: off")
     }
 

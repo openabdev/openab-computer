@@ -131,6 +131,8 @@ public enum NetworkTailnetState: Equatable, Sendable {
     /// A mapping exists that this app did not set up.
     case onExisting(url: String)
     case optedInNotApplied
+    /// The launch's first serve-status read has not finished: no definite value yet.
+    case checking
     /// Tailscale status could not be read, so "Off" would be a guess.
     case unknown
 }
@@ -170,7 +172,10 @@ public struct NetworkSection: Equatable, Sendable {
 
 extension MenuModel {
     public static func networkTailnetState(publicURL: String?, optedIn: Bool,
-                                           existingMapping: Bool, uncertain: Bool) -> NetworkTailnetState {
+                                           existingMapping: Bool, uncertain: Bool,
+                                           checking: Bool = false) -> NetworkTailnetState {
+        // Until the launch's first serve-status read finishes, nothing definite may be shown.
+        if checking { return .checking }
         if let publicURL {
             return existingMapping && !optedIn ? .onExisting(url: publicURL) : .on(url: publicURL)
         }
@@ -234,7 +239,9 @@ extension MenuModel {
         case .optedInNotApplied:
             rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: opted in, not applied (see the log)", copyValue: nil))
         case .unknown:
-            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: unknown (Tailscale status unreadable)", copyValue: nil))
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: unknown (not checked by this app)", copyValue: nil))
+        case .checking:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: checking…", copyValue: nil))
         }
 
         if let publicURL {
@@ -258,7 +265,7 @@ extension MenuModel {
         } else if let n = liveGrants {
             rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: \(n) live grant\(n == 1 ? "" : "s")", copyValue: nil))
         } else {
-            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: checking…", copyValue: nil))
+            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: on", copyValue: nil))
         }
         return NetworkSection(header: "Network", rows: rows)
     }

@@ -65,8 +65,11 @@ public final class TailnetExposure: @unchecked Sendable {
     private var url: String?
     private var lastTransition = ""
     private var unconfirmedState = false
+    /// A launch with a detected login and no stored opt-in starts unknown: an existing 8444 mapping may already
+    /// expose this app until `adoptExistingMapping()` has read the serve status and proved otherwise.
     private var uncertainState = false
     private var existingMappingState = false
+    private var launchReadPending = true
     /// True while the launch re-apply runs `enable()`: a failed attempt then keeps the stored opt-in, so one bad
     /// launch (tailscaled still starting) does not silently drop the user's choice.
     private var preserveChoiceOnFailure = false
@@ -86,6 +89,7 @@ public final class TailnetExposure: @unchecked Sendable {
         self.candidates = candidates
         self.sleep = sleep
         self.log = log
+        self.uncertainState = loginDetected && !defaults.bool(forKey: Self.optInKey)
     }
 
     /// True when this process accepts the bearer token alone (no login allow list). With an allow list every request
@@ -102,6 +106,11 @@ public final class TailnetExposure: @unchecked Sendable {
 
     /// In memory only: 8444 already maps to this app's backend (set by hand or by an installer) and the user has not
     /// opted in. It is shown truthfully, never persisted as consent; `manageExistingMapping()` records the opt-in.
+    /// True from construction until the launch's first serve-status read has finished (success or failure). The menu
+    /// shows "checking…" meanwhile and never "Off" or any other definite value.
+    public var checking: Bool { lock.lock(); defer { lock.unlock() }; return launchReadPending }
+    public func markLaunchReadDone() { lock.lock(); launchReadPending = false; lock.unlock() }
+
     public var existingMapping: Bool { lock.lock(); defer { lock.unlock() }; return existingMappingState }
 
     /// How often the no-login recheck runs while tailscaled cannot be seen: every second for the first 60 seconds
@@ -258,6 +267,7 @@ public final class TailnetExposure: @unchecked Sendable {
     public func reapplyAtLaunch() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
         guard optedIn else { return nil }
+        defer { markLaunchReadDone() }
         guard loginDetected else {
             log("tailnet access: opted in, but no Tailscale login was detected at launch; not re-applying")
             return .refusedNoLogin
@@ -298,6 +308,7 @@ public final class TailnetExposure: @unchecked Sendable {
     @discardableResult
     public func withdrawWithoutLogin() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
+        defer { if !loginDetected { markLaunchReadDone() } }
         guard !loginDetected, tokenOnly else { return nil }
         lock.lock(); uncertainState = false; lock.unlock()
         func markUncertain() { lock.lock(); uncertainState = true; lock.unlock() }
@@ -379,7 +390,7 @@ public final class TailnetExposure: @unchecked Sendable {
     public func adoptExistingMapping() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
         guard loginDetected, !optedIn else { return nil }
-        lock.lock(); uncertainState = false; lock.unlock()
+        defer { markLaunchReadDone() }
         // An unreadable status proves nothing about a hand-made mapping, so the menu must say "unknown", not "Off".
         switch readMapping() {
         case .failure(let why):
@@ -387,12 +398,15 @@ public final class TailnetExposure: @unchecked Sendable {
             log("tailnet access: could not read Tailscale Serve status to look for an existing mapping on port \(Self.httpsPort) (\(why))")
             return nil
         case .success(.ours): break
-        case .success: return nil
+        case .success:
+            lock.lock(); uncertainState = false; lock.unlock()
+            return nil
         }
         guard case .success(let dns) = selfDNSName() else {
             lock.lock(); uncertainState = true; lock.unlock()
             return nil
         }
+        lock.lock(); uncertainState = false; lock.unlock()
         let result = "https://\(dns):\(Self.httpsPort)/mcp"
         setURL(result)
         lock.lock(); existingMappingState = true; lock.unlock()

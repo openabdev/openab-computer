@@ -250,17 +250,25 @@ build may differ. Checked by reading the code and by a read-only look at a runni
 (an older 0.10.1 install) and a bare 0.12.0 launch. The menu bar item's Network section shows the
 same facts (see [What the menu shows](#what-the-menu-shows)).
 
+The app runs `tailscale serve` in three cases, all for port 8444 only: (a) `serve --bg --https=8444 ...`
+after you turn tailnet access on, from the wizard's tailnet page or the menu; (b) the same command at
+launch, to re-apply the mapping when you had already turned access on and the mapping is missing; (c)
+`serve --https=8444 off` after you turn access off, and as an automatic safety removal when no
+Tailscale login is detected and no `--allow-login` is configured. Every other Tailscale call is
+read-only.
+
 ### Listening sockets
 
 | Address:port | Protocol | Who can reach it | What it is for | How it is enabled | Auth |
 |---|---|---|---|---|---|
 | `127.0.0.1:8795` (`--host`, `--port`; `--path` for the `/mcp` route) | TCP, plain HTTP/1.1 | Processes on this Mac only | `/mcp` (POST, DELETE), `/attach` (reverse attach; off with `--no-attach`), `/healthz`. Anything else is 404 | Always, on IPv4 loopback by default. No-flag launch from Finder, the installer's LaunchAgent, or a manual launch. A no-flag launch also briefly binds the port to test it is free, without listening | `/mcp` and `/attach`: [Auth](#auth). `/healthz`: none |
-| `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. The app runs the same command only after you turn tailnet access on, from the wizard's tailnet page or the menu's "Allow tailnet access…", and removes it with "Turn Off Tailnet Access". A Finder launch alone does not create it. A mapping that already exists is shown as "On (existing mapping, not managed by this app)" and left alone until you choose "Manage with this app" | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
+| `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. The app runs the same command only after you turn tailnet access on, from the wizard's tailnet page or the menu's "Allow tailnet access…", and removes it with "Turn Off Tailnet Access". A launch with no stored opt-in does not create it. A launch with a stored opt-in re-applies it when it is missing. A mapping that already exists is shown as "On (existing mapping, not managed by this app)" and left alone until you choose "Manage with this app" | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
 | `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac. Your tailnet too, if the `:8443` mapping below exists | Playwright MCP, a **separate process** the app only connects to (`--upstream`) | Its own LaunchAgent (`poc/pw-mcp/install.sh`). The app never starts it | None in the app |
 | `https://<host>.<tailnet>.ts.net:8443` → `127.0.0.1:8794` | HTTPS, terminated by Tailscale | Your whole tailnet | Direct access to Playwright MCP (a proof-of-concept path) | Only `poc/pw-mcp/install.sh` runs `tailscale serve --bg --https=8443`. Not the app, not `install-prebuilt.sh` | **None.** No bearer token, login check or tool profile. It bypasses the agent's auth |
 
 The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The `:8444`
-mapping is made by the installer or by the app on your request. The `:8443` mapping belongs to the
+mapping is made by the installer, by the app after you turn tailnet access on, or by the app's launch
+re-apply of that choice. The `:8443` mapping belongs to the
 Playwright installer, not to the app.
 
 ### Outbound connections
@@ -298,7 +306,7 @@ your user can.
 ### Exposing it
 
 The tailnet mapping belongs to `tailscaled`. The installer creates it, or the app does when you turn
-tailnet access on. Removing it (`tailscale serve --https=8444 off`, or "Turn Off Tailnet Access" in
+tailnet access on (and re-applies it at launch if you had turned it on and it is missing). Removing it (`tailscale serve --https=8444 off`, or "Turn Off Tailnet Access" in
 the menu) closes the tailnet path and leaves the loopback listener.
 
 A caller must pass every configured check. The installer always sets both, so a tailnet caller needs
@@ -316,7 +324,9 @@ token stops a forged header. Keep the default, and always set a token.
 The menu bar item has a **Network** section with one row for each of the app's own listener and connections described above. The rows come
 from the app's own state (its `--host`, `--port` and `--upstream` options, its tailnet record and its
 attach manager), not from a port scan. The menu connects to nothing to fill them in. When it cannot
-tell, it says so: "Tailnet: unknown (Tailscale status unreadable)" rather than "Off". Example:
+tell, it says so. The Tailnet row reads "checking…" from launch until the first `serve status` read
+finishes, then "Off", "On" or "unknown (not checked by this app)"; it never shows "Off" before that read.
+Example:
 
 ```
 Network
@@ -329,8 +339,9 @@ Reverse attach: 0 live grants
 
 The Tailnet row comes only from Tailscale state (the read-only `serve status` result and your stored
 choice), never from `--public-url`. A `--public-url` that is not the local URL appears on its own row,
-"Public URL: <url> (as configured with --public-url, not checked)". When an installer owns another
-port and the app has no Tailscale state, a `*.ts.net` public URL leaves the Tailnet row at "unknown".
+"Public URL: <url> (as configured with --public-url, not checked)". Whenever the app has no
+Tailscale state (an installer owns another port, or the launch has not yet read `serve status`), the
+Tailnet row reads "unknown", whatever the public URL is.
 
 Clicking the Local MCP row or the Tailnet URL copies it. Tailnet can also read "Off", "On (existing
 mapping, not managed by this app), <url>" or "opted in, not applied (see the log)". Browser tools

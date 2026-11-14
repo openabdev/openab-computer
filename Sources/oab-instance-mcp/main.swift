@@ -449,6 +449,7 @@ if opts.menuBar {
     // A stored opt-in is re-applied once per launch, off the main thread, and only when the mapping is missing.
     if let exposure {
         DispatchQueue.global(qos: .utility).async {
+            defer { exposure.markLaunchReadDone() }
             if exposure.reapplyAtLaunch() == nil { exposure.adoptExistingMapping() }
         }
     }
