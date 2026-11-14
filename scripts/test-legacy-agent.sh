@@ -148,6 +148,9 @@ has "$e" "WARNING" && has "$e" "port 8795" \
   && ok "linux: active old unit warns with the port, disable and rm commands" \
   || { cat "$e" >&2; fail "linux active: warning text incomplete"; }
 
+if grep -q 'daemon: ok' "$T/lin-active.out" || ! grep -q 'daemon: not checked' "$e"; then fail "linux active: the installer vouched for the daemon while the old unit may hold the port"; else ok "linux: no 'daemon: ok' while the old unit is present"; fi
+if grep -q 'daemon: ok' "$T/lin-clean.out"; then ok "linux: 'daemon: ok' printed when no old unit exists"; else fail "linux clean: daemon check missing"; fi
+
 linux_case pwonly "oab-pw-mcp.service" 1
 has "$T/lin-pwonly.err" "WARNING" && has "$T/lin-pwonly.err" "oab-pw-mcp.service" \
   && ok "linux: old pw-mcp unit alone warns" || fail "linux pwonly: no warning"

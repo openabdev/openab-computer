@@ -29,7 +29,9 @@ stub() { # stub NAME [BODY]: logs "NAME args" to $LOG, then runs BODY (default: 
   printf '#!/bin/bash\necho "%s $*" >>"%s"\n%s\n' "$1" "$LOG" "${2:-exit 0}" >"$STUBS/$1"
   chmod 755 "$STUBS/$1"
 }
-for c in grim wlrctl wtype sway systemctl loginctl curl node npm npx chromium; do stub "$c"; done
+for c in grim wlrctl wtype sway loginctl curl node npm npx chromium; do stub "$c"; done
+# systemctl: the is-active / is-enabled queries answer "no" (no old unit present); everything else succeeds.
+stub systemctl 'case "$2" in is-active|is-enabled) exit 1;; esac; exit 0'
 stub sudo 'exit 1'                       # no passwordless sudo: the installer takes its no-sudo paths
 stub fc-list 'echo "DejaVuSans.ttf: DejaVu Sans:style=Book"'
 stub tailscale '[ "$1 $2" = "status --json" ] && echo '"'"'{"Self":{"UserID":7,"DNSName":"node.example.ts.net."},"User":{"7":{"LoginName":"ci-user"}}}'"'"'

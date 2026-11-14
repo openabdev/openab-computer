@@ -589,9 +589,14 @@ To upgrade:
    Linux:
 
    ```sh
-   systemctl --user disable --now oab-instance-mcp.service oab-pw-mcp.service
-   rm ~/.config/systemd/user/oab-instance-mcp.service ~/.config/systemd/user/oab-pw-mcp.service
+   systemctl --user disable --now oab-instance-mcp.service
+   rm ~/.config/systemd/user/oab-instance-mcp.service
+   # only if you used the Playwright unit (not on --no-browser nodes):
+   systemctl --user disable --now oab-pw-mcp.service
+   rm ~/.config/systemd/user/oab-pw-mcp.service
    systemctl --user daemon-reload
+   # then restart the new unit, which could not bind port 8795 while the old one held it:
+   systemctl --user restart oab-computer.service
    ```
 
    After the new agent works you can delete the old directories.

@@ -221,7 +221,7 @@ jobs:
           set -euo pipefail
           NAME="oab-computer-$VERSION-linux-${{ matrix.arch }}"
           mkdir -p "$NAME"
-          cp poc/reverse-attach-linux/target/release/reverse-attach "$NAME/oab-computer"
+          cp poc/reverse-attach-linux/target/release/oab-computer "$NAME/oab-computer"
           cp poc/reverse-attach-linux/pw-mcp.sh scripts/install-linux.sh "$NAME/"
           cp poc/reverse-attach-linux/README.md "$NAME/README.md"
           tar czf "$NAME.tar.gz" "$NAME"

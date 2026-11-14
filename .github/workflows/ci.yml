@@ -157,7 +157,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: reverse-attach-linux-${{ matrix.arch }}
-          path: poc/reverse-attach-linux/target/release/reverse-attach
+          path: poc/reverse-attach-linux/target/release/oab-computer
       - name: Smoke a plain build (reports -dev)
         # After the upload: rebuilds only this crate without OAB_RELEASE_VERSION, so smoke.sh
         # checks the "<crate>-dev" fallback a local build reports (#74). The first smoke run

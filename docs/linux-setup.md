@@ -143,7 +143,7 @@ Description=oab-computer (Rust hands node: /mcp + /attach)
 After=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/oab-computer/oab-computer   # or …/target/release/reverse-attach from source
+ExecStart=%h/.local/oab-computer/oab-computer   # or …/target/release/oab-computer from source
 Environment=BIND=127.0.0.1:8795
 Environment=MCP_TOKEN_FILE=%h/.config/oab-computer/token
 Environment=MCP_ALLOW_LOGIN=$LOGIN

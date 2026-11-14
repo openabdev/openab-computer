@@ -211,7 +211,11 @@ else
 fi
 
 sleep 1
-curl -fsS "127.0.0.1:$PORT/healthz" >/dev/null && echo "daemon: ok"
+if [ "${#LEGACY_FOUND[@]}" -gt 0 ]; then
+  echo "daemon: not checked. The old unit(s) ${LEGACY_FOUND[*]} may hold port $PORT; remove them as warned above, then run: systemctl --user restart oab-computer.service" >&2
+else
+  curl -fsS "127.0.0.1:$PORT/healthz" >/dev/null && echo "daemon: ok"
+fi
 DNS=$(tailscale status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
 echo "MCP URL : https://$DNS:$SERVE_PORT/mcp"
 echo "token   : $CFG/token   (allow-login: $ALLOW_LOGIN)"

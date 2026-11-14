@@ -148,7 +148,9 @@ chmod 755 "$PKG/install-linux.sh" "$PKG/pw-mcp.sh" "$PKG/$NAME"
 STUBS="$T/stubs"; mkdir -p "$STUBS"
 LOG="$T/calls.log"
 stub() { printf '#!/bin/bash\necho "%s $*" >>"%s"\n%s\n' "$1" "$LOG" "${2:-exit 0}" >"$STUBS/$1"; chmod 755 "$STUBS/$1"; }
-for c in grim wlrctl wtype sway systemctl loginctl curl node npm npx chromium; do stub "$c"; done
+for c in grim wlrctl wtype sway loginctl curl node npm npx chromium; do stub "$c"; done
+# systemctl: the is-active / is-enabled queries answer "no" (no old unit present); everything else succeeds.
+stub systemctl 'case "$2" in is-active|is-enabled) exit 1;; esac; exit 0'
 stub sudo 'exit 1'
 stub fc-list 'echo "DejaVuSans.ttf: DejaVu Sans:style=Book"'
 stub tailscale '[ "$1 $2" = "status --json" ] && echo '"'"'{"Self":{"UserID":7,"DNSName":"node.example.ts.net."},"User":{"7":{"LoginName":"ci-user"}}}'"'"'
@@ -183,6 +185,12 @@ else
   eq "pw-mcp unit ExecStart" "$PWEXEC" "$LH/.local/$NAME/pw-mcp.sh"
   [ -x "$PWEXEC" ] && ok "the pw-mcp ExecStart file exists and is executable" || fail "the pw-mcp ExecStart file does not exist"
 fi
+# The Rust package builds the binary under the shipped name (the release workflow copies it as is).
+CARGO_NAME=$(sed -n '/^\[package\]/,/^\[/{s/^name = "\(.*\)"/\1/p;}' "$ROOT/poc/reverse-attach-linux/Cargo.toml" | head -1)
+eq "Cargo package (binary) name" "$CARGO_NAME" "$NAME"
+has "release.yml copies target/release/$NAME" "$ROOT/.github/workflows/release.yml" "target/release/$NAME \"\$NAME/$NAME\""
+has "smoke.sh runs target/release/$NAME" "$ROOT/poc/reverse-attach-linux/smoke.sh" "BIN=./target/release/$NAME"
+
 # The systemctl calls name only units that exist.
 # (The read-only is-active / is-enabled queries of the warn-only old-unit check are not installs.)
 CALLS="$T/calls.nonquery"; grep -vE '^systemctl --user is-(active|enabled) ' "$LOG" >"$CALLS" || true

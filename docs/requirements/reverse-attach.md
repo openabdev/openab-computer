@@ -257,7 +257,7 @@ sequenceDiagram
     participant SC as tailscale sidecar<br/>userspace, inbound only
     participant MM as macmini<br/>websocat dialer → instance-mcp :8796
 
-    MM->>SC: ws://100.111.174.31:9100 (WireGuard, direct LAN path via disco)
+    MM->>SC: ws://<pod-tailnet-ip>:9100 (WireGuard, direct LAN path via disco)
     SC->>LB: forward to 127.0.0.1:9100 — no `serve` config needed
     LB-->>MM: 101 Switching Protocols (attached)
     SH->>LB: POST /mcp initialize / tools/list / sys_info

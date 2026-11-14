@@ -3,15 +3,15 @@
 # Runs entirely on loopback of the node. Every step is time-bounded.
 set -u
 cd "$(dirname "$0")"
-BIN=./target/release/reverse-attach
+BIN=./target/release/oab-computer
 LOG=/tmp/mock-runtime.jsonl
-RA_LOG=/tmp/reverse-attach.log
+RA_LOG=/tmp/oab-computer-smoke.log
 pass=0; fail=0
 ok()   { echo "PASS $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL $1"; fail=$((fail+1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 :: $2"; fi; }
 
-pkill -x reverse-attach 2>/dev/null; pkill -f mock_runtime.py 2>/dev/null; sleep 0.3
+pkill -f "^\./target/release/oab-computer" 2>/dev/null; pkill -f mock_runtime.py 2>/dev/null; sleep 0.3
 rm -f "$LOG" "$RA_LOG"
 # Never touch the real ~/.local/state grants file from a test run.
 GRANTS_DIR=$(mktemp -d)
@@ -234,6 +234,6 @@ start_ra
 check "a revoked grant is not resumed" "[[ \$($C 127.0.0.1:8790/attach | python3 -c 'import sys,json;print(len(json.load(sys.stdin)[\"grants\"]))') == 0 ]]"
 
 echo
-echo "reverse-attach stderr:"; sed 's/^/  /' $RA_LOG
+echo "oab-computer stderr:"; sed 's/^/  /' $RA_LOG
 echo "RESULT: $pass passed, $fail failed"
 [[ $fail == 0 ]]
