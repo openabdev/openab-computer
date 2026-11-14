@@ -36,7 +36,7 @@ final class BrowserUpstreamURLTests: XCTestCase {
         XCTAssertNoThrow(try BrowserUpstreamURL.validate(URL(string: "http://127.0.0.1:8794/mcp")!))
         XCTAssertNoThrow(try BrowserUpstreamURL.validate(URL(string: "http://[::1]:8794/mcp")!))
         for bad in ["http://localhost:8794/mcp", "http://example.com:8794/mcp", "http://0.0.0.0:8794/mcp",
-                    "http://192.168.0.5:8794/mcp", "https://127.0.0.1:8794/mcp"] {
+                    "http://192.0.2.5:8794/mcp", "https://127.0.0.1:8794/mcp"] {
             XCTAssertThrowsError(try BrowserUpstreamURL.validate(URL(string: bad)!), bad)
         }
     }
