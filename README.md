@@ -546,7 +546,7 @@ local packaging smoke, and the current first-release signing blocker.
 
 0.12.0 renames the product's technical names from `oab-instance-mcp` to `oab-computer`. This is a
 breaking change with no compatibility layer: nothing is read from or written to the old names, except
-the one token copy below. The product name stays OpenAB Computer.
+the token copy in step 3 (the old path is its source only) and the warn-only check for the old agent. The product name stays OpenAB Computer.
 
 | | 0.11 and earlier | 0.12.0 |
 |---|---|---|
@@ -568,14 +568,13 @@ To upgrade:
    grants are keyed to the bundle id, which changed. To drop the stale entries, run
    `tccutil reset ScreenCapture dev.openab.instance-mcp` and
    `tccutil reset Accessibility dev.openab.instance-mcp` (and `tccutil reset SystemPolicyAllFiles dev.openab.instance-mcp` for Full Disk Access).
-3. macOS: the bearer token is copied automatically from `~/.config/oab-instance-mcp/token` to
-   `~/.config/oab-computer/token` when the new config directory is first created. The old file stays in place.
-   Linux: `install-linux.sh` does the same copy when `~/.config/oab-computer/token` does not exist yet, so
-   clients keep their token.
-4. Not migrated, so redo them by hand, but only after the new installer or app has run once, because the token
-   copy in step 3 happens only when it creates `~/.config/oab-computer`: switchboard settings (`switchboard.url`, `switchboard.secret`,
+3. The bearer token is copied automatically from `~/.config/oab-instance-mcp/token` to
+   `~/.config/oab-computer/token`, mode 600, and the old file stays in place. macOS: the copy happens when the
+   new config directory is first created. Linux: `install-linux.sh` copies whenever
+   `~/.config/oab-computer/token` does not exist yet. An existing new token is never overwritten.
+4. Not migrated, so redo them by hand, but only after the new installer or app has run once so that `~/.config/oab-computer` exists: switchboard settings (`switchboard.url`, `switchboard.secret`,
    `switchboard.profile`, `switchboard.secure-set-value`), saved grants and their Keychain secrets (lend again),
-   logs and audit files. You may copy the switchboard files, logs and audit files from the old directory
+   logs and audit files (on Linux, grants and audit under `~/.local/state/oab-instance-mcp` stay there too). You may copy the switchboard files, logs and audit files from the old directory
    if you want them. Do not copy `grants.json`: the grant secrets stay under the old Keychain service, so
    lend each grant again.
 5. Remove the old agent. It still holds port 8795 and fights the new one.

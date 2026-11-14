@@ -22,7 +22,7 @@ The installer:
 1. verifies bundle id, code signature and team `6LPQNY95AQ` **before** stopping the running service;
 2. detects the current Tailscale login and MagicDNS name from structured `tailscale status --json`;
 3. installs to `~/.local/oab-computer/oab-computer.app` without re-signing it;
-4. creates a bearer token once at `~/.config/oab-computer/token`, mode 600, and preserves it on updates (the first 0.12 install copies a 0.11 token from `~/.config/oab-instance-mcp/token` once; the Linux installer generates a new token and copies nothing);
+4. creates a bearer token once at `~/.config/oab-computer/token`, mode 600, and preserves it on updates (both the macOS and the Linux installer copy a 0.11 token from `~/.config/oab-instance-mcp/token` when the new token does not exist yet; the old file stays in place, and a token is generated only when neither file has one);
 5. writes/starts the Aqua-user LaunchAgent `dev.openab.computer`;
 6. adds the Playwright upstream when `dev.openab.computer.pw-mcp` is installed; and
 7. configures `tailscale serve --https=8444` to loopback port 8795.

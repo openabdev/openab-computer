@@ -166,7 +166,8 @@ tok_case() { # tok_case NAME OLD_TOKEN|- NEW_TOKEN|-
 tok_case copy "fixture-old-token" -
 [ "$(cat "$T/lin-tok-copy/home/.config/oab-computer/token")" = "fixture-old-token" ] \
   && [ "$(cat "$T/lin-tok-copy/home/.config/oab-instance-mcp/token")" = "fixture-old-token" ] \
-  && ok "linux: old token copied to the new path, old file kept" || fail "linux token copy: token not copied or old file changed"
+  && [ "$(stat -c %a "$T/lin-tok-copy/home/.config/oab-computer/token" 2>/dev/null || stat -f %Lp "$T/lin-tok-copy/home/.config/oab-computer/token")" = 600 ] \
+  && ok "linux: old token copied to the new path (mode 600), old file kept" || fail "linux token copy: token not copied or old file changed"
 tok_case keep "fixture-old-token" "fixture-new-token"
 [ "$(cat "$T/lin-tok-keep/home/.config/oab-computer/token")" = "fixture-new-token" ] \
   && ok "linux: existing new token is not overwritten" || fail "linux token keep: new token overwritten"
