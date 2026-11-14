@@ -74,7 +74,7 @@ this exists for what SSH cannot reach.
 ## Contents
 
 - [Goal](#goal) · [Features](#features) · [Status and known limits](#status-and-known-limits) · [Quick start](#quick-start) · [Platforms](#platforms)
-- [Tools](#tools) · [Auth](#auth)
+- [Tools](#tools) · [Auth](#auth) · [Network interfaces and ports](#network-interfaces-and-ports)
 - [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) · [Switchboard](#serving-a-switchboard---switchboard) · [Browser tools](#browser-tools-for-lent-sessions---upstream)
 - Deploy & operate: [Download and install](#download-and-install) · [Build & test](#build--test-on-the-build-mac-the-laptop-never-compiles-swift) · [Deploy](#deploy-run-on-the-target) · [Menu bar](#menu-bar) · [Operate](#operate)
 - Operator notes: [TCC & signing](#tcc-grants-survive-re-deploys-only-if-the-signature-does) · [Gotchas](#gotchas)
@@ -242,6 +242,68 @@ Configured checks are **AND**-combined: a request must pass every check that is 
 Trust model: `exec` is a full shell as the logged-in user. `/mcp` is "my CLI on my Mac". A
 sandboxed agent never gets `/mcp`; it gets a **reverse attach** under the `observe` or `owner`
 profile (below).
+
+## Network interfaces and ports
+
+This section describes `main` (app version 0.12.0). The latest release is v0.11.0, so a released
+build may differ. Checked by reading the code and by a read-only look at a running agent
+(an older 0.10.1 install) and a bare 0.12.0 launch.
+
+### Listening sockets
+
+| Address:port | Protocol | Who can reach it | What it is for | How it is enabled | Auth |
+|---|---|---|---|---|---|
+| `127.0.0.1:8795` (`--host`, `--port`) | TCP, plain HTTP/1.1 | Processes on this Mac only | `/mcp` (POST, DELETE), `/attach` (reverse attach; off with `--no-attach`), `/healthz`. Anything else is 404 | Always. No-flag launch from Finder, the installer's LaunchAgent, or a manual launch | `/mcp` and `/attach`: [Auth](#auth). `/healthz`: none |
+| `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | Not opened by the app. `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. A Finder launch alone does not | Tailscale login on the allow list **and** the bearer token |
+| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac only | Playwright MCP, a **separate process** the app only connects to (`--upstream`) | Its own LaunchAgent (`poc/pw-mcp/install.sh`). The app never starts it | None in the app. Loopback only |
+
+The app opens one listening socket. It uses no UDP and no Unix domain sockets.
+
+### Outbound connections
+
+| What | To where | When | What it is for |
+|---|---|---|---|
+| Upstream MCP, HTTP | `http://127.0.0.1:8794/mcp` | Only with `--upstream`. The installer adds it when the Playwright agent is loaded | Browser tools |
+| Switchboard, WebSocket | `wss://<switchboard-host>.<tailnet>.ts.net/vm/attach`. `ws://` only to loopback | Only with `--switchboard` or a saved switchboard config. Redials for the life of the process | [Serving a switchboard](#serving-a-switchboard---switchboard) |
+| Reverse attach, WebSocket | `ws(s)://<runtime>/tools/attach/<session>`. The runtime and port come from the grant | Only after a `POST /attach`. Saved grants are redialled at launch | [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) |
+| Mint call, HTTP(S) | `http(s)://<runtime>/admin/sessions/<session>/tools-attach` | Only when the `/attach` body carries an `admin_credential` | Get a one-time attach secret |
+| `tailscale status --self --peers=false --json` | Local child process | Only on the no-flag first-run launch | Find your Tailscale login |
+
+The menu bar and the permission wizard also start local processes (`open`, `launchctl`, a
+`--permission-check` re-run of the app). These make no network connections.
+
+### What the app never does
+
+- It opens no UDP socket and no Unix domain socket.
+- It does not bind a non-loopback address unless you pass `--host`.
+- It serves no TLS. Tailscale terminates TLS in front of it.
+- It does not run `tailscale serve`, `funnel`, `up`, `set` or `cert`. The installers run `serve`.
+- On the switchboard path it dials out and opens no extra listener.
+
+### Exposing it
+
+The tailnet mapping belongs to `tailscaled`, not to the app. Removing it
+(`tailscale serve --https=8444 off`) closes the tailnet path and leaves the loopback listener.
+
+A tailnet caller needs an allow-listed Tailscale login **and** the bearer token. The app does not
+guard `--host`: a non-loopback value binds silently, in plain HTTP, with no warning. The app
+trusts a `Tailscale-User-Login` header from any peer, so on a non-loopback bind only the bearer
+token stops a forged header. Keep the default, and always set a token.
+
+### macOS app and Linux node
+
+The Linux node (`poc/reverse-attach-linux/`) has the same single loopback listener, with these
+differences:
+
+- It reads `BIND` from the environment, not flags. A bare binary listens on `127.0.0.1:8790`.
+  `scripts/install-linux.sh` sets `127.0.0.1:8795`.
+- `/attach` is always on. There is no `--no-attach`.
+- There is no switchboard and no menu bar.
+- `install-linux.sh` runs `sudo tailscale serve` for `:8444` only with passwordless sudo.
+  Otherwise it prints the command.
+- The mint call is plain `http://` only. A `wss://` runtime with `admin_credential` is refused.
+
+Not verified: the Linux node was not run. Whether the first-run launch also binds IPv6.
 
 ## Lending this Mac to a sandboxed agent (reverse attach)
 
