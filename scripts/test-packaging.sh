@@ -47,21 +47,66 @@ if INSTALL_HOME="$HOME1" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 \
   exit 1
 fi
 
+# A 0.11.0 install keeps its token at the old path. The installer must copy that token, not rotate it. A pre-0.4.0
+# token sits beside it: the 0.11.0 token wins, and both old files are left in place.
+mkdir -p "$HOME1/.config/oab-instance-mcp" "$HOME1/.config/oab-mac-agent"
+openssl rand -hex 32 >"$HOME1/.config/oab-instance-mcp/token"
+chmod 644 "$HOME1/.config/oab-instance-mcp/token"
+openssl rand -hex 32 >"$HOME1/.config/oab-mac-agent/token"
+LEGACY_SEED=$(cat "$HOME1/.config/oab-instance-mcp/token")
+OLDEST_SEED=$(cat "$HOME1/.config/oab-mac-agent/token")
+[ "$LEGACY_SEED" != "$OLDEST_SEED" ]
 ALLOW_UNSIGNED=1 INSTALL_HOME="$HOME1" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 TEST_WITH_UPSTREAM=1 \
   "$ROOT/scripts/install-prebuilt.sh" "$APP" --allow-login test@example.invalid >/dev/null
 INSTALLED="$HOME1/.local/oab-instance-mcp/oab-instance-mcp.app"
 PLIST="$HOME1/Library/LaunchAgents/dev.openab.instance-mcp.plist"
-TOKEN="$HOME1/.config/oab-instance-mcp/token"
+TOKEN="$HOME1/.config/oab-computer/token"
 [ -d "$INSTALLED" ] && [ -f "$PLIST" ] && [ -s "$TOKEN" ]
+[ "$(cat "$TOKEN")" = "$LEGACY_SEED" ] # copied from the 0.11.0 path
+[ "$(cat "$HOME1/.config/oab-instance-mcp/token")" = "$LEGACY_SEED" ] # the old file is left in place
+[ "$(cat "$HOME1/.config/oab-mac-agent/token")" = "$OLDEST_SEED" ] # so is the pre-0.4.0 file, which lost
+[ "$(stat -f '%Lp' "$HOME1/.config/oab-computer")" = 700 ]
+[ ! -e "$TOKEN.lock" ]
 cmp "$APP/Contents/MacOS/oab-instance-mcp" "$INSTALLED/Contents/MacOS/oab-instance-mcp"
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INSTALLED/Contents/Info.plist")" = dev.openab.instance-mcp ]
 [ "$(display_name "$INSTALLED")" = "OpenAB Computer" ]
 [ "$(stat -f '%Lp' "$TOKEN")" = 600 ]
 [ "$(wc -c <"$TOKEN" | tr -d ' ')" = 65 ] # 64 hex + newline
 /usr/bin/plutil -lint "$PLIST" >/dev/null
+/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST" | grep -A1 -x ' *--token-file' | grep -qx " *$TOKEN"
 /usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST" | grep -q -- '--allow-login'
 /usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST" | grep -q 'test@example.invalid'
 /usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST" | grep -q 'browser=http://127.0.0.1:8794/mcp'
+
+# The migration is one-shot: delete the new token and the next install generates a fresh one, never the old one.
+rm -f "$TOKEN"
+ALLOW_UNSIGNED=1 INSTALL_HOME="$HOME1" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 \
+  "$ROOT/scripts/install-prebuilt.sh" "$APP" --allow-login test@example.invalid >/dev/null
+[ -s "$TOKEN" ]
+[ "$(cat "$TOKEN")" != "$LEGACY_SEED" ] && [ "$(cat "$TOKEN")" != "$OLDEST_SEED" ]
+[ "$(stat -f '%Lp' "$TOKEN")" = 600 ]
+[ "$(wc -c <"$TOKEN" | tr -d ' ')" = 65 ]
+[ "$(cat "$HOME1/.config/oab-instance-mcp/token")" = "$LEGACY_SEED" ]
+[ "$(cat "$HOME1/.config/oab-mac-agent/token")" = "$OLDEST_SEED" ]
+
+# Only the pre-0.4.0 token exists: it is copied (not moved), under the lock, into a fresh directory.
+HOME3="$TMP/home-oldest"
+mkdir -p "$HOME3/.config/oab-mac-agent"
+openssl rand -hex 32 >"$HOME3/.config/oab-mac-agent/token"
+OLDEST3=$(cat "$HOME3/.config/oab-mac-agent/token")
+ALLOW_UNSIGNED=1 INSTALL_HOME="$HOME3" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 \
+  "$ROOT/scripts/install-prebuilt.sh" "$APP" --allow-login test@example.invalid >/dev/null
+[ "$(cat "$HOME3/.config/oab-computer/token")" = "$OLDEST3" ]
+[ "$(cat "$HOME3/.config/oab-mac-agent/token")" = "$OLDEST3" ]
+
+# A whitespace-only 0.11.0 token is not copied (the app rejects it too): a fresh token is generated.
+HOME4="$TMP/home-blank"
+mkdir -p "$HOME4/.config/oab-instance-mcp"
+printf '  \n' >"$HOME4/.config/oab-instance-mcp/token"
+ALLOW_UNSIGNED=1 INSTALL_HOME="$HOME4" SKIP_LAUNCH=1 SKIP_TAILSCALE=1 \
+  "$ROOT/scripts/install-prebuilt.sh" "$APP" --allow-login test@example.invalid >/dev/null
+[ "$(wc -c <"$HOME4/.config/oab-computer/token" | tr -d ' ')" = 65 ]
+[ "$(stat -f '%Lp' "$HOME4/.config/oab-computer/token")" = 600 ]
 
 # An update preserves the bearer token.
 TOKEN_BEFORE=$(cat "$TOKEN")
@@ -138,6 +183,12 @@ ALLOW_UNSIGNED=1 INSTALL_HOME="$HOME2" SKIP_LAUNCH=1 \
   "$ROOT/scripts/install-prebuilt.sh" "$APP" >/dev/null
 AUTO_PLIST="$HOME2/Library/LaunchAgents/dev.openab.instance-mcp.plist"
 /usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$AUTO_PLIST" | grep -q 'fixture@example.invalid'
+# A fresh install with no old token generates a private 64-hex token and hands exactly that file to the agent.
+TOKEN2="$HOME2/.config/oab-computer/token"
+[ "$(stat -f '%Lp' "$TOKEN2")" = 600 ]
+[ "$(wc -c <"$TOKEN2" | tr -d ' ')" = 65 ]
+grep -qE '^[0-9a-f]{64}$' "$TOKEN2"
+/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$AUTO_PLIST" | grep -A1 -x ' *--token-file' | grep -qx " *$TOKEN2"
 /usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$AUTO_PLIST" | grep -q 'https://fixture.tail.example:8444/mcp'
 grep -q 'serve --bg --https=8444 http://127.0.0.1:8795' "$TS_LOG"
 if ALLOW_UNSIGNED=1 INSTALL_HOME="$TMP/home-bad-ts" SKIP_LAUNCH=1 \

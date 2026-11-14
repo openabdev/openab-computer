@@ -4,7 +4,13 @@ import CoreGraphics
 import Foundation
 import InstanceMCPCore
 
-let version = "0.11.0"
+let version = "0.12.0"
+
+// Hidden child of the permission wizard (not in --help). Reads the Screen Recording preflight in this fresh process,
+// prints nothing, and exits 0 (granted) or 1. It runs before any other setup: no window, no log, no token, no port.
+if PermissionCheckCommand.isInvocation(Array(CommandLine.arguments.dropFirst())) {
+    exit(PermissionCheckCommand.exitCode(reader: SystemCorePermissionReader()))
+}
 
 struct Options {
     var host = "127.0.0.1"
@@ -38,6 +44,11 @@ func usage() -> Never {
     USAGE: oab-instance-mcp [--host 127.0.0.1] [--port 8795] [--path /mcp]
                         [--allow-login <email>]... [--token <str> | --token-file <path>]
                         [--insecure-local] [--quiet] [--menu-bar] [--public-url <https://…/mcp>]
+
+    With no arguments (a Finder launch): the menu bar app and the backend on 127.0.0.1:8795/mcp,
+    with a bearer token at ~/.config/oab-computer/token (created on first run, or copied from the 0.11.0 token
+    at ~/.config/oab-instance-mcp/token)
+    and the Tailscale login when `tailscale status` reports one. It exits with a message if port 8795 is in use.
 
     Auth (at least one required unless --insecure-local):
       --allow-login   Tailscale login (from `tailscale serve`'s Tailscale-User-Login header). Repeatable.
@@ -83,6 +94,9 @@ func usage() -> Never {
 
 var opts = Options()
 var args = Array(CommandLine.arguments.dropFirst())
+// A launch with no flags takes the first-run path below. Its arguments are cleared so the flag loop does nothing.
+let firstRunLaunch = FirstRunSetup.isNoFlagLaunch(arguments: args)
+if firstRunLaunch { args = [] }
 func next(_ flag: String) -> String {
     guard !args.isEmpty else { fputs("missing value for \(flag)\n", stderr); usage() }
     return args.removeFirst()
@@ -128,6 +142,66 @@ while !args.isEmpty {
     case "--version": print(version); exit(0)
     case "-h", "--help": usage()
     default: fputs("unknown flag \(a)\n", stderr); usage()
+    }
+}
+
+// No flags: the menu bar app with the bearer token file (~/.config/oab-computer/token), created on first
+// run or copied from the 0.11.0 token, and the Tailscale login if one is detected. Without a login the launch
+// continues with the token alone.
+// Flag launches never reach this block, so their behavior and the installer's path are unchanged.
+/// Writes the reason to stderr (the agent log, for a no-flag launch) and shows it in an alert, then the caller exits.
+func showFirstRunAlert(_ message: String) {
+    fputs(message + "\n", stderr)
+    MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let alert = NSAlert()
+        alert.messageText = "OpenAB Computer did not start"
+        alert.informativeText = message
+        alert.runModal()
+    }
+}
+
+var firstRunNotice: String? = nil
+var firstRunLines: [String] = []
+/// The home directory a no-flag launch writes under; nil for flag launches, which keep their defaults.
+var firstRunHome: String? = nil
+if firstRunLaunch {
+    opts.menuBar = true
+    let home = FirstRunSetup.homeDirectory()
+    firstRunHome = home
+    // Before anything else writes: a Finder launch's stderr would otherwise go to /dev/null.
+    FirstRunSetup.redirectStderr(toLogAt: FirstRunSetup.logPath(home: home))
+    #if DEBUG
+    // Test seam, compiled into debug builds only (swift test). Release builds have no override and always use 8795.
+    if let raw = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_FIRST_RUN_PORT"] {
+        if let p = Int(raw), (1...65535).contains(p) {
+            opts.port = UInt16(p)
+        } else {
+            fputs("no-flag launch: OAB_INSTANCE_MCP_FIRST_RUN_PORT=\(raw) rejected (not 1 to 65535); using \(opts.port)\n", stderr)
+        }
+    }
+    #endif
+    // Checked before any token is touched: a taken port means the installed agent is already serving.
+    // Right after a permission relaunch the old instance may still be quitting, so wait briefly for its port.
+    // A genuinely separate copy keeps the port and still gets the alert and exit 75.
+    if SetupWizardStore().relaunchJustHappened {
+        _ = FirstRunSetup.waitForPortFree(host: opts.host, port: opts.port, timeout: 5)
+    }
+    if FirstRunSetup.isPortInUse(host: opts.host, port: opts.port) {
+        showFirstRunAlert(FirstRunSetup.portInUseMessage(host: opts.host, port: opts.port))
+        exit(75)
+    }
+    do {
+        let plan = try FirstRunSetup.prepare(home: home)
+        opts.tokenFile = plan.tokenPath
+        if let login = plan.allowLogin { opts.allowLogins.insert(login) }
+        firstRunNotice = plan.notice
+        firstRunLines = plan.logLines
+    } catch {
+        showFirstRunAlert("Could not prepare the token file: \(error). Quit any other oab-instance-mcp that is running, " +
+                          "remove \(FirstRunSetup.lockPath(for: FirstRunSetup.tokenPath(home: home))) if it is left over from a crash, " +
+                          "then open the app again. Details are in \(FirstRunSetup.logPath(home: home)).")
+        exit(73)
     }
 }
 
@@ -213,7 +287,8 @@ let server = MCPServer(
 let auditLog = FileAuditLog(log: log)
 let attachManager: AttachManager? = opts.attach
     ? AttachManager(server: server,
-                    store: opts.persistGrants ? FileGrantStore(log: log) : nil,
+                    store: opts.persistGrants ? FileGrantStore(url: firstRunHome.map { FirstRunSetup.grantsURL(home: $0) }
+                                                                 ?? FileGrantStore.defaultURL, log: log) : nil,
                     audit: auditLog,
                     log: log)
     : nil
@@ -234,6 +309,7 @@ log("oab-instance-mcp \(version) starting on http://\(opts.host):\(opts.port)\(o
     "screen_recording=\(startupPermissions.screenRecording.isGranted) " +
     "accessibility=\(startupPermissions.accessibility.isGranted) " +
     "full_disk_access=\(startupPermissions.fullDiskAccess.isGranted)")
+for line in firstRunLines { log(line) }
 http.start()
 if let attachManager {
     Task {
@@ -244,7 +320,9 @@ if let attachManager {
 
 // The switchboard supervisor owns the config files and the one live dialer. Saved files
 // win over flags (SwitchboardStartup); the menu bar edits the saved files.
-let switchboardStore = SwitchboardConfigStore()
+let switchboardStore = SwitchboardConfigStore(
+    directory: firstRunHome.map { URL(fileURLWithPath: FirstRunSetup.configDirectory(home: $0)) }
+        ?? SwitchboardConfigStore.defaultDirectory)
 let switchboardAllowSecure = opts.switchboardAllowSecureSetValue
 // The secret file named by the flags, readable or not. Saved files apply only when the
 // flags name the installer's file, or when this is a menu bar process with no flags.
@@ -301,11 +379,12 @@ stop.resume()
 if opts.menuBar {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)     // no Dock icon, no main menu; status item only
-    let logPath = NSHomeDirectory() + "/Library/Logs/oab-instance-mcp/agent.log"
+    let logPath = FirstRunSetup.logPath(home: firstRunHome ?? NSHomeDirectory())
     let publicURL = opts.publicURL ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     statusItem = MainActor.assumeIsolated {
         StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
-                             attach: attachManager, switchboard: switchboardSupervisor)
+                             attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,
+                             relaunchesOnRestart: firstRunLaunch)
     }
     Task {
         await switchboardSupervisor.setOnChange { s in

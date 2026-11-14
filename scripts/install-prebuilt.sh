@@ -34,7 +34,9 @@ EXPECT_TEAM="${EXPECT_TEAM:-6LPQNY95AQ}"
 HOME_DIR="${INSTALL_HOME:-$HOME}"
 BASE="$HOME_DIR/.local/oab-instance-mcp"
 APP="$BASE/oab-instance-mcp.app"
-TOKEN_FILE="$HOME_DIR/.config/oab-instance-mcp/token"
+TOKEN_FILE="$HOME_DIR/.config/oab-computer/token"
+LEGACY_TOKEN_FILE="$HOME_DIR/.config/oab-instance-mcp/token"
+OLDEST_TOKEN_FILE="$HOME_DIR/.config/oab-mac-agent/token"
 PLIST="$HOME_DIR/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME_DIR/Library/Logs/oab-instance-mcp"
 UID_=$(id -u)
@@ -108,18 +110,22 @@ if [ -d "$APP" ]; then
   OLD_REQ=$(/usr/bin/codesign -d -r- "$APP" 2>&1 | /usr/bin/sed -n 's/^designated => //p' || true)
 fi
 
-mkdir -p "$BASE" "$LOG_DIR" "$(dirname "$TOKEN_FILE")" "$(dirname "$PLIST")"
+mkdir -p "$BASE" "$LOG_DIR" "$(dirname "$PLIST")" "$(dirname "$(dirname "$TOKEN_FILE")")"
 
-# One-shot migration from the pre-0.4.0 name, before generation so the old token
-# wins and existing clients keep working.
-if [ -s "$HOME_DIR/.config/oab-mac-agent/token" ] && [ ! -s "$TOKEN_FILE" ]; then
-  mv "$HOME_DIR/.config/oab-mac-agent/token" "$TOKEN_FILE"
-fi
+# One-shot token migration. mkdir is the atomic "first run" test: only the run that creates the token's directory
+# may copy an older token. Once the directory exists the old files are never read again, so deleting the token
+# rotates it. FirstRunSetup.swift applies the same rule and the same source order.
+MAY_MIGRATE=0
+if mkdir -m 700 "$(dirname "$TOKEN_FILE")" 2>/dev/null; then MAY_MIGRATE=1; fi
+# A usable token has a non-whitespace character, the same test as FirstRunSetup.readToken.
+usable_token() { [ -f "$1" ] && [ -n "$(/usr/bin/tr -d '[:space:]' <"$1")" ]; }
 
 # Generate once and preserve across every update. No release artifact or package
 # ever contains a user bearer token. An atomic mkdir lock prevents two concurrent
 # Installer.app attempts from racing and rotating the token clients already hold.
+# The lock directory and every staged file are private (umask 077): no byte of a token is group/other readable.
 (
+  umask 077
   LOCK="$TOKEN_FILE.lock"
   acquired=0
   for _ in $(/usr/bin/seq 1 50); do
@@ -129,9 +135,19 @@ fi
   [ "$acquired" = 1 ] || { echo "installer: timed out waiting for token lock" >&2; exit 70; }
   TMP_TOKEN="$LOCK/token"
   trap 'rm -rf "$LOCK"' EXIT
+  # Copy, never move: the installed 0.11.0 agent keeps reading its file. The 0.11.0 path wins over the pre-0.4.0 one.
+  if [ "$MAY_MIGRATE" = 1 ] && [ ! -s "$TOKEN_FILE" ]; then
+    for src in "$LEGACY_TOKEN_FILE" "$OLDEST_TOKEN_FILE"; do
+      if usable_token "$src"; then
+        cat "$src" >"$TMP_TOKEN"
+        mv "$TMP_TOKEN" "$TOKEN_FILE"
+        echo "installer: token copied from $src (the old file is left in place)" >&2
+        break
+      fi
+    done
+  fi
   if [ ! -s "$TOKEN_FILE" ]; then
-    ( umask 077; /usr/bin/openssl rand -hex 32 >"$TMP_TOKEN" )
-    chmod 600 "$TMP_TOKEN"
+    /usr/bin/openssl rand -hex 32 >"$TMP_TOKEN"
     mv "$TMP_TOKEN" "$TOKEN_FILE"
   fi
 )

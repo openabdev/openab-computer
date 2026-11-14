@@ -15,9 +15,33 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let launchdLabel = "dev.openab.instance-mcp"
     private let logPath: String
     private let token: String?
+    /// Shown in the menu when the no-flag launch found no Tailscale login (token-only auth).
+    private let notice: String?
+    /// True for a no-flag (Finder) launch, which has no LaunchAgent to restart it after an exit.
+    private let relaunchesOnRestart: Bool
     private let defaults: UserDefaults
-    private static let permissionSetupShownKey = "permissionSetupWizard.hasShown.v1"
+    private let store: SetupWizardStore
     private var permissionSetupWindow: PermissionSetupWindowController?
+    /// Relaunches the app for Screen Recording (design Q3): the new instance is started first, then this one quits.
+    private lazy var relaunchCoordinator = RelaunchCoordinator(
+        store: store,
+        launch: { [relaunchesOnRestart] in
+            // Under a LaunchAgent, KeepAlive brings the app back after the exit. A Finder launch has no agent, so a
+            // detached shell waits for this pid to exit (which frees 127.0.0.1:8795) and then opens the bundle.
+            guard relaunchesOnRestart, Bundle.main.bundlePath.hasSuffix(".app") else { return true }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = ["-c", "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; exec /usr/bin/open -n \"$2\"",
+                           "sh", String(getpid()), Bundle.main.bundlePath]
+            return (try? p.run()) != nil
+        },
+        terminate: { exit(0) })
+    /// Revocation watch: 30 seconds, preflight reads only (`CoreWatch`). Runs for the life of the menu bar process.
+    private var coreWatchTimer: Timer?
+    private let coreReader = SystemCorePermissionReader()
+    private let probeCache = ScreenRecordingProbeCache.shared
+    /// The menu rows that show permission state, replaced in place when the shared status changes under an open menu.
+    private var permissionItems: [NSMenuItem] = []
     private let attach: AttachManager?
     private let switchboardSupervisor: SwitchboardSupervisor?
     private lazy var switchboardMenu: SwitchboardMenu? = switchboardSupervisor.map { SwitchboardMenu(supervisor: $0) }
@@ -41,12 +65,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     init(version: String, url: String, logPath: String, token: String? = nil,
          defaults: UserDefaults = .standard, attach: AttachManager? = nil,
-         switchboard: SwitchboardSupervisor? = nil) {
+         switchboard: SwitchboardSupervisor? = nil, notice: String? = nil, relaunchesOnRestart: Bool = false) {
         self.version = version
         self.url = url
         self.logPath = logPath
         self.token = token
+        self.notice = notice
+        self.relaunchesOnRestart = relaunchesOnRestart
         self.defaults = defaults
+        self.store = SetupWizardStore(defaults: defaults)
         self.attach = attach
         self.switchboardSupervisor = switchboard
         self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -56,32 +83,100 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         item.button?.toolTip = "OpenAB Computer \(version)"
         menu.delegate = self
         item.menu = menu
+        startCoreWatch()
+        refreshPermissionStatus()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reopenSetupIfCoreMissing() }
+        }
     }
 
-
-    /// Show once on the first launch that has anything missing. A machine that
-    /// upgraded with all grants already present is marked complete without a
-    /// window; revoking later remains visible in the menu but is never nagged.
+    /// Show on the first launch that has anything missing. A machine that already has every grant is marked
+    /// complete without a window. Missing core permissions show the wizard regardless of earlier closes.
     func showPermissionSetupIfNeeded() {
-        let snapshot = PermissionProbe.current()
-        let shown = defaults.bool(forKey: Self.permissionSetupShownKey)
-        if snapshot.allGranted {
-            defaults.set(true, forKey: Self.permissionSetupShownKey)
+        // Right after a relaunch from the Restart button: reopen on the page the previous instance was on, even when
+        // everything is granted. A silent relaunch after Finish has no page and falls through to the normal rules.
+        if let page = store.consumeRelaunch()?.page {
+            openPermissionSetup(page: page)
             return
         }
-        if PermissionSetupPolicy.shouldAutoShow(hasShown: shown, snapshot: snapshot) {
+        let snapshot = resolvedPermissions().shown
+        clearSpentIfGranted(snapshot)
+        if snapshot.allGranted {
+            store.hasShown = true
+            return
+        }
+        if PermissionSetupPolicy.shouldAutoShow(hasShown: store.hasShown, snapshot: snapshot) {
             showPermissionSetup()
         }
     }
 
     @objc func showPermissionSetup() {
+        openPermissionSetup(page: nil)
+    }
+
+    private func openPermissionSetup(page: WizardPage?) {
         if permissionSetupWindow == nil {
-            permissionSetupWindow = PermissionSetupWindowController { [weak self] in
-                guard let self else { return }
-                self.defaults.set(true, forKey: Self.permissionSetupShownKey)
-            }
+            permissionSetupWindow = PermissionSetupWindowController(store: store, relaunch: relaunchCoordinator)
         }
-        permissionSetupWindow?.show()
+        permissionSetupWindow?.show(resume: page)
+    }
+
+    /// A process that sees Screen Recording granted has consumed the grant, including after the silent Finish relaunch
+    /// (which reopens no wizard). A later revoke and re-grant may then relaunch once more.
+    private func clearSpentIfGranted(_ snap: PermissionSnapshot) {
+        if snap.screenRecording.isGranted, store.autoRelaunchSpent { store.autoRelaunchSpent = false }
+    }
+
+    /// Reopens the wizard after the user closed it, while a core permission is still missing.
+    private func reopenSetupIfCoreMissing() {
+        let visible = permissionSetupWindow?.isWindowVisible ?? false
+        if PermissionSetupPolicy.shouldReopenOnActivation(windowVisible: visible, snapshot: resolvedPermissions().shown) {
+            showPermissionSetup()
+        }
+    }
+
+    /// Every 30 seconds: read Screen Recording and Accessibility with preflight calls only (no prompt, no
+    /// capture, no Full Disk Access probe). Records that core was once granted, flags a later revocation in the
+    /// status item tooltip, and pushes the two core results to the wizard if it is open. It never opens the window.
+    /// With the window closed, the menu shows "Setup incomplete" on next open.
+    private func startCoreWatch() {
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tickCoreWatch() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        coreWatchTimer = timer
+    }
+
+    private func tickCoreWatch() {
+        // Same timer: refresh the shared Screen Recording status so a grant made while the app runs reaches the menu.
+        refreshPermissionStatus()
+        let current = SharedPermissionStatus.resolve(process: CoreWatch.poll(coreReader), child: probeCache.latest).shown
+        store.coreGrantedSeen = CoreWatch.seenAfter(previouslySeen: store.coreGrantedSeen, current: current)
+        let revoked = CoreWatch.revoked(previouslySeen: store.coreGrantedSeen, current: current)
+        item.button?.toolTip = revoked
+            ? "OpenAB Computer \(version) · \(WizardCopy.setupIncomplete)"
+            : "OpenAB Computer \(version)"
+        if permissionSetupWindow?.isWindowVisible == true {
+            permissionSetupWindow?.refreshCore(CoreWatch.poll(coreReader))
+        }
+    }
+
+    /// Asks the shared cache for a fresh child probe (off the main thread, at most one per few seconds) when this
+    /// process reports Screen Recording off, then redraws the permission rows if the menu is built.
+    private func refreshPermissionStatus() {
+        guard !coreReader.screenRecordingGranted() else { renderPermissionItems(); return }
+        probeCache.refreshIfStale { [weak self] value in
+            guard value != nil else { return }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.renderPermissionItems() } }
+        }
+    }
+
+    private func resolvedPermissions() -> ResolvedPermissions {
+        SharedPermissionStatus.resolve(process: PermissionProbe.current(), child: probeCache.latest)
     }
     private static func icon(active: Bool) -> NSImage? {
         let name = active ? "desktopcomputer.and.arrow.down.fill" : "desktopcomputer.and.arrow.down"
@@ -118,22 +213,20 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         menu.removeAllItems()
-        let permissions = PermissionProbe.current()
+        refreshPermissionStatus()
 
         menu.addItem(label("OpenAB Computer \(version)"))
         menu.addItem(label(url, action: #selector(copyURL), tip: "Click to copy"))
         if let token, !token.isEmpty {
             menu.addItem(label("Token: \(Self.mask(token))", action: #selector(copyToken), tip: "Click to copy the bearer token"))
         }
+        if let notice {
+            menu.addItem(label(notice))
+        }
         menu.addItem(.separator())
 
-        menu.addItem(label("Set Up Permissions…", action: #selector(showPermissionSetup)))
-        menu.addItem(permissionMenuItem("Screen Recording", kind: .screenRecording,
-                                        state: permissions.screenRecording, action: #selector(openScreenPane)))
-        menu.addItem(permissionMenuItem("Accessibility", kind: .accessibility,
-                                        state: permissions.accessibility, action: #selector(openAXPane)))
-        menu.addItem(permissionMenuItem("Full Disk Access", kind: .fullDiskAccess,
-                                        state: permissions.fullDiskAccess, action: #selector(openFDAPane)))
+        permissionItems = permissionMenuItems(resolvedPermissions())
+        for item in permissionItems { menu.addItem(item) }
         menu.addItem(.separator())
 
         addSwitchboardSection()
@@ -153,6 +246,41 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(label("Restart Agent", action: #selector(restart)))
         menu.addItem(label("Quit Agent (stops launchd job)", action: #selector(quit)))
         startRefreshTimer()
+    }
+
+    private func permissionMenuItems(_ resolved: ResolvedPermissions) -> [NSMenuItem] {
+        let permissions = resolved.shown
+        var items = [label("Set Up Permissions…", action: #selector(showPermissionSetup))]
+        if SetupGate.evaluate(snapshot: permissions).blocksCore {
+            items.append(label(WizardCopy.setupIncomplete))
+        }
+        items.append(permissionMenuItem("Screen Recording", kind: .screenRecording,
+                                        state: permissions.screenRecording, action: #selector(openScreenPane)))
+        items.append(permissionMenuItem("Accessibility", kind: .accessibility,
+                                        state: permissions.accessibility, action: #selector(openAXPane)))
+        items.append(permissionMenuItem("Full Disk Access", kind: .fullDiskAccess,
+                                        state: permissions.fullDiskAccess, action: #selector(openFDAPane)))
+        if let line = SharedPermissionStatus.menuRestartLine(resolved) {
+            items.append(label(line, action: #selector(restartToFinishSetup),
+                               tip: "macOS applies Screen Recording to a running app only after it restarts"))
+        }
+        return items
+    }
+
+    /// Replaces the permission rows in place. A no-op while the menu is not built.
+    private func renderPermissionItems() {
+        guard let first = permissionItems.first, menu.index(of: first) >= 0 else { return }
+        let index = menu.index(of: first)
+        for item in permissionItems { menu.removeItem(item) }
+        permissionItems = permissionMenuItems(resolvedPermissions())
+        for (offset, item) in permissionItems.enumerated() { menu.insertItem(item, at: index + offset) }
+    }
+
+    /// The same coordinator as the wizard's Finish: one request per app launch, new instance first, then quit.
+    @objc private func restartToFinishSetup() {
+        if !relaunchCoordinator.requestRelaunch(page: nil, automatic: true) {
+            log("menu: restart to finish setup not started")
+        }
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -328,19 +456,26 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return t.prefix(6) + "…" + t.suffix(4)
     }
     @objc private func openScreenPane() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        NSWorkspace.shared.open(PermissionKind.screenRecording.settingsURL)
     }
     @objc private func openAXPane() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+        NSWorkspace.shared.open(PermissionKind.accessibility.settingsURL)
     }
     @objc private func openFDAPane() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+        NSWorkspace.shared.open(PermissionKind.fullDiskAccess.settingsURL)
     }
     @objc private func openLog() {
         NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
     }
     @objc private func restart() {
-        // KeepAlive brings us straight back; exiting is the restart.
+        // Under a LaunchAgent, KeepAlive brings us straight back; exiting is the restart.
+        guard relaunchesOnRestart, Bundle.main.bundlePath.hasSuffix(".app") else { exit(0) }
+        // A Finder launch has no LaunchAgent. A detached shell reopens the bundle once this process has exited.
+        // If the shell cannot start, keep running rather than quit with nothing to bring the app back.
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; exec /usr/bin/open -n \"$0\"", Bundle.main.bundlePath]
+        guard (try? p.run()) != nil else { return }
         exit(0)
     }
     @objc private func quit() {

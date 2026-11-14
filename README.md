@@ -132,7 +132,7 @@ permissions wizard ([details](#download-and-install)). Then point a caller at it
 
 ```sh
 kiro-cli mcp add --name mac-mcp --url https://<host>.<tailnet>.ts.net:8444/mcp \
-  --header "Authorization: Bearer $(ssh <host> cat ~/.config/oab-instance-mcp/token)" \
+  --header "Authorization: Bearer $(ssh <host> cat ~/.config/oab-computer/token)" \
   --scope global --timeout 30000
 ```
 
@@ -229,12 +229,12 @@ Configured checks are **AND**-combined: a request must pass every check that is 
 - `--token <s>` / `--token-file <p>` — additionally require `Authorization: Bearer`, constant-time
   compared. The token after the `Bearer` scheme (case-insensitive) must match byte for byte;
   whitespace around the whole header value is stripped by the HTTP parser, nothing inside it is.
-  **`deploy.sh` now generates one at `~/.config/oab-instance-mcp/token` (mode 600) and passes
+  **`deploy.sh` now generates one at `~/.config/oab-computer/token` on macOS (mode 600; Linux keeps `~/.config/oab-instance-mcp/token`) and passes
   `--token-file`**, so the deployed agent requires *both* an allow-listed Tailscale login *and* the
   bearer token. This is defence-in-depth: a leaked tailnet auth key that enrols a node as
   your Tailscale login passes the login check but still gets `401` without the token (verified
   2026-09-23: no token → 401, correct token → 200, wrong token → 401). The token is stable across
-  re-deploys; rotate by deleting the file and re-deploying. The menu bar shows a masked form and
+  re-deploys; rotate by deleting `~/.config/oab-computer/token` (macOS) and re-deploying. The first 0.12 run copies a 0.11 token from `~/.config/oab-instance-mcp/token` once, when `~/.config/oab-computer` is created; after that the old file is never read again, so a deleted token is not restored from it. (The switchboard files and grants still live under `~/.config/oab-instance-mcp` for now.) The menu bar shows a masked form and
   copies the full token (see below); it is never written to `agent.log`.
 - `--insecure-local` — allow bare loopback requests with no Tailscale headers. Debugging only.
 - `/healthz` is unauthenticated and says only `ok`.
@@ -310,7 +310,7 @@ runs.
 
 ```sh
 openab-sb gen-secret                    # on the switchboard: verifier → [vm].secret_sha256
-oab-instance-mcp --token-file ~/.config/oab-instance-mcp/token \
+oab-instance-mcp --token-file ~/.config/oab-computer/token \
   --switchboard wss://<switchboard>.<tailnet>.ts.net/vm/attach \
   --switchboard-secret-file ~/.config/oab-instance-mcp/switchboard.secret \
   --switchboard-profile observe         # observe (default) | owner
@@ -385,10 +385,12 @@ Tagged releases publish a universal, Developer-ID-signed and Apple-notarized ins
 3. Double-click the package. It auto-detects your Tailscale login/name, preserves or creates the
    bearer token, installs the LaunchAgent, detects the Playwright upstream, and configures
    `tailscale serve :8444`.
-4. On first launch, the **Set Up Mac Permissions** window opens once if anything is missing. Use
-   each row's Open Settings button, return to the wizard, then Test Again. Grant only what you need:
-   Full Disk Access, Screen & System Audio Recording, and/or Accessibility. Browser tools work
-   without any of them. Future releases keep the same Developer ID + bundle id, so grants survive.
+4. On first launch, the **Set Up Mac Permissions** window opens if a required permission is missing. It
+   has two pages. Page 1 asks for Screen Recording and Accessibility, and you cannot finish it until
+   both are on. Click Allow on each row, turn the switch on in System Settings, and return to the
+   wizard, which re-tests on its own. Use Check Again if the row does not update. Page 2 is optional
+   Full Disk Access, which has a Skip link. Browser tools work without any of them. Future releases
+   keep the same Developer ID + bundle id, so grants survive.
 5. The same wizard remains available from the menu bar as **Set Up Permissions…**; use the menu
    item to copy the MCP URL and bearer token into OpenAB Connect/Remote.
 
@@ -448,11 +450,14 @@ screenshots and, once the lock engages, drops injected input.
 
 With `--menu-bar` (deploy.sh sets it) the agent shows a status item: the name "OpenAB Computer" and version, the public MCP URL
 (click to copy), a masked bearer token line (click to copy the full token), live ✓/✗/? rows for
-Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window
-that auto-shows once on first launch when anything is missing), session / call counters with the
+Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window, which opens on launch when a permission is missing and
+reopens while Screen Recording or Accessibility is still off), session / call counters with the
 last tool call, Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
-for each permission and re-tests when the app becomes active or the user clicks Test Again; it
-never polls screenshot or triggers permission prompts by itself. The icon fills briefly on each
+for each permission. Its Allow button calls the system permission request and re-tests, and it
+opens the pane only if the permission is still off. The window re-tests when the app becomes
+active or the user clicks Check Again. The menu bar checks Screen Recording and Accessibility every
+30 seconds without prompting, and it calls the system permission request only when you click Allow.
+It never captures a screenshot by itself. The icon fills briefly on each
 tool call.
 
 With `--menu-bar`, the menu also shows a switchboard section and the reverse-attach grant list. The

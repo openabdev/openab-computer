@@ -104,11 +104,54 @@ public enum PermissionProbe {
     }
 }
 
-/// One-time auto-show policy. "Not Now" is respected across launches and
-/// versions; the menu item remains available forever. A fully granted machine
-/// never gets an onboarding window just because it upgraded to 0.6.3.
+public extension PermissionKind {
+    /// Accessibility and Screen Recording are required, in wizard order: Screen Recording last, because it needs a restart. Full Disk Access is optional.
+    static let coreKinds: [PermissionKind] = [.accessibility, .screenRecording]
+
+    /// The System Settings pane for this permission. The menu bar and the setup wizard both use this.
+    // TODO(Q6): verify on macOS 15 and 26 with a Developer ID build whether the newer
+    // `com.apple.settings.PrivacySecurity.extension?Privacy_…` form is needed. The old form stays until tested.
+    var settingsURL: URL {
+        let pane: String
+        switch self {
+        case .screenRecording: pane = "Privacy_ScreenCapture"
+        case .accessibility: pane = "Privacy_Accessibility"
+        case .fullDiskAccess: pane = "Privacy_AllFiles"
+        }
+        return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
+    }
+}
+
+/// What the setup wizard should show. The gate reads only the snapshot, never the signing team,
+/// so an ad-hoc build passes exactly when macOS reports both core grants.
+public enum SetupGate: Equatable, Sendable {
+    case blockedOnCore(missing: [PermissionKind])
+    case optionalPending
+    case complete
+
+    public static func evaluate(snapshot: PermissionSnapshot) -> SetupGate {
+        let missing = PermissionKind.coreKinds.filter { !snapshot[$0].isGranted }
+        if !missing.isEmpty { return .blockedOnCore(missing: missing) }
+        return snapshot.fullDiskAccess.isGranted ? .complete : .optionalPending
+    }
+
+    public var blocksCore: Bool {
+        if case .blockedOnCore = self { return true }
+        return false
+    }
+}
+
+/// Auto-show policy for the setup wizard. A missing core permission always shows the wizard,
+/// even after an earlier close. Only the optional Full Disk Access step respects `hasShown`.
+/// A fully granted machine never gets a window just because it upgraded.
 public enum PermissionSetupPolicy {
     public static func shouldAutoShow(hasShown: Bool, snapshot: PermissionSnapshot) -> Bool {
-        !hasShown && !snapshot.allGranted
+        if SetupGate.evaluate(snapshot: snapshot).blocksCore { return true }
+        return !hasShown && !snapshot.allGranted
+    }
+
+    /// Reopen after the user closed the window, while a core permission is still missing.
+    public static func shouldReopenOnActivation(windowVisible: Bool, snapshot: PermissionSnapshot) -> Bool {
+        !windowVisible && SetupGate.evaluate(snapshot: snapshot).blocksCore
     }
 }
