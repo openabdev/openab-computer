@@ -121,3 +121,156 @@ public enum MenuModel {
         return TailnetMenu(stateLine: nil, actionTitle: nil, action: nil)
     }
 }
+
+// MARK: Network section
+
+/// How the Tailnet row sees the exposure. Built from the same inputs as `tailnetMenu`.
+public enum NetworkTailnetState: Equatable, Sendable {
+    case off
+    case on(url: String)
+    /// A mapping exists that this app did not set up.
+    case onExisting(url: String)
+    case optedInNotApplied
+    /// The launch's first serve-status read has not finished: no definite value yet.
+    case checking
+    /// Tailscale status was read and could not be understood, so "Off" would be a guess.
+    case unknown
+    /// The app has no Tailscale state of its own (an installer owns another port); it checked nothing.
+    case notChecked
+}
+
+public struct NetworkUpstream: Equatable, Sendable {
+    public let name: String
+    public let url: URL
+    public init(name: String, url: URL) { self.name = name; self.url = url }
+}
+
+/// The Switchboard row's input: the supervisor's status (nil until it reports) and how to print a time.
+public struct NetworkSwitchboard {
+    public let status: SwitchboardStatus?
+    public let now: Date
+    public let timeText: (Date) -> String
+    public init(status: SwitchboardStatus?, now: Date = Date(), timeText: @escaping (Date) -> String) {
+        self.status = status; self.now = now; self.timeText = timeText
+    }
+    public var text: String {
+        guard let status else { return "Switchboard: starting…" }
+        return status.title(now: now, timeText: timeText)
+    }
+}
+
+public struct NetworkRow: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable { case localMCP, tailnet, publicURL, browser, switchboard, reverseAttach }
+    public let kind: Kind
+    public let text: String
+    /// Set for rows a click copies: the local URL, and the tailnet URL when there is one.
+    public let copyValue: String?
+}
+
+public struct NetworkSection: Equatable, Sendable {
+    public let header: String
+    public let rows: [NetworkRow]
+}
+
+extension MenuModel {
+    public static func networkTailnetState(publicURL: String?, optedIn: Bool,
+                                           existingMapping: Bool, uncertain: Bool,
+                                           checking: Bool = false) -> NetworkTailnetState {
+        // Until the launch's first serve-status read finishes, nothing definite may be shown.
+        if checking { return .checking }
+        if let publicURL {
+            return existingMapping && !optedIn ? .onExisting(url: publicURL) : .on(url: publicURL)
+        }
+        if optedIn { return .optedInNotApplied }
+        if uncertain { return .unknown }
+        return .off
+    }
+
+    /// The `--public-url` row input: the configured URL when it is not the local one. It is shown as configured
+    /// and never feeds the Tailnet row, which comes only from Tailscale state.
+    public static func configuredPublicURL(publicURL: String, localURL: String) -> String? {
+        publicURL == localURL ? nil : publicURL
+    }
+
+    /// Tailnet state when the app has no Tailscale state of its own (an installer owns another port). Nothing
+    /// confirms or rules out a mapping to this app, so it is unknown, never Off. A --public-url stays on its
+    /// own unchecked Public URL row.
+    public static func tailnetStateWithoutExposure(publicURL: String?) -> NetworkTailnetState {
+        .notChecked
+    }
+
+    /// An installer launch (allow list, so not token-only) whose Tailscale login could not be read: the tailnet
+    /// state is unknown, not off.
+    public static func tailnetStatusUnreadable(offered: Bool, tokenOnly: Bool) -> Bool {
+        !offered && !tokenOnly
+    }
+
+    /// True only for 127.0.0.0/8, ::1 and localhost. Anything else, including a host that does not parse, is not
+    /// loopback: the safer reading for a row that says who can reach the port.
+    public static func isLoopbackHost(_ host: String) -> Bool {
+        var h = host.trimmingCharacters(in: .whitespaces).lowercased()
+        if h.hasPrefix("[") && h.hasSuffix("]") { h = String(h.dropFirst().dropLast()) }
+        if h == "localhost" || h == "::1" { return true }
+        let parts = h.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) && Int($0) != nil && Int($0)! <= 255 })
+        else { return false }
+        return parts[0] == "127"
+    }
+
+    public static func hostForURL(_ host: String) -> String {
+        host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+    }
+
+    public static func networkSection(bindHost: String, bindPort: Int, path: String,
+                                      upstreams: [NetworkUpstream], tailnet: NetworkTailnetState,
+                                      switchboard: NetworkSwitchboard?, liveGrants: Int?, attachEnabled: Bool,
+                                      publicURL: String? = nil) -> NetworkSection {
+        var rows: [NetworkRow] = []
+
+        let localURL = "http://\(hostForURL(bindHost)):\(bindPort)\(path)"
+        let reach = isLoopbackHost(bindHost) ? "(this Mac only)" : "⚠ (reachable from other devices)"
+        rows.append(NetworkRow(kind: .localMCP, text: "Local MCP: \(localURL) \(reach)", copyValue: localURL))
+
+        switch tailnet {
+        case .off:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: Off", copyValue: nil))
+        case .on(let url):
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: On, \(url) (your tailnet only)", copyValue: url))
+        case .onExisting(let url):
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: On (existing mapping, not managed by this app), \(url)", copyValue: url))
+        case .optedInNotApplied:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: opted in, not applied (see the log)", copyValue: nil))
+        case .unknown:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: unknown (Tailscale status unreadable)", copyValue: nil))
+        case .notChecked:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: unknown (not checked by this app)", copyValue: nil))
+        case .checking:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: checking…", copyValue: nil))
+        }
+
+        if let publicURL {
+            rows.append(NetworkRow(kind: .publicURL, text: "Public URL: \(publicURL) (as configured with --public-url, not checked)",
+                                   copyValue: publicURL))
+        }
+
+        if let browser = upstreams.first(where: { $0.name == "browser" }) {
+            let host = browser.url.host ?? ""
+            let address = browser.url.port.map { "\(hostForURL(host)):\($0)" } ?? hostForURL(host)
+            let who = isLoopbackHost(host) ? "(separate process, this Mac only)" : "(remote)"
+            rows.append(NetworkRow(kind: .browser, text: "Browser tools: \(address) \(who)", copyValue: nil))
+        }
+
+        if let switchboard {
+            rows.append(NetworkRow(kind: .switchboard, text: switchboard.text, copyValue: nil))
+        }
+
+        if !attachEnabled {
+            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: off", copyValue: nil))
+        } else if let n = liveGrants {
+            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: \(n) live grant\(n == 1 ? "" : "s")", copyValue: nil))
+        } else {
+            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: on", copyValue: nil))
+        }
+        return NetworkSection(header: "Network", rows: rows)
+    }
+}

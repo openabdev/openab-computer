@@ -62,7 +62,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         didSet { refreshSwitchboardTitle() }
     }
     private var switchboardTitleItem: NSMenuItem?
-    private var grantHeaderItem: NSMenuItem?
+    /// The separator after the switchboard and grant rows; grant rows are inserted before it.
+    private var grantAnchorItem: NSMenuItem?
+    private var attachRowItem: NSMenuItem?
+    private var tailnetRowItem: NSMenuItem?
+    /// Last live-grant count seen; nil until the first async count lands.
+    private var lastGrantCount: Int?
+    private let bindHost: String
+    private let bindPort: Int
+    private let path: String
+    private let upstreams: [NetworkUpstream]
+    private let attachEnabled: Bool
     private var grantRowItems: [NSMenuItem] = []
     private var grantTimer: Timer?
     private static let timeFormatter: DateFormatter = {
@@ -79,8 +89,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
          defaults: UserDefaults = .standard, attach: AttachManager? = nil,
          switchboard: SwitchboardSupervisor? = nil, notice: String? = nil,
          exposure: TailnetExposure? = nil,
+         bindHost: String = "127.0.0.1", bindPort: Int = 8795, path: String = "/mcp",
+         upstreams: [NetworkUpstream] = [], attachEnabled: Bool = true,
          environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.exposure = exposure
+        self.bindHost = bindHost
+        self.bindPort = bindPort
+        self.path = path
+        self.upstreams = upstreams
+        self.attachEnabled = attachEnabled
         self.launchdJobLabel = LaunchdJob.jobLabel(environment: environment)
         self.version = version
         self.url = url
@@ -347,22 +364,24 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let tailnet = MenuModel.tailnetMenu(offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL,
                                           optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
                                           existingMapping: exposure?.existingMapping ?? false)
-        if let line = tailnet.stateLine {
-            menu.addItem(label(line))
-        }
-        if let manage = tailnet.manageTitle {
-            menu.addItem(label(manage, action: #selector(manageTailnet),
-                               tip: "Records that you want this app to manage the existing mapping on port \(TailnetExposure.httpsPort). Changes nothing in Tailscale."))
-        }
-        switch tailnet.action {
-        case .allow?:
-            menu.addItem(label(tailnet.actionTitle ?? "", action: #selector(showTailnetSetup),
-                               tip: "Lets other devices on your tailnet reach this Mac. Off until you allow it."))
-        case .turnOff?:
-            menu.addItem(label(tailnet.actionTitle ?? "", action: #selector(turnOffTailnet),
-                               tip: "Removes the tailscale serve mapping on port \(TailnetExposure.httpsPort)"))
-        case nil:
-            break
+        let section = currentNetworkSection()
+        menu.addItem(.separator())
+        menu.addItem(label(section.header))
+        switchboardTitleItem = nil
+        attachRowItem = nil
+        tailnetRowItem = nil
+        for row in section.rows {
+            if row.kind == .reverseAttach && attachEnabled && attach == nil { continue }
+            let item = label(row.text, action: row.copyValue == nil ? nil : #selector(copyRow(_:)),
+                             tip: row.copyValue == nil ? nil : "Click to copy")
+            item.representedObject = row.copyValue
+            menu.addItem(item)
+            switch row.kind {
+            case .switchboard: switchboardTitleItem = item
+            case .reverseAttach: attachRowItem = item
+            case .tailnet: tailnetRowItem = item; addTailnetActions(tailnet)
+            default: break
+            }
         }
         menu.addItem(.separator())
 
@@ -372,7 +391,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         addSwitchboardSection()
         addGrantSection()
-        menu.addItem(.separator())
 
         menu.addItem(label("Sessions \(sessions) · Calls \(calls)" + (denies > 0 ? " · Denied \(denies)" : "")))
         if let l = lastCall {
@@ -387,6 +405,31 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(label("Restart Agent", action: #selector(restart)))
         menu.addItem(label(MenuModel.quitTitle(underLaunchd: underLaunchd), action: #selector(quit)))
         startRefreshTimer()
+    }
+
+    /// The existing tailnet action rows, directly under the Tailnet row.
+    private func addTailnetActions(_ tailnet: TailnetMenu) {
+        if let manage = tailnet.manageTitle {
+            menu.addItem(label(manage, action: #selector(manageTailnet),
+                               tip: "Records that you want this app to manage the existing mapping on port \(TailnetExposure.httpsPort). Changes nothing in Tailscale."))
+        }
+        switch tailnet.action {
+        case .allow?:
+            menu.addItem(label(tailnet.actionTitle ?? "", action: #selector(showTailnetSetup),
+                               tip: "Lets other devices on your tailnet reach this Mac. Off until you allow it."))
+        case .turnOff?:
+            menu.addItem(label(tailnet.actionTitle ?? "", action: #selector(turnOffTailnet),
+                               tip: "Removes the tailscale serve mapping on port \(TailnetExposure.httpsPort)"))
+        case nil:
+            break
+        }
+    }
+
+    /// An installer-owned `--public-url` (no exposure object) is shown as configured, on its own row, when it is
+    /// not the local URL. It never produces a Tailnet state.
+    private var externalPublicURL: String? {
+        guard exposure == nil else { return nil }
+        return MenuModel.configuredPublicURL(publicURL: url, localURL: "http://\(MenuModel.hostForURL(bindHost)):\(bindPort)\(path)")
     }
 
     private func permissionMenuItems(_ resolved: ResolvedPermissions) -> [NSMenuItem] {
@@ -448,10 +491,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func addSwitchboardSection() {
         guard switchboardSupervisor != nil else { return }
-        let title = label("")
-        switchboardTitleItem = title
-        menu.addItem(title)
-        refreshSwitchboardTitle()
         if let note = switchboardStatus?.note {
             menu.addItem(label(note))
         }
@@ -467,15 +506,45 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let forget = label("Disconnect & forget…", action: #selector(forgetSwitchboard))
         forget.isEnabled = enabled.forget
         menu.addItem(forget)
-        menu.addItem(.separator())
     }
 
+    private func switchboardRowInput() -> NetworkSwitchboard {
+        NetworkSwitchboard(status: switchboardStatus) { Self.timeFormatter.string(from: $0) }
+    }
+
+    /// The one place the Network rows are computed, for the first draw and every in-place refresh.
+    private func currentNetworkSection() -> NetworkSection {
+        let tailnetState: NetworkTailnetState = exposure == nil
+            ? MenuModel.tailnetStateWithoutExposure(publicURL: externalPublicURL)
+            : MenuModel.networkTailnetState(
+                publicURL: exposure?.publicURL,
+                optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
+                existingMapping: exposure?.existingMapping ?? false,
+                uncertain: (exposure?.uncertain ?? false)
+                    || (exposure.map { MenuModel.tailnetStatusUnreadable(offered: $0.offersExposure, tokenOnly: $0.tokenOnly) } ?? false),
+                checking: exposure?.checking ?? false)
+        return MenuModel.networkSection(
+            bindHost: bindHost, bindPort: bindPort, path: path, upstreams: upstreams, tailnet: tailnetState,
+            switchboard: switchboardSupervisor == nil ? nil : switchboardRowInput(),
+            liveGrants: lastGrantCount, attachEnabled: attachEnabled)
+    }
+
+    /// Update the Tailnet, Switchboard and Reverse attach rows in place from the single model function.
     private func refreshSwitchboardTitle() {
-        guard let status = switchboardStatus else {
-            switchboardTitleItem?.title = "Switchboard: starting…"
-            return
+        let section = currentNetworkSection()
+        for row in section.rows {
+            switch row.kind {
+            case .tailnet:
+                tailnetRowItem?.title = row.text
+                tailnetRowItem?.representedObject = row.copyValue
+                tailnetRowItem?.target = self
+                tailnetRowItem?.action = row.copyValue == nil ? nil : #selector(copyRow(_:))
+                tailnetRowItem?.toolTip = row.copyValue == nil ? nil : "Click to copy"
+            case .switchboard: switchboardTitleItem?.title = row.text
+            case .reverseAttach: attachRowItem?.title = row.text
+            default: break
+            }
         }
-        switchboardTitleItem?.title = status.title { Self.timeFormatter.string(from: $0) }
     }
 
     @objc private func configureSwitchboard() {
@@ -492,13 +561,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     // MARK: reverse-attach grants
 
+    /// The anchor separator always ends the block; grant rows (with their header, when there are any) go before it.
     private func addGrantSection() {
-        guard attach != nil else { return }
-        let header = label("Reverse-attach grants")
-        grantHeaderItem = header
+        let anchor = NSMenuItem.separator()
+        grantAnchorItem = anchor
         grantRowItems = []
-        menu.addItem(header)
-        refreshGrants()
+        menu.addItem(anchor)
+        if attach != nil { refreshGrants() }
     }
 
     private func refreshGrants() {
@@ -508,19 +577,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     /// Replace the grant rows under the header. The menu may be open while this runs.
     private func renderGrants(_ grants: [AttachManager.Grant]) {
-        guard let header = grantHeaderItem, menu.index(of: header) >= 0 else { return }
+        guard let anchor = grantAnchorItem, menu.index(of: anchor) >= 0 else { return }
         for item in grantRowItems { menu.removeItem(item) }
         grantRowItems = []
-        var index = menu.index(of: header) + 1
+        lastGrantCount = grants.count
+        refreshSwitchboardTitle()
+        var index = menu.index(of: anchor)
         func insert(_ item: NSMenuItem) {
             menu.insertItem(item, at: index)
             grantRowItems.append(item)
             index += 1
         }
-        if grants.isEmpty {
-            insert(label("No live grants"))
-            return
-        }
+        if grants.isEmpty { return }
+        insert(label("Reverse-attach grants"))
         let now = Date()
         for grant in grants {
             let row = GrantRowModel.make(grant, now: now)
@@ -585,6 +654,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func copyURL() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(currentURL, forType: .string)
+    }
+    @objc private func copyRow(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
     @objc private func copyToken() {
         guard let token else { return }

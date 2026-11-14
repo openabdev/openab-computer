@@ -604,6 +604,40 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertNil(other.publicURL)
     }
 
+    func testALoginLaunchWithNoOptInIsUnknownUntilTheServeStatusIsRead() {
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        let exposure = make(fake)
+        XCTAssertTrue(exposure.uncertain, "an existing mapping may be live before the read finishes")
+        exposure.adoptExistingMapping()
+        XCTAssertFalse(exposure.uncertain)
+        XCTAssertTrue(exposure.existingMapping)
+
+        let none = make(FakeTailscale())
+        XCTAssertTrue(none.uncertain)
+        none.adoptExistingMapping()
+        XCTAssertFalse(none.uncertain, "a status read that shows no mapping proves it Off")
+    }
+
+    func testCheckingLastsUntilTheFirstReadFinishes() {
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:9000")   // a foreign mapping
+        let exposure = make(fake)
+        XCTAssertTrue(exposure.checking)
+        XCTAssertNil(exposure.reapplyAtLaunch(), "no opt-in: nothing to re-apply")
+        XCTAssertTrue(exposure.checking, "the adopt read has not run yet")
+        XCTAssertNil(exposure.adoptExistingMapping())
+        XCTAssertFalse(exposure.checking)
+        XCTAssertFalse(exposure.uncertain, "a foreign mapping proves ours absent")
+        XCTAssertTrue(fake.mutating.isEmpty)
+
+        defaults.set(true, forKey: TailnetExposure.optInKey)
+        let opted = make(FakeTailscale())
+        XCTAssertTrue(opted.checking)
+        opted.markLaunchReadDone()
+        XCTAssertFalse(opted.checking)
+    }
+
     func testAnExistingMappingIsFlaggedNotManagedAndManageRecordsTheOptInWithoutServe() {
         let fake = FakeTailscale()
         fake.serve(8444, to: "http://127.0.0.1:8795")

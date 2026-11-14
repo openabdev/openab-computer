@@ -442,11 +442,14 @@ if opts.menuBar {
     statusItem = MainActor.assumeIsolated {
         StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
                              attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,
-                             exposure: exposure)
+                             exposure: exposure, bindHost: opts.host, bindPort: Int(opts.port), path: opts.path,
+                             upstreams: opts.upstreams.map { NetworkUpstream(name: $0.0, url: $0.1) },
+                             attachEnabled: opts.attach)
     }
     // A stored opt-in is re-applied once per launch, off the main thread, and only when the mapping is missing.
     if let exposure {
         DispatchQueue.global(qos: .utility).async {
+            defer { exposure.markLaunchReadDone() }
             if exposure.reapplyAtLaunch() == nil { exposure.adoptExistingMapping() }
         }
     }
