@@ -333,10 +333,20 @@ let tailnetExposure: TailnetExposure? = (firstRunLaunch || ((opts.menuBar || opt
 // to the tailnet, so it is removed before the listener starts. If it is there and cannot be removed, fail closed.
 // Note: with a hung Tailscale daemon this check can delay startup by several seconds (bounded timeouts); it fails closed.
 // A token-only launch also removes a mapping on 8444 that is exactly this app's own (decision of record, see design.md).
-if case .failed(let why)? = tailnetExposure?.withdrawWithoutLogin() {
+// The port-in-use check comes first, in every launch mode: a held port means another instance is serving, and the
+// 8444 mapping may be its. Nothing is withdrawn or run in that case.
+switch tailnetExposure?.withdrawAtLaunch(portHeld: { FirstRunSetup.isPortInUse(host: opts.host, port: opts.port) }) {
+case .portHeld?:
+    if firstRunLaunch {
+        showFirstRunAlert(FirstRunSetup.portInUseMessage(host: opts.host, port: opts.port)); exit(75)
+    }
+    fputs("failed to start listener: port \(opts.port) is already in use\n", stderr); exit(2)
+case .checked(.failed(let why)?)?:
     let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Start Tailscale and open OpenAB Computer again, or remove the mapping with: tailscale serve --https=8444 off"
     log("refusing to start: \(reason)")
     showFirstRunAlert("OpenAB Computer will not start: \(reason)"); exit(3)
+default:
+    break
 }
 let endpoint = MCPHTTPEndpoint(path: opts.path, server: server, auth: auth, attach: attachManager, log: log)
 

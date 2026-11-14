@@ -92,6 +92,10 @@ final class FakeTailscale: @unchecked Sendable {
     }
 }
 
+private extension TailnetExposure.Outcome {
+    var urlIfOn: String? { if case .on(let u) = self { return u } else { return nil } }
+}
+
 final class TailnetExposureTests: XCTestCase {
     private var defaults: UserDefaults!
     private var suite = ""
@@ -598,6 +602,73 @@ final class TailnetExposureTests: XCTestCase {
         let other = make(foreign)
         XCTAssertNil(other.adoptExistingMapping())
         XCTAssertNil(other.publicURL)
+    }
+
+    func testAnExistingMappingIsFlaggedNotManagedAndManageRecordsTheOptInWithoutServe() {
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        let exposure = make(fake)
+        XCTAssertNil(exposure.manageExistingMapping().urlIfOn, "nothing to manage before an existing mapping was seen")
+        XCTAssertFalse(exposure.optedIn)
+        XCTAssertTrue(fake.calls.isEmpty)
+        exposure.adoptExistingMapping()
+        XCTAssertTrue(exposure.existingMapping)
+        XCTAssertFalse(exposure.optedIn)
+        let menu = MenuModel.tailnetMenu(offered: true, publicURL: exposure.publicURL, optedIn: exposure.optedIn,
+                                         existingMapping: exposure.existingMapping)
+        XCTAssertEqual(menu.stateLine, "Tailnet access: On (existing mapping, not managed by this app)")
+        XCTAssertEqual(menu.manageTitle, "Manage with this app")
+        XCTAssertEqual(exposure.manageExistingMapping(), .on(url: expectedURL))
+        XCTAssertTrue(exposure.optedIn)
+        XCTAssertFalse(exposure.existingMapping)
+        XCTAssertTrue(fake.mutating.isEmpty, "managing an existing mapping changes nothing in Tailscale")
+        let after = MenuModel.tailnetMenu(offered: true, publicURL: exposure.publicURL, optedIn: exposure.optedIn,
+                                          existingMapping: exposure.existingMapping)
+        XCTAssertEqual(after.stateLine, "Tailnet access: On")
+        XCTAssertNil(after.manageTitle)
+    }
+
+    func testManageFailsWithoutRecordingWhenTheMappingWentAway() {
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        let exposure = make(fake)
+        exposure.adoptExistingMapping()
+        fake.web.removeAll()
+        guard case .failed = exposure.manageExistingMapping() else { return XCTFail("expected a failure") }
+        XCTAssertFalse(exposure.optedIn)
+        XCTAssertNil(exposure.publicURL)
+        XCTAssertFalse(exposure.existingMapping)
+    }
+
+    func testAHeldPortRunsNoTailscaleCommandAtLaunchWhateverTheLaunchMode() {
+        do {
+            let fake = FakeTailscale()
+            fake.serve(8444, to: "http://127.0.0.1:8795")   // the running instance's mapping
+            let exposure = make(fake, login: false)
+            XCTAssertEqual(exposure.withdrawAtLaunch(portHeld: { true }), .portHeld)
+            XCTAssertTrue(fake.calls.isEmpty, "not even a read may run while the port is held")
+            XCTAssertTrue(fake.mutating.isEmpty)
+            XCTAssertEqual(fake.web["mac.tail1234.ts.net:8444"], "http://127.0.0.1:8795", "the other instance's mapping is untouched")
+        }
+        // A free port still withdraws the leftover mapping.
+        let fake = FakeTailscale()
+        fake.serve(8444, to: "http://127.0.0.1:8795")
+        XCTAssertEqual(make(fake, login: false).withdrawAtLaunch(portHeld: { false }), .checked(.off))
+        XCTAssertEqual(fake.mutating, [offArgs])
+    }
+
+    func testRecheckIntervalIsOneSecondForTheFirstMinuteThenFive() {
+        XCTAssertEqual(TailnetExposure.recheckInterval(sinceLaunch: 0), 1)
+        XCTAssertEqual(TailnetExposure.recheckInterval(sinceLaunch: 59.9), 1)
+        XCTAssertEqual(TailnetExposure.recheckInterval(sinceLaunch: 60), 5)
+        XCTAssertEqual(TailnetExposure.recheckInterval(sinceLaunch: 600), 5)
+    }
+
+    func testChildEnvironmentDropsTheLaunchdJobLabel() {
+        let env = LaunchdJob.childEnvironment(["XPC_SERVICE_NAME": LaunchdJob.ownLabel, "PATH": "/usr/bin"])
+        XCTAssertNil(env["XPC_SERVICE_NAME"])
+        XCTAssertEqual(env["PATH"], "/usr/bin")
+        XCTAssertNil(LaunchdJob.jobLabel(environment: env, parentPID: 1), "an orphan reparented to launchd is not the job")
     }
 
     // MARK: parsing and the real runner

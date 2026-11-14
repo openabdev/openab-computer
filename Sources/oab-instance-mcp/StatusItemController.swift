@@ -36,6 +36,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             guard launchdJobLabel == nil else { return true }
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            // Without the job label, so an orphaned waiter or the copy it starts is never taken for the launchd job.
+            p.environment = LaunchdJob.childEnvironment(ProcessInfo.processInfo.environment)
             let wait = "i=0; while kill -0 \"$1\" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; if kill -0 \"$1\" 2>/dev/null; then echo \"relaunch: the old process (pid $1) still holds the port after 10 s; not starting a second copy\" >&2; exit 1; fi; shift; "
             if Bundle.main.bundlePath.hasSuffix(".app") {
                 p.arguments = ["-c", wait + "exec /usr/bin/open -n \"$1\"", "sh", String(getpid()), Bundle.main.bundlePath]
@@ -139,6 +141,30 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         openPermissionSetup(page: .tailnet)
     }
 
+    /// "Manage with this app": the user's explicit opt-in for a mapping that already existed. Reads only.
+    @objc private func manageTailnet() {
+        guard let exposure else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = exposure.manageExistingMapping()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self?.permissionSetupWindow?.refresh()
+                    guard case .failed = outcome else { return }
+                    self?.showAlert("Tailnet access", outcome.message)
+                }
+            }
+        }
+    }
+
+    private func showAlert(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.addButton(withTitle: "OK")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
     /// "Turn Off Tailnet Access": runs the CLI off the main thread and reports a failure in a dialog.
     @objc private func turnOffTailnet() {
         guard let exposure else { return }
@@ -190,11 +216,40 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         coreWatchTimer = timer
-        // While tailscaled cannot be seen (no CLI, or not Running), a persisted mapping could come alive: recheck every 5 s.
-        let fast = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { if self?.exposure?.uncertain == true { self?.recheckWithoutLogin() } }
+        startUncertainRecheck()
+    }
+
+    /// While tailscaled cannot be seen (no CLI, or not Running), a mapping could come alive: recheck every second for
+    /// the first 60 seconds after launch, then every 5 seconds. The loop and the CLI calls run off the main thread;
+    /// only the failure alert goes back to it. The 30 s tick above also rechecks.
+    private let recheckQueue = DispatchQueue(label: "dev.openab.tailnet-recheck", qos: .utility)
+    private func startUncertainRecheck() {
+        guard let exposure, !exposure.loginDetected, exposure.tokenOnly else { return }
+        Self.runRecheckLoop(exposure: exposure, queue: recheckQueue, launched: Date(), delay: 1)
+    }
+
+    nonisolated private static func runRecheckLoop(exposure: TailnetExposure, queue: DispatchQueue, launched: Date, delay: TimeInterval) {
+        queue.asyncAfter(deadline: .now() + delay) {
+            if exposure.uncertain, case .failed(let why)? = exposure.withdrawWithoutLogin() {
+                DispatchQueue.main.async { MainActor.assumeIsolated { quitForUnwithdrawnMapping(why) } }
+                return
+            }
+            let next = TailnetExposure.recheckInterval(sinceLaunch: Date().timeIntervalSince(launched))
+            runRecheckLoop(exposure: exposure, queue: queue, launched: launched, delay: next)
         }
-        RunLoop.main.add(fast, forMode: .common)
+    }
+
+    private static var quitting = false
+    private static func quitForUnwithdrawnMapping(_ why: String) {
+        guard !quitting else { return }
+        quitting = true
+        let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Remove the mapping with: tailscale serve --https=8444 off"
+        fputs("tailnet access: quitting: \(reason)\n", stderr)
+        let alert = NSAlert()
+        alert.messageText = "OpenAB Computer is quitting"
+        alert.informativeText = reason
+        alert.runModal()
+        exit(3)
     }
 
     private func tickCoreWatch() {
@@ -225,13 +280,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 MainActor.assumeIsolated {
                     self?.recheckInFlight = false
                     guard case .failed(let why)? = outcome else { return }
-                    let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Remove the mapping with: tailscale serve --https=8444 off"
-                    fputs("tailnet access: quitting: \(reason)\n", stderr)
-                    let alert = NSAlert()
-                    alert.messageText = "OpenAB Computer is quitting"
-                    alert.informativeText = reason
-                    alert.runModal()
-                    exit(3)
+                    Self.quitForUnwithdrawnMapping(why)
                 }
             }
         }
@@ -296,9 +345,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             menu.addItem(label(notice))
         }
         let tailnet = MenuModel.tailnetMenu(offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL,
-                                          optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false))
+                                          optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
+                                          existingMapping: exposure?.existingMapping ?? false)
         if let line = tailnet.stateLine {
             menu.addItem(label(line))
+        }
+        if let manage = tailnet.manageTitle {
+            menu.addItem(label(manage, action: #selector(manageTailnet),
+                               tip: "Records that you want this app to manage the existing mapping on port \(TailnetExposure.httpsPort). Changes nothing in Tailscale."))
         }
         switch tailnet.action {
         case .allow?:
@@ -367,6 +421,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc private func restartToFinishSetup() {
         if !relaunchCoordinator.requestRelaunch(page: nil, automatic: true) {
             log("menu: restart to finish setup not started")
+            showAlert("OpenAB Computer", WizardCopy.restartFailed)
         }
     }
 
@@ -558,7 +613,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             underLaunchd: underLaunchd,
             relaunch: { relaunchCoordinator.requestRelaunch(page: nil, automatic: false) },
             exitProcess: { exit(0) })
-        if !started { log("menu: restart not started") }
+        if !started {
+            log("menu: restart not started")
+            showAlert("OpenAB Computer", WizardCopy.restartFailed)
+        }
     }
     @objc private func quit() {
         MenuModel.quit(jobLabel: launchdJobLabel, bootout: { label in

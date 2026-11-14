@@ -66,6 +66,7 @@ public final class TailnetExposure: @unchecked Sendable {
     private var lastTransition = ""
     private var unconfirmedState = false
     private var uncertainState = false
+    private var existingMappingState = false
     /// True while the launch re-apply runs `enable()`: a failed attempt then keeps the stored opt-in, so one bad
     /// launch (tailscaled still starting) does not silently drop the user's choice.
     private var preserveChoiceOnFailure = false
@@ -98,6 +99,14 @@ public final class TailnetExposure: @unchecked Sendable {
     /// True while the last no-login check could not see tailscaled (no CLI, or the daemon is not Running). A mapping
     /// could come alive later, so the caller should recheck on a short interval while this is set.
     public var uncertain: Bool { lock.lock(); defer { lock.unlock() }; return uncertainState }
+
+    /// In memory only: 8444 already maps to this app's backend (set by hand or by an installer) and the user has not
+    /// opted in. It is shown truthfully, never persisted as consent; `manageExistingMapping()` records the opt-in.
+    public var existingMapping: Bool { lock.lock(); defer { lock.unlock() }; return existingMappingState }
+
+    /// How often the no-login recheck runs while tailscaled cannot be seen: every second for the first 60 seconds
+    /// after launch, then every 5 seconds.
+    public static func recheckInterval(sinceLaunch elapsed: TimeInterval) -> TimeInterval { elapsed < 60 ? 1 : 5 }
 
     /// The verified tailnet URL while exposure is on; nil otherwise. This is what the menu shows and copies.
     public var publicURL: String? {
@@ -344,17 +353,54 @@ public final class TailnetExposure: @unchecked Sendable {
         return .failed("The tailnet mapping on port \(Self.httpsPort) is still there.")
     }
 
+    /// What the launch-time withdrawal found.
+    public enum LaunchCheck: Equatable, Sendable {
+        /// The backend port is already held by another process. Nothing was withdrawn and no `tailscale serve` command
+        /// ran: the mapping on 8444 may belong to the instance that holds the port.
+        case portHeld
+        case checked(Outcome?)
+    }
+
+    /// The launch-time form of `withdrawWithoutLogin()`: the port-in-use check runs first, in every launch mode, and
+    /// when the port is held nothing is run at all (not even a read). Later rechecks call `withdrawWithoutLogin()`
+    /// directly, because by then this process holds the port itself.
+    public func withdrawAtLaunch(portHeld: () -> Bool) -> LaunchCheck {
+        if portHeld() {
+            log("tailnet access: backend port is already in use; leaving the tailnet mapping alone")
+            return .portHeld
+        }
+        return .checked(withdrawWithoutLogin())
+    }
+
     /// At launch with a login but no stored opt-in: if 8444 already maps to this app's backend (set by hand or by an
-    /// older install), show it as on instead of "Off". Read-only: runs only `serve status` and the name lookup.
+    /// older install), show it truthfully as an existing mapping instead of "Off". Read-only: runs only `serve status`
+    /// and the name lookup. Observing a mapping is not consent: the opt-in is never written here.
     @discardableResult
     public func adoptExistingMapping() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
         guard loginDetected, !optedIn else { return nil }
         guard case .success(.ours) = readMapping(), case .success(let dns) = selfDNSName() else { return nil }
         let result = "https://\(dns):\(Self.httpsPort)/mcp"
-        // In memory only: observing a mapping is not consent. The opt-in is written only by the user's Allow action.
         setURL(result)
-        log("tailnet access: port \(Self.httpsPort) already maps to this app; shown as on (opt-in not recorded)")
+        lock.lock(); existingMappingState = true; lock.unlock()
+        log("tailnet access: port \(Self.httpsPort) already maps to this app; shown as an existing mapping (opt-in not recorded)")
+        return .on(url: result)
+    }
+
+    /// The user's explicit "Manage with this app" on an existing mapping: records the opt-in. Runs only reads, and
+    /// only when the mapping is still exactly this app's own; it changes nothing in Tailscale.
+    public func manageExistingMapping() -> Outcome {
+        operation.lock(); defer { operation.unlock() }
+        guard loginDetected else { return .refusedNoLogin }
+        guard existingMapping else { return .failed("There is no existing mapping to manage. Nothing was recorded.") }
+        guard case .success(.ours) = readMapping(), case .success(let dns) = selfDNSName() else {
+            lock.lock(); existingMappingState = false; lock.unlock()
+            setURL(nil)
+            return .failed("The mapping on port \(Self.httpsPort) is no longer there, or could not be read. Nothing was recorded.")
+        }
+        let result = "https://\(dns):\(Self.httpsPort)/mcp"
+        setChoice(true, url: result)
+        log("tailnet access: existing mapping on port \(Self.httpsPort) now managed by this app (user action)")
         return .on(url: result)
     }
 
@@ -423,13 +469,13 @@ public final class TailnetExposure: @unchecked Sendable {
         // (a launch re-apply keeps whatever the user stored before). The in-memory flag drives the menu.
         if !preserveChoiceOnFailure { defaults.set(false, forKey: Self.optInKey) }
         setURL(nil)
-        lock.lock(); unconfirmedState = true; lock.unlock()
+        lock.lock(); unconfirmedState = true; existingMappingState = false; lock.unlock()
         log("tailnet access: state not confirmed; the mapping on port \(Self.httpsPort) may be active")
         return .failed(message)
     }
 
     private func setChoice(_ on: Bool, url newURL: String? = nil) {
-        lock.lock(); unconfirmedState = false; lock.unlock()
+        lock.lock(); unconfirmedState = false; existingMappingState = false; lock.unlock()
         defaults.set(on, forKey: Self.optInKey)
         setURL(on ? newURL : nil)
     }

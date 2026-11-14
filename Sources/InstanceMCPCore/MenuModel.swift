@@ -19,6 +19,14 @@ public enum LaunchdJob {
         return name
     }
 
+    /// The environment for a process this app starts (the relaunch waiter, exec'd children). `XPC_SERVICE_NAME` is
+    /// removed so an orphan of ours, reparented to launchd, cannot be mistaken for the launchd job.
+    public static func childEnvironment(_ environment: [String: String]) -> [String: String] {
+        var env = environment
+        env.removeValue(forKey: "XPC_SERVICE_NAME")
+        return env
+    }
+
     public static func isRunByLaunchd(environment: [String: String], parentPID: Int32 = getppid()) -> Bool {
         jobLabel(environment: environment, parentPID: parentPID) != nil
     }
@@ -43,12 +51,19 @@ public enum TailnetMenuAction: Equatable, Sendable {
     case turnOff
 }
 
+/// The extra action for a mapping that exists but was not set up through this app.
+public enum TailnetManageAction: Equatable, Sendable {
+    case manage
+}
+
 /// The tailnet lines of the menu bar item.
 public struct TailnetMenu: Equatable, Sendable {
     /// "Tailnet access: On" or "Tailnet access: Off"; nil when the Mac has no detected login and it is not on.
     public let stateLine: String?
     public let actionTitle: String?
     public let action: TailnetMenuAction?
+    /// Set only for an existing mapping that this app did not set up: records the opt-in when chosen.
+    public var manageTitle: String? = nil
 }
 
 public enum MenuModel {
@@ -89,7 +104,11 @@ public enum MenuModel {
 
     /// `optedIn`: the stored choice is on but no verified mapping exists (a failed launch re-apply); the line says so
     /// instead of a plain "Off", and the action is "Turn Off" (it clears the choice and removes our own mapping if there is one).
-    public static func tailnetMenu(offered: Bool, publicURL: String?, optedIn: Bool = false) -> TailnetMenu {
+    public static func tailnetMenu(offered: Bool, publicURL: String?, optedIn: Bool = false, existingMapping: Bool = false) -> TailnetMenu {
+        if publicURL != nil, existingMapping, !optedIn {
+            return TailnetMenu(stateLine: "Tailnet access: On (existing mapping, not managed by this app)",
+                               actionTitle: "Turn Off Tailnet Access", action: .turnOff, manageTitle: "Manage with this app")
+        }
         if publicURL != nil {
             return TailnetMenu(stateLine: "Tailnet access: On", actionTitle: "Turn Off Tailnet Access", action: .turnOff)
         }
