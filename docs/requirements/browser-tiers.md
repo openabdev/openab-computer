@@ -232,6 +232,7 @@ callers written for Playwright work unchanged. Unsupported options (for example
   The Chrome text match is locale fragile (V2). When Automation is allowed, a window exists and
   the error is neither a timeout nor a known TCC code, the state is `jsDisabled (suspected)`,
   shown with the raw error class and the same instructions.
+
 - R5.4 The probe runs the real executor path with the real static template and a trivial payload
   (`String(1+1)`) against the front window's active tab. It reads and changes nothing in the page.
 - R5.5 **Probe budget.** A probe runs only on a user click (Allow, Retry, Open Chrome, then once),
