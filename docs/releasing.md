@@ -22,7 +22,12 @@ The installer:
 1. verifies bundle id, code signature and team `6LPQNY95AQ` **before** stopping the running service;
 2. detects the current Tailscale login and MagicDNS name from structured `tailscale status --json`;
 3. installs to `~/.local/oab-computer/oab-computer.app` without re-signing it;
-4. creates a bearer token once at `~/.config/oab-computer/token`, mode 600, and preserves it on updates (a 0.11 token is copied from `~/.config/oab-instance-mcp/token`: the Linux installer copies it whenever the new token does not exist yet, while the macOS installer copies it only when it creates `~/.config/oab-computer`; the old file stays in place, and a token is generated only when no token was copied);
+4. creates a bearer token once at `~/.config/oab-computer/token`, mode 600, and preserves it on updates. A 0.11 token at
+   `~/.config/oab-instance-mcp/token` is copied (cp, never mv; the old file stays in place) by these rules:
+   - macOS: only when this run creates the directory `~/.config/oab-computer`. If that directory already exists nothing is copied,
+     and a new token is generated only if the new token file does not exist. `FirstRunSetup.swift` applies the same one-shot rule.
+   - Linux: whenever `~/.config/oab-computer/token` is missing; a token is generated only when neither file has one.
+   - Either platform: a user who never had an old token gets a new one and must update clients.
 5. writes/starts the Aqua-user LaunchAgent `dev.openab.computer`;
 6. adds the Playwright upstream when `dev.openab.computer.pw-mcp` is installed; and
 7. configures `tailscale serve --https=8444` to loopback port 8795.

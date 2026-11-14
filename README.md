@@ -571,7 +571,7 @@ To upgrade:
 3. The bearer token is copied automatically from `~/.config/oab-instance-mcp/token` to
    `~/.config/oab-computer/token`, mode 600, and the old file stays in place. macOS: the copy happens when the
    new config directory is first created. Linux: `install-linux.sh` copies whenever
-   `~/.config/oab-computer/token` does not exist yet. An existing new token is never overwritten. A new token is generated only when neither file exists, so if you deleted the old file or never had one, update your clients with the new token.
+   `~/.config/oab-computer/token` does not exist yet. If `~/.config/oab-computer` already exists on macOS, nothing is copied and a new token is generated when the token file is missing. An existing new token is never overwritten. On Linux a new token is generated only when neither file exists. A user who never had an old token gets a new one and must update their clients.
 4. Not migrated, so redo them by hand, but only after the new installer or app has run once so that `~/.config/oab-computer` exists: switchboard settings (`switchboard.url`, `switchboard.secret`,
    `switchboard.profile`, `switchboard.secure-set-value`), saved grants and their Keychain secrets (lend again),
    logs and audit files (on Linux, grants and audit under `~/.local/state/oab-instance-mcp` stay there too). You may copy the switchboard files, logs and audit files from the old directory
