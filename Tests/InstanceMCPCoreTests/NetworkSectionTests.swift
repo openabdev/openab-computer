@@ -84,20 +84,20 @@ final class NetworkSectionTests: XCTestCase {
         let generic = "https://example.com/mcp"
         XCTAssertNil(MenuModel.configuredPublicURL(publicURL: local, localURL: local))
         XCTAssertEqual(MenuModel.configuredPublicURL(publicURL: generic, localURL: local), generic)
-        XCTAssertEqual(MenuModel.tailnetStateWithoutExposure(publicURL: generic), .off)
+        XCTAssertEqual(MenuModel.tailnetStateWithoutExposure(publicURL: generic), .unknown)
         let s = MenuModel.networkSection(bindHost: "127.0.0.1", bindPort: 8795, path: "/mcp", upstreams: [],
                                          tailnet: MenuModel.tailnetStateWithoutExposure(publicURL: generic),
                                          switchboard: nil, liveGrants: 0, attachEnabled: true, publicURL: generic)
         XCTAssertEqual(text(s, .publicURL), "Public URL: https://example.com/mcp (as configured with --public-url, not checked)")
-        XCTAssertEqual(text(s, .tailnet), "Tailnet: Off")
+        XCTAssertEqual(text(s, .tailnet), "Tailnet: unknown (Tailscale status unreadable)")
         XCTAssertFalse(s.rows.contains { $0.text.contains("existing mapping") })
         XCTAssertFalse(s.rows.contains { $0.text.contains("Bearer") || $0.text.lowercased().contains("token") })
     }
 
     func testTailnetLookingPublicURLWithoutServeStateDoesNotClaimOn() {
         XCTAssertEqual(MenuModel.tailnetStateWithoutExposure(publicURL: "https://h.t.ts.net:9443/mcp"), .unknown)
-        XCTAssertEqual(MenuModel.tailnetStateWithoutExposure(publicURL: "https://evil.ts.net.example.com/mcp"), .off)
-        XCTAssertEqual(MenuModel.tailnetStateWithoutExposure(publicURL: nil), .off)
+        XCTAssertEqual(MenuModel.tailnetStateWithoutExposure(publicURL: "https://evil.ts.net.example.com/mcp"), .unknown)
+        XCTAssertEqual(MenuModel.tailnetStateWithoutExposure(publicURL: nil), .unknown)
     }
 
     func testConfirmingServeStateClaimsOn() {

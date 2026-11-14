@@ -291,7 +291,7 @@ your user can.
   one launch re-apply of a choice you already made, and for one safety removal: when no Tailscale
   login is detected and no `--allow-login` is configured, at launch and on its recheck, it runs `tailscale serve --https=8444 off` if
   `:8444` still maps to this app, because the bearer token alone would then guard that path.
-- Nothing in the menu's Network section probes a port or changes a setting. The rows are read from
+- Nothing in the menu's Network section probes a port or changes a setting, except the explicit tailnet actions the menu offers. The rows are read from
   the app's own state.
 - On the switchboard path it dials out and opens no extra listener.
 
@@ -313,7 +313,7 @@ token stops a forged header. Keep the default, and always set a token.
 
 ### What the menu shows
 
-The menu bar item has a **Network** section with one row for each of the items above. The rows come
+The menu bar item has a **Network** section with one row for each of the app's own listener and connections described above. The rows come
 from the app's own state (its `--host`, `--port` and `--upstream` options, its tailnet record and its
 attach manager), not from a port scan. The menu connects to nothing to fill them in. When it cannot
 tell, it says so: "Tailnet: unknown (Tailscale status unreadable)" rather than "Off". Example:

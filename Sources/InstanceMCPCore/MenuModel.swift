@@ -185,12 +185,11 @@ extension MenuModel {
         publicURL == localURL ? nil : publicURL
     }
 
-    /// Tailnet state when the app has no Tailscale state of its own (an installer owns another port). A
-    /// tailnet-looking `--public-url` without a confirming `serve status` is unknown, never On; anything else is Off.
+    /// Tailnet state when the app has no Tailscale state of its own (an installer owns another port). Nothing
+    /// confirms or rules out a mapping to this app, so it is unknown, never Off. A --public-url stays on its
+    /// own unchecked Public URL row.
     public static func tailnetStateWithoutExposure(publicURL: String?) -> NetworkTailnetState {
-        guard let host = publicURL.flatMap({ URL(string: $0)?.host?.lowercased() }), host.hasSuffix(".ts.net")
-        else { return .off }
-        return .unknown
+        .unknown
     }
 
     /// An installer launch (allow list, so not token-only) whose Tailscale login could not be read: the tailnet
