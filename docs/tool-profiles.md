@@ -74,8 +74,12 @@ Linux has no `osascript`, and no `ui_snapshot` or `ui_action` yet (AT-SPI versio
 [#102](https://github.com/openabdev/openab-computer/issues/102)). `bash` is the counterpart of macOS `exec`; the four job tools have
 the same names and contract on both (#32 item 4).
 
-`owner` gets every upstream tool, so a tool that Playwright adds later appears under `owner`
-without a code change. The browser runs with the computer's **persistent profile**, including
+On macOS, `owner` gets the 32 `browser_*` tools in `BrowserToolCatalog`, served by the browser
+router (`--upstream browser=URL` is its external Playwright; the URL host must be the literal
+`127.0.0.1` or `::1`, redirects are refused, and the listener's owner uid must equal the daemon's).
+A tool Playwright adds later is filtered out until the catalog, `profile_vectors.json` and the
+tests are updated together (R1.5). Linux still passes every upstream tool through. Other
+`--upstream name=URL` upstreams keep the old rule: `owner` gets every tool they offer. The browser runs with the computer's **persistent profile**, including
 cookies for sites it is logged in to, and it reaches whatever network the computer reaches,
 localhost and the tailnet included. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary
 JavaScript in that profile.

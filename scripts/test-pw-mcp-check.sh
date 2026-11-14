@@ -28,6 +28,14 @@ fi
 echo "guard ok: no tailscale serve call under $DIR"
 [ -n "${1:-}" ] && exit 0
 
+# R7.5.6: the browser backend code never mentions tailscale (it must not map 8794 or 8443).
+BROWSER_DIR="$ROOT/Sources/InstanceMCPCore/Browser"
+if [ -d "$BROWSER_DIR" ] && grep -rIil tailscale "$BROWSER_DIR" >/dev/null; then
+  echo "FAIL: tailscale mentioned under $BROWSER_DIR (R7.5.6):" >&2
+  grep -rIil tailscale "$BROWSER_DIR" >&2; exit 1
+fi
+echo "guard ok: no tailscale under Sources/InstanceMCPCore/Browser"
+
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir "$T/bin"
 stub() { # $1 = mode

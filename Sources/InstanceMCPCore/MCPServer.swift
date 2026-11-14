@@ -20,9 +20,15 @@ public struct MCPServer: Sendable {
     /// filtered by `scoped(to:)`; upstream lists are dynamic, so the filter has
     /// to travel with the server.
     public let upstreamFilter: ToolProfile?
+    /// Serves the `browser_*` tools from the active tier, after local tools and generic
+    /// upstreams. Names outside `BrowserToolCatalog` are never routed.
+    public let browser: BrowserRouter?
+    /// Set per request by `withBrowserConnection`.
+    public let browserConnection: BrowserConnection
 
     public init(name: String, version: String, instructions: String? = nil, tools: [any Tool],
-                upstreams: [UpstreamMCP] = [], upstreamFilter: ToolProfile? = nil) {
+                upstreams: [UpstreamMCP] = [], upstreamFilter: ToolProfile? = nil,
+                browser: BrowserRouter? = nil, browserConnection: BrowserConnection = .init(key: "default")) {
         self.serverName = name
         self.serverVersion = version
         self.instructions = instructions
@@ -32,6 +38,25 @@ public struct MCPServer: Sendable {
         self.toolOrder = tools.map(\.name)
         self.upstreams = upstreams
         self.upstreamFilter = upstreamFilter
+        self.browser = browser
+        self.browserConnection = browserConnection
+    }
+
+    /// The same server for one connection: the key identifies it for the router's identity guard,
+    /// `override` is the `OAB-Browser-Backend` header (nil on paths that carry none).
+    public func withBrowserConnection(key: String, override: BrowserPreference? = nil) -> MCPServer {
+        MCPServer(name: serverName, version: serverVersion, instructions: instructions, tools: allTools,
+                  upstreams: upstreams, upstreamFilter: upstreamFilter, browser: browser,
+                  browserConnection: BrowserConnection(key: key, override: override))
+    }
+
+    /// Router tools visible under the profile filter.
+    private func browserTools() async -> [JSONValue] {
+        guard let browser else { return [] }
+        return await browser.tools(browserConnection).filter {
+            guard let n = $0["name"]?.stringValue else { return false }
+            return tools[n] == nil && (upstreamFilter?.allows(n) ?? true)
+        }
     }
 
     /// Upstream tools visible under the current filter, as `Tool`s.
@@ -112,6 +137,7 @@ public struct MCPServer: Sendable {
         case "tools/list":
             var list = toolOrder.compactMap { tools[$0]?.descriptor }
             list += await upstreamTools().map(\.descriptor)
+            list += await browserTools()
             return ["tools": .array(list)]
 
         case "tools/call":
@@ -123,6 +149,9 @@ public struct MCPServer: Sendable {
                 resolved = await upstreamTools().first { $0.name == name }
             }
             guard let tool = resolved else {
+                if let browser, BrowserToolCatalog.allNameSet.contains(name), upstreamFilter?.allows(name) ?? true {
+                    return await browser.call(name, arguments: req.params?["arguments"] ?? [:], browserConnection)
+                }
                 throw JSONRPCError.invalidParams("unknown tool: \(name)")
             }
             let args = req.params?["arguments"] ?? [:]

@@ -2,10 +2,11 @@ import Foundation
 import XCTest
 @testable import InstanceMCPCore
 
-/// #59: the browser is owner-level. Against an upstream that serves the full
-/// `browser_*` fixture from `conformance/profile_vectors.json` (plus tools that are
-/// not in it), `owner` lists and reaches every one through the real `tools/list` /
-/// `tools/call` path, and `observe` lists none and reaches none.
+/// #59: the browser is owner-level. The `browser_*` tools now go through the `BrowserRouter`:
+/// against a backend that serves the full fixture from `conformance/profile_vectors.json` (plus
+/// a name that is not in the catalog), `owner` lists and reaches the 32 catalog names through the
+/// real `tools/list` / `tools/call` path, the unknown name is filtered (R1.5), and `observe`
+/// lists none and reaches none. A generic upstream not named `browser` keeps the old rule.
 final class BrowserProfileTests: XCTestCase {
     private func fixture() throws -> (listed: [String], unlisted: [String]) {
         let doc = try loadConformanceVector("profile_vectors.json")
@@ -14,7 +15,7 @@ final class BrowserProfileTests: XCTestCase {
     }
 
     private func server(_ up: FakeUpstream, _ profile: ToolProfile) -> MCPServer {
-        let u = UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:\(up.port)/mcp")!)
+        let u = UpstreamMCP(name: "generic", url: URL(string: "http://127.0.0.1:\(up.port)/mcp")!)
         return MCPServer(name: "t", version: "0", tools: ToolCatalog.local(agentVersion: "test"), upstreams: [u])
             .scoped(to: profile)
     }
@@ -58,5 +59,22 @@ final class BrowserProfileTests: XCTestCase {
             XCTAssertTrue(r?.error?.message.contains("unknown tool") == true, tool)
         }
         XCTAssertTrue(up.calls.isEmpty, "no observe call reached the upstream: \(up.calls)")
+    }
+
+    func testRouterServesTheFixtureToOwnerAndFiltersUnknownNames() async throws {
+        let (listed, unlisted) = try fixture()
+        let b = FakeBrowserBackend(.playwright, names: listed + unlisted)
+        let router = BrowserRouter(playwright: b, store: MemoryPreferenceStore())
+        let owner = MCPServer(name: "t", version: "0", tools: ToolCatalog.local(agentVersion: "test"), browser: router)
+            .scoped(to: .owner)
+        let names = Set(try await list(owner))
+        XCTAssertTrue(Set(listed).isSubset(of: names))
+        XCTAssertTrue(names.isDisjoint(with: unlisted), "unknown browser_* names must be filtered")
+        for tool in listed { let r = try await call(owner, tool); XCTAssertNil(r?.error, tool) }
+        for tool in unlisted {
+            let r = try await call(owner, tool)
+            XCTAssertEqual(r?.error?.code, JSONRPCError.invalidParams, tool)
+        }
+        XCTAssertEqual(Set(b.calls), Set(listed))
     }
 }
