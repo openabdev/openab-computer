@@ -6,17 +6,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="${1:-$ROOT/poc/pw-mcp}"
 
-# Any `tailscale|$TS|$cli serve ...` call under the dir fails, whatever port or variable it names,
-# except the read-only `serve status` and the documented removal `serve --https=8443 off`.
-# Backslash continuations are joined first, the allowed forms are cut out of each logical line
+# Any `tailscale|$TS|$cli serve|funnel ...` call under the dir fails, whatever port or variable it
+# names, except the read-only `serve status`. The removal command `serve --https=8443 off` is
+# allowed only as text inside the `cat <<'MSG' ... MSG` warning heredoc, never as a call.
+# Backslash continuations are joined first, the heredoc body and `serve status` are cut out
 # (so they cannot hide a second call on the same line), and comment lines are skipped.
 # Scanned: every file except *.md (the README may describe the old mapping).
 hits=""
 while IFS= read -r f; do
-  out=$(awk '/\\$/ { sub(/\\$/, ""); buf = buf $0; next } { print FNR ": " buf $0; buf = "" }' "$f" \
+  out=$(awk 'skip { if ($0 == "MSG") skip = 0; next }
+      /^[[:space:]]*cat <<.?MSG.?[[:space:]]*$/ { skip = 1; next }
+      /\\$/ { sub(/\\$/, ""); buf = buf $0; next } { print FNR ": " buf $0; buf = "" }' "$f" \
     | grep -vE '^[0-9]+:[[:space:]]*#' \
-    | sed -e 's/serve status//g' -e 's/serve --https=8443 off//g' \
-    | grep -E '(tailscale|Tailscale|\$[{]?[A-Za-z_]+[}]?"?)[[:space:]]+"?serve([[:space:]"]|$)' || true)
+    | sed -e 's/serve status//g' \
+    | grep -E '(tailscale|Tailscale|\$[{]?[A-Za-z_]+[}]?"?)[[:space:]]+"?(serve|funnel)([[:space:]"]|$)' || true)
   [ -n "$out" ] && hits="$hits$f: $out"$'\n'
 done < <(find "$DIR" -type f ! -name '*.md')
 if [ -n "$hits" ]; then

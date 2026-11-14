@@ -497,7 +497,7 @@ oab-instance-mcp --token-file ~/.config/oab-computer/token \
 ### Browser tools for lent sessions (`--upstream`)
 
 The sandbox has no path to any browser, so browser control is served **from this Mac**: with
-`--upstream browser=http://127.0.0.1:8794/mcp` (deploy.sh adds it when the Playwright MCP
+`--upstream browser=http://127.0.0.1:8794/mcp` (the installer adds it when the Playwright MCP
 LaunchAgent from [`poc/pw-mcp`](poc/pw-mcp/README.md) is installed) the daemon re-serves
 Playwright's tools under its own `tools/list`, filtered by the connection's profile:
 
