@@ -19,7 +19,7 @@
 > 127.0.0.1:8795, behind `tailscale serve --https=8444`. Never print or paste the bearer token.
 > ```
 
-**Status.** Written from the live VM `oracle-vm`, checked with read-only commands and one
+**Status.** Written from the live VM `<oracle-host>`, checked with read-only commands and one
 handshake over the tailnet. Where the VM differs from the earlier investigation, this page
 describes the VM. Section 9 lists the differences.
 
@@ -44,7 +44,7 @@ node by URL and bearer token. Connect then lends the node to a live openab-pty s
 dials back into that session's runtime, and the agent in the session calls the lent tools.
 
 ```
- OpenAB Connect (Mac)                  tailnet                    Oracle A1 VM (oracle-vm)
+ OpenAB Connect (Mac)                  tailnet                    Oracle A1 VM (<oracle-host>)
  ────────────────────                                             ─────────────────────────────────────────────
  computer entry ── HTTPS /mcp ──► tailscale serve :8444 ──► 127.0.0.1:8795  oab-instance-mcp   (user oabmcp)
  lend sheet ────── POST /attach ─►                                 │  /mcp  /attach  /healthz
@@ -93,7 +93,7 @@ Use an Ubuntu 24.04 image. The v0.8.0 arm64 binary needs glibc 2.39, which Ubunt
 ### 2.2 Tailscale
 
 1. Install Tailscale (see `docs/linux-setup.md`, section 1). The reference VM runs `tailscale` 1.104.4.
-2. Join the tailnet with a hostname you will recognize. The reference node is `oracle-vm`.
+2. Join the tailnet with a hostname you will recognize. The reference node is `<oracle-host>`.
 3. In the admin console, enable **MagicDNS** and **HTTPS Certificates**. Without HTTPS
    certificates, `tailscale serve --https` fails.
 4. Prerequisite, not done: tag the node in the admin console before you rely on `owner` over the
@@ -547,7 +547,7 @@ issues or email.
 
 | Field | Value |
 |---|---|
-| Name | `oracle-vm` (any label works) |
+| Name | `<oracle-host>` (any label works) |
 | URL | `https://<node>.<tailnet>.ts.net:8444/mcp` |
 | Token | The content of `<token-file>`. Paste it, then clear the clipboard. |
 
@@ -558,7 +558,7 @@ computer**.
 
 | Field | Choice |
 |---|---|
-| Computer | `oracle-vm` |
+| Computer | `<oracle-host>` |
 | Profile | `observe` for any session that reads untrusted content. Use `owner` only for trusted tasks (section 5). |
 | Lease | 1 to 24 hours |
 
@@ -581,7 +581,7 @@ you chose. For `observe`, that is `sys_info` and `screenshot` only.
 
 1. Generate a new value in the same file with the command in 3.7. The file is replaced in place.
 2. Restart the daemon (7.3). The daemon reads the token file at start.
-3. In Connect, edit the `oracle-vm` computer and paste the new token.
+3. In Connect, edit the `<oracle-host>` computer and paste the new token.
 
 Connect cannot reach the node until its stored token matches the file again. Rotation was not run on
 the reference VM. These steps follow the installer's generation command and the daemon's start-time

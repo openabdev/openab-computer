@@ -309,7 +309,7 @@ final class FirstRunSetupTests: XCTestCase {
 
     func testTailscaleLoginIsReadTheSameWayTheInstallerReadsIt() {
         let json = """
-        {"Self":{"DNSName":"mac.tailb836bb.ts.net.","UserID":12345},
+        {"Self":{"DNSName":"mac.tail1234.ts.net.","UserID":12345},
          "User":{"12345":{"LoginName":"owner@example.com"}}}
         """
         XCTAssertEqual(FirstRunSetup.tailscaleLogin(statusJSON: Data(json.utf8)), "owner@example.com")

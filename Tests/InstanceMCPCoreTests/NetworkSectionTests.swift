@@ -26,7 +26,7 @@ final class NetworkSectionTests: XCTestCase {
 
     func testLoopbackHostTable() {
         for h in ["127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", "LocalHost"] { XCTAssertTrue(MenuModel.isLoopbackHost(h), h) }
-        for h in ["0.0.0.0", "::", "192.168.0.5", "", "127.0.0", "127.0.0.1.5", "128.0.0.1", "example.com", "127.0.0.300"] {
+        for h in ["0.0.0.0", "::", "192.0.2.5", "", "127.0.0", "127.0.0.1.5", "128.0.0.1", "example.com", "127.0.0.300"] {
             XCTAssertFalse(MenuModel.isLoopbackHost(h), h)
         }
     }
@@ -40,7 +40,7 @@ final class NetworkSectionTests: XCTestCase {
         XCTAssertEqual(open.rows[0].copyValue, "http://0.0.0.0:8795/mcp")
         XCTAssertEqual(text(section(host: "::1"), .localMCP), "Local MCP: http://[::1]:8795/mcp (this Mac only)")
         XCTAssertTrue(text(section(host: "::"), .localMCP)!.contains("reachable from other devices"))
-        XCTAssertFalse(text(section(host: "192.168.0.5"), .localMCP)!.contains("this Mac only"))
+        XCTAssertFalse(text(section(host: "192.0.2.5"), .localMCP)!.contains("this Mac only"))
     }
 
     func testEachTailnetState() {
@@ -136,8 +136,8 @@ final class NetworkSectionTests: XCTestCase {
                        "Browser tools: 127.0.0.1:8794 (separate process, this Mac only)")
         XCTAssertEqual(text(section(upstreams: [upstream("browser", "http://example.com:8794/mcp")]), .browser),
                        "Browser tools: example.com:8794 (remote)")
-        XCTAssertEqual(text(section(upstreams: [upstream("browser", "http://192.168.0.9:8794/mcp")]), .browser),
-                       "Browser tools: 192.168.0.9:8794 (remote)")
+        XCTAssertEqual(text(section(upstreams: [upstream("browser", "http://192.0.2.9:8794/mcp")]), .browser),
+                       "Browser tools: 192.0.2.9:8794 (remote)")
     }
 
     func testReverseAttachRow() {

@@ -112,7 +112,7 @@ final class RelaunchPolicyTests: XCTestCase {
         RelaunchPolicy.decide(child: child, processGranted: processGranted, userConfirmedEnabled: confirmed)
     }
 
-    /// The Muse-style flow: the user turns it on and picks Later in the macOS dialog. The check mark appears and
+    /// The reported flow: the user turns it on and picks Later in the macOS dialog. The check mark appears and
     /// nothing relaunches at that moment.
     func testCheckMarkAppearsWhenTheChildSaysGrantedWithoutAnyRelaunch() {
         XCTAssertEqual(RelaunchPolicy.shownScreenRecording(process: .denied, child: .granted), .granted)

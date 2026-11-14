@@ -26,6 +26,18 @@ jobs:
           globs: |
             docs/**/*.md
 
+  no-private-identifiers:
+    name: No private identifiers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: ShellCheck
+        run: shellcheck scripts/check-no-private-identifiers.sh scripts/test-check-no-private-identifiers.sh
+      - name: Repo is clean, and the check fails on a forbidden pattern
+        run: |
+          bash scripts/check-no-private-identifiers.sh
+          bash scripts/test-check-no-private-identifiers.sh
+
   pw-mcp-loopback:
     name: Playwright MCP stays on loopback (#115)
     runs-on: ubuntu-latest

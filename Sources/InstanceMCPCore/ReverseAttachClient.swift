@@ -79,7 +79,7 @@ public actor ReverseAttachClient {
     }
 
     public struct Config: Sendable {
-        /// `ws://` or `wss://` base of the runtime, e.g. `ws://100.111.174.31:8090`.
+        /// `ws://` or `wss://` base of the runtime, e.g. `ws://100.64.0.2:8090`.
         public var runtime: URL
         public var session: String
         public var secret: String

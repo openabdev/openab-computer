@@ -56,7 +56,7 @@ final class MenuModelTests: XCTestCase {
     }
 
     func testAForeignInheritedJobLabelIsNotThisAppsLaunchdJob() {
-        let foreign = ["XPC_SERVICE_NAME": "actions.runner.oablab.macmini-oablab"]
+        let foreign = ["XPC_SERVICE_NAME": "actions.runner.oablab.runner-1"]
         XCTAssertNil(LaunchdJob.jobLabel(environment: foreign))
         XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: foreign))
         // Quit then boots nothing out; it just exits.
