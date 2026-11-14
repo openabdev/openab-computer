@@ -526,7 +526,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return MenuModel.networkSection(
             bindHost: bindHost, bindPort: bindPort, path: path, upstreams: upstreams, tailnet: tailnetState,
             switchboard: switchboardSupervisor == nil ? nil : switchboardRowInput(),
-            liveGrants: lastGrantCount, attachEnabled: attachEnabled, publicURL: externalPublicURL)
+            liveGrants: lastGrantCount, attachEnabled: attachEnabled)
     }
 
     /// Update the Tailnet, Switchboard and Reverse attach rows in place from the single model function.
@@ -534,7 +534,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let section = currentNetworkSection()
         for row in section.rows {
             switch row.kind {
-            case .tailnet: tailnetRowItem?.title = row.text; tailnetRowItem?.representedObject = row.copyValue
+            case .tailnet:
+                tailnetRowItem?.title = row.text
+                tailnetRowItem?.representedObject = row.copyValue
+                tailnetRowItem?.target = self
+                tailnetRowItem?.action = row.copyValue == nil ? nil : #selector(copyRow(_:))
+                tailnetRowItem?.toolTip = row.copyValue == nil ? nil : "Click to copy"
             case .switchboard: switchboardTitleItem?.title = row.text
             case .reverseAttach: attachRowItem?.title = row.text
             default: break

@@ -325,7 +325,7 @@ The menu bar item has a **Network** section with one row for each of the app's o
 from the app's own state (its `--host`, `--port` and `--upstream` options, its tailnet record and its
 attach manager), not from a port scan. The menu connects to nothing to fill them in. When it cannot
 tell, it says so. The Tailnet row reads "checking…" from launch until the first `serve status` read
-finishes, then "Off", "On" or "unknown (not checked by this app)"; it never shows "Off" before that read.
+finishes, then "Off", "On" or "unknown (Tailscale status unreadable)"; it never shows "Off" before that read.
 Example:
 
 ```
@@ -338,10 +338,11 @@ Reverse attach: 0 live grants
 ```
 
 The Tailnet row comes only from Tailscale state (the read-only `serve status` result and your stored
-choice), never from `--public-url`. A `--public-url` that is not the local URL appears on its own row,
-"Public URL: <url> (as configured with --public-url, not checked)". Whenever the app has no
-Tailscale state (an installer owns another port, or the launch has not yet read `serve status`), the
-Tailnet row reads "unknown", whatever the public URL is.
+choice), never from `--public-url`. A `--public-url` that is not the local URL is shown only on the top URL line. When the app has no
+Tailscale state of its own (an installer owns another port), the Tailnet row reads "unknown (not
+checked by this app)", whatever the public URL is. The Browser tools row says "this Mac only" about
+the app's own `--upstream` address; a separate `:8443` Playwright mapping, if you made one, is
+described in the table above.
 
 Clicking the Local MCP row or the Tailnet URL copies it. Tailnet can also read "Off", "On (existing
 mapping, not managed by this app), <url>" or "opted in, not applied (see the log)". Browser tools

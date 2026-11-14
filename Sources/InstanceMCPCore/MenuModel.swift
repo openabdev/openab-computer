@@ -133,8 +133,10 @@ public enum NetworkTailnetState: Equatable, Sendable {
     case optedInNotApplied
     /// The launch's first serve-status read has not finished: no definite value yet.
     case checking
-    /// Tailscale status could not be read, so "Off" would be a guess.
+    /// Tailscale status was read and could not be understood, so "Off" would be a guess.
     case unknown
+    /// The app has no Tailscale state of its own (an installer owns another port); it checked nothing.
+    case notChecked
 }
 
 public struct NetworkUpstream: Equatable, Sendable {
@@ -194,7 +196,7 @@ extension MenuModel {
     /// confirms or rules out a mapping to this app, so it is unknown, never Off. A --public-url stays on its
     /// own unchecked Public URL row.
     public static func tailnetStateWithoutExposure(publicURL: String?) -> NetworkTailnetState {
-        .unknown
+        .notChecked
     }
 
     /// An installer launch (allow list, so not token-only) whose Tailscale login could not be read: the tailnet
@@ -239,6 +241,8 @@ extension MenuModel {
         case .optedInNotApplied:
             rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: opted in, not applied (see the log)", copyValue: nil))
         case .unknown:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: unknown (Tailscale status unreadable)", copyValue: nil))
+        case .notChecked:
             rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: unknown (not checked by this app)", copyValue: nil))
         case .checking:
             rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: checking…", copyValue: nil))
