@@ -6,7 +6,7 @@ DNSNAME="${TS_DNSNAME:-$(/Applications/Tailscale.app/Contents/MacOS/Tailscale st
 cd "$BASE/pw-mcp"
 exec ./node_modules/.bin/playwright-mcp \
   --host 127.0.0.1 --port 8794 \
-  --allowed-hosts "$DNSNAME,$DNSNAME:8443,127.0.0.1,localhost" \
+  --allowed-hosts "$DNSNAME,127.0.0.1,localhost" \
   --user-data-dir "$BASE/pw-profile" \
   --output-dir "$BASE/pw-output" \
   --idle-timeout 1800000 \

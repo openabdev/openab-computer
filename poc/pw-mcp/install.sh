@@ -8,8 +8,8 @@ LABEL=dev.openab.instance-mcp.pw-mcp
 BASE="$HOME/.local/oab-instance-mcp"
 LOGS="$HOME/Library/Logs/oab-instance-mcp"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
-# shellcheck source=check-legacy-mapping.sh
+TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale # read by warn_legacy_8443_mapping
+# shellcheck source=check-legacy-mapping.sh disable=SC2034
 . "$HERE/check-legacy-mapping.sh"
 
 mkdir -p "$BASE/pw-mcp" "$LOGS"

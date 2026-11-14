@@ -6,14 +6,23 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="${1:-$ROOT/poc/pw-mcp}"
 
-# Allowed: the read-only `serve status`, the documented removal `serve --https=8443 off`, and
-# comment lines. Only *.sh files are scanned (the README may describe the old mapping). Everything else that runs `serve` against 8794/8443 fails.
-hits=$(grep -rnE --include='*.sh' '(tailscale|\$\{?TS\}?"?|Tailscale)[^#]* serve[^#]*(8794|8443)' "$DIR" \
-  | grep -vE 'serve --https=8443 off|serve status|^[^:]+:[0-9]+:[[:space:]]*#' || true)
+# Any `tailscale|$TS|$cli serve ...` call under the dir fails, whatever port or variable it names,
+# except the read-only `serve status` and the documented removal `serve --https=8443 off`.
+# Backslash continuations are joined first, the allowed forms are cut out of each logical line
+# (so they cannot hide a second call on the same line), and comment lines are skipped.
+# Scanned: every file except *.md (the README may describe the old mapping).
+hits=""
+while IFS= read -r f; do
+  out=$(awk '/\\$/ { sub(/\\$/, ""); buf = buf $0; next } { print FNR ": " buf $0; buf = "" }' "$f" \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | sed -e 's/serve status//g' -e 's/serve --https=8443 off//g' \
+    | grep -E '(tailscale|Tailscale|\$[{]?[A-Za-z_]+[}]?"?)[[:space:]]+"?serve([[:space:]"]|$)' || true)
+  [ -n "$out" ] && hits="$hits$f: $out"$'\n'
+done < <(find "$DIR" -type f ! -name '*.md')
 if [ -n "$hits" ]; then
-  echo "FAIL: tailscale serve targeting 8794/8443 under $DIR (#115):" >&2; echo "$hits" >&2; exit 1
+  echo "FAIL: tailscale serve call under $DIR (#115):" >&2; printf '%s' "$hits" >&2; exit 1
 fi
-echo "guard ok: no tailscale serve to 8794/8443 under $DIR"
+echo "guard ok: no tailscale serve call under $DIR"
 [ -n "${1:-}" ] && exit 0
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -31,7 +40,7 @@ esac
 STUB
   chmod +x "$T/bin/tailscale"
 }
-# shellcheck source=../poc/pw-mcp/check-legacy-mapping.sh
+# shellcheck source=../poc/pw-mcp/check-legacy-mapping.sh disable=SC2034
 . "$ROOT/poc/pw-mcp/check-legacy-mapping.sh"
 run() { # $1 = mode, $2 = expected substring
   local out; TS=/nonexistent; rm -f "$T/bin/tailscale"; [ "$1" = missing ] || stub "$1"

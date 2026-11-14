@@ -79,9 +79,8 @@ Latency is not the bottleneck; the LLM round trip is. Good enough for the thin-e
 ## Gotchas (each cost a restart)
 
 1. **`--allowed-hosts` is an exact string match on the `Host` header, port included.**
-   `127.0.0.1` does not cover `127.0.0.1:8794`. List every form a client will send. (The
-   wrapper still lists a `<host>.<tailnet>.ts.net:8443` form left over from the removed mapping.
-   It opens nothing: the listener is loopback only.)
+   `127.0.0.1` does not cover `127.0.0.1:8794`. List every form a client will send.
+   (oab-instance-mcp sends the bare `127.0.0.1`, which the wrapper allows.)
 2. **Default browser channel is `chrome`, not bundled Chromium.** Without
    `--browser chromium` the first tool call fails with
    `Chromium distribution 'chrome' is not found at /Applications/Google Chrome.app`. The
