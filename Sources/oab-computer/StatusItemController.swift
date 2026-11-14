@@ -73,6 +73,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let path: String
     private let upstreams: [NetworkUpstream]
     private let attachEnabled: Bool
+    private let browserReport: (@Sendable () async -> BrowserReport)?
+    /// Last known browser state. Refreshed from `peekStatus` (never starts the child) when the menu opens.
+    private var browserState: NetworkBrowser?
+    private var browserRowItem: NSMenuItem?
     private var grantRowItems: [NSMenuItem] = []
     private var grantTimer: Timer?
     private static let timeFormatter: DateFormatter = {
@@ -91,6 +95,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
          exposure: TailnetExposure? = nil,
          bindHost: String = "127.0.0.1", bindPort: Int = 8795, path: String = "/mcp",
          upstreams: [NetworkUpstream] = [], attachEnabled: Bool = true,
+         browserReport: (@Sendable () async -> BrowserReport)? = nil,
          environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.exposure = exposure
         self.bindHost = bindHost
@@ -98,6 +103,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.path = path
         self.upstreams = upstreams
         self.attachEnabled = attachEnabled
+        self.browserReport = browserReport
         self.launchdJobLabel = LaunchdJob.jobLabel(environment: environment)
         self.version = version
         self.url = url
@@ -349,8 +355,22 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     // MARK: menu
 
+    /// Reads the browser report (last known state; it never starts the child) and redraws the Browser tools row.
+    func refreshBrowserState() {
+        guard let browserReport else { return }
+        Task { [weak self] in
+            let r = await browserReport()
+            await MainActor.run {
+                guard let self else { return }
+                self.browserState = NetworkBrowser(report: r)
+                self.refreshSwitchboardTitle()
+            }
+        }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         menu.removeAllItems()
+        refreshBrowserState()
         refreshPermissionStatus()
 
         menu.addItem(label("OpenAB Computer \(version)"))
@@ -370,6 +390,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         switchboardTitleItem = nil
         attachRowItem = nil
         tailnetRowItem = nil
+        browserRowItem = nil
         for row in section.rows {
             if row.kind == .reverseAttach && attachEnabled && attach == nil { continue }
             let item = label(row.text, action: row.copyValue == nil ? nil : #selector(copyRow(_:)),
@@ -379,6 +400,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             switch row.kind {
             case .switchboard: switchboardTitleItem = item
             case .reverseAttach: attachRowItem = item
+            case .browser: browserRowItem = item
             case .tailnet: tailnetRowItem = item; addTailnetActions(tailnet)
             default: break
             }
@@ -526,7 +548,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return MenuModel.networkSection(
             bindHost: bindHost, bindPort: bindPort, path: path, upstreams: upstreams, tailnet: tailnetState,
             switchboard: switchboardSupervisor == nil ? nil : switchboardRowInput(),
-            liveGrants: lastGrantCount, attachEnabled: attachEnabled)
+            liveGrants: lastGrantCount, attachEnabled: attachEnabled, browser: browserState)
     }
 
     /// Update the Tailnet, Switchboard and Reverse attach rows in place from the single model function.
@@ -542,6 +564,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 tailnetRowItem?.toolTip = row.copyValue == nil ? nil : "Click to copy"
             case .switchboard: switchboardTitleItem?.title = row.text
             case .reverseAttach: attachRowItem?.title = row.text
+            case .browser: browserRowItem?.title = row.text
             default: break
             }
         }

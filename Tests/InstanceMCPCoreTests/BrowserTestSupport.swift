@@ -11,6 +11,8 @@ final class FakeBrowserBackend: BrowserBackend, @unchecked Sendable {
     private var _names: [String]
     private var _calls: [String] = []
     var failure: BrowserBackendError?
+    private var _statusCalls = 0
+    var statusCalls: Int { lock.withLock { _statusCalls } }
 
     init(_ id: BrowserBackendID, status: BrowserBackendStatus = .ready, names: [String] = BrowserToolCatalog.allNames) {
         self.id = id; _status = status; _names = names
@@ -21,7 +23,7 @@ final class FakeBrowserBackend: BrowserBackend, @unchecked Sendable {
     }
     var calls: [String] { lock.withLock { _calls } }
 
-    func status() async -> BrowserBackendStatus { status_ }
+    func status() async -> BrowserBackendStatus { lock.withLock { _statusCalls += 1 }; return status_ }
     func tools() async -> [JSONValue] {
         lock.withLock { _names }.map { ["name": .string($0), "description": "fake", "inputSchema": ["type": "object"]] }
     }
@@ -47,9 +49,57 @@ final class TestClock: @unchecked Sendable {
     func advance(_ s: TimeInterval) { lock.withLock { now = now.addingTimeInterval(s) } }
 }
 
-struct FakePortOwnerProbe: PortOwnerProbe {
-    var result: PortOwner?
-    func owner(ofLoopbackPort port: UInt16) -> PortOwner? { result }
+final class FakePortOwnerProbe: PortOwnerProbe, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _result: PortOwner?
+    private var _asked: [BrowserUpstreamURL.Endpoint] = []
+    init(result: PortOwner?) { _result = result }
+    var result: PortOwner? {
+        get { lock.withLock { _result } }
+        set { lock.withLock { _result = newValue } }
+    }
+    var asked: [BrowserUpstreamURL.Endpoint] { lock.withLock { _asked } }
+    func owner(of endpoint: BrowserUpstreamURL.Endpoint) -> PortOwner? {
+        lock.withLock { _asked.append(endpoint); return _result }
+    }
+}
+
+/// A BSD loopback listener on a chosen family and port, held open by the test process.
+final class BSDListener {
+    let fd: Int32
+    let port: UInt16
+    init?(v6: Bool, port: UInt16) {
+        let fd = socket(v6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        var ok = false
+        if v6 {
+            var a = sockaddr_in6(); a.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size); a.sin6_family = sa_family_t(AF_INET6)
+            a.sin6_port = port.bigEndian; a.sin6_addr = in6addr_loopback
+            ok = withUnsafePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) } } == 0
+        } else {
+            var a = sockaddr_in(); a.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); a.sin_family = sa_family_t(AF_INET)
+            a.sin_port = port.bigEndian; a.sin_addr.s_addr = UInt32(0x7f000001).bigEndian
+            ok = withUnsafePointer(to: &a) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } } == 0
+        }
+        guard ok, listen(fd, 4) == 0 else { Darwin.close(fd); return nil }
+        self.fd = fd; self.port = port
+    }
+    deinit { Darwin.close(fd) }
+
+    /// A free port on both families (v4 listener returned, v6 left to the caller), or nil.
+    static func freePort() -> UInt16? {
+        for _ in 0..<50 {
+            let p = UInt16.random(in: 40000...60000)
+            if let a = BSDListener(v6: false, port: p), let b = BSDListener(v6: true, port: p) { _ = (a, b); return p }
+        }
+        return nil
+    }
+}
+
+/// The built helper next to the test bundle.
+func fakeServerPath() -> String {
+    let bundle = Bundle.allBundles.first { $0.bundlePath.hasSuffix(".xctest") }!
+    return bundle.bundleURL.deletingLastPathComponent().appendingPathComponent("FakeMCPStdioServer").path
 }
 
 /// A loopback HTTP server whose handler decides every reply; counts requests and keeps bodies.

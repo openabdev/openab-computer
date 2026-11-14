@@ -28,12 +28,26 @@ public struct BrowserBackendError: Error, Equatable, Sendable {
 /// Events tier in Phase 2; the CDP tier stays reserved and is never selected by `auto` (R2.7).
 public protocol BrowserBackend: Sendable {
     var id: BrowserBackendID { get }
-    /// Cheap. Never prompts and never starts anything.
+    /// Never prompts. A managed backend may start its child here (and the first call after an
+    /// install does), so callers must not poll it; the router asks only the backends it needs.
     func status() async -> BrowserBackendStatus
+    /// The last known state without starting or probing anything, for menus and `sys_info`.
+    /// `nil` means nothing is known.
+    func peekStatus() async -> BrowserBackendStatus?
+    /// `managed` or `external`, no URLs. `nil` for a backend with no such notion.
+    var mode: String? { get async }
+    /// Process name and uid of an external listener, names only.
+    var ownerSummary: String? { get async }
     /// Descriptors of the tools this backend serves right now.
     func tools() async -> [JSONValue]
     /// A `tools/call` result, relayed as the backend produced it.
     func call(_ name: String, arguments: JSONValue) async throws -> JSONValue
+}
+
+extension BrowserBackend {
+    public func peekStatus() async -> BrowserBackendStatus? { nil }
+    public var mode: String? { get async { nil } }
+    public var ownerSummary: String? { get async { nil } }
 }
 
 public enum BrowserPreference: String, Sendable, CaseIterable {

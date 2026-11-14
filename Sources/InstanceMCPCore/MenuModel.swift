@@ -145,6 +145,33 @@ public struct NetworkUpstream: Equatable, Sendable {
     public init(name: String, url: URL) { self.name = name; self.url = url }
 }
 
+/// The Browser tools row's input: the last known report, text only (R5.9). Nothing here is a URL,
+/// tab title or page text.
+public struct NetworkBrowser: Equatable, Sendable {
+    public let report: BrowserReport
+    public init(report: BrowserReport) { self.report = report }
+
+    private var playwright: BrowserReport.Entry? { report.backends.first { $0.id == .playwright } }
+
+    /// `Playwright ready`, `Playwright not installed`, and so on.
+    public var playwrightText: String? {
+        guard let e = playwright else { return nil }
+        switch (e.state, e.errorClass) {
+        case ("ready", _): return "Playwright ready"
+        case ("needs_setup", "playwright_not_installed"?): return "Playwright not installed"
+        case ("needs_setup", "playwright_install_invalid"?): return "Playwright install not usable"
+        case (_, let c?): return "Playwright unavailable (\(c))"
+        default: return "Playwright unavailable"
+        }
+    }
+
+    /// For the external row: ` · Playwright external (node (uid 501))` once an owner is known.
+    public var externalSuffix: String? {
+        guard let e = playwright, e.mode == "external", let o = e.ownerSummary else { return nil }
+        return " · Playwright external (\(o))"
+    }
+}
+
 /// The Switchboard row's input: the supervisor's status (nil until it reports) and how to print a time.
 public struct NetworkSwitchboard {
     public let status: SwitchboardStatus?
@@ -224,7 +251,7 @@ extension MenuModel {
     public static func networkSection(bindHost: String, bindPort: Int, path: String,
                                       upstreams: [NetworkUpstream], tailnet: NetworkTailnetState,
                                       switchboard: NetworkSwitchboard?, liveGrants: Int?, attachEnabled: Bool,
-                                      publicURL: String? = nil) -> NetworkSection {
+                                      publicURL: String? = nil, browser: NetworkBrowser? = nil) -> NetworkSection {
         var rows: [NetworkRow] = []
 
         let localURL = "http://\(hostForURL(bindHost)):\(bindPort)\(path)"
@@ -253,11 +280,13 @@ extension MenuModel {
                                    copyValue: publicURL))
         }
 
-        if let browser = upstreams.first(where: { $0.name == "browser" }) {
-            let host = browser.url.host ?? ""
-            let address = browser.url.port.map { "\(hostForURL(host)):\($0)" } ?? hostForURL(host)
+        if let up = upstreams.first(where: { $0.name == "browser" }) {
+            let host = up.url.host ?? ""
+            let address = up.url.port.map { "\(hostForURL(host)):\($0)" } ?? hostForURL(host)
             let who = isLoopbackHost(host) ? "(separate process, this Mac only)" : "(remote)"
-            rows.append(NetworkRow(kind: .browser, text: "Browser tools: \(address) \(who)", copyValue: nil))
+            rows.append(NetworkRow(kind: .browser, text: "Browser tools: \(address) \(who)" + (browser?.externalSuffix ?? ""), copyValue: nil))
+        } else if let text = browser?.playwrightText {
+            rows.append(NetworkRow(kind: .browser, text: "Browser tools: \(text)", copyValue: nil))
         }
 
         if let switchboard {

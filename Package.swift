@@ -27,11 +27,16 @@ let package = Package(
             dependencies: ["InstanceMCPCore"],
             path: "Sources/oab-computer"
         ),
+        // Test helper only (not a product): a stand-in MCP stdio server for the managed Playwright tests.
+        .executableTarget(
+            name: "FakeMCPStdioServer",
+            path: "Tests/FakeMCPStdioServer"
+        ),
         .testTarget(
             name: "InstanceMCPCoreTests",
             // The executable is a dependency only so it is built beside the tests: one test runs it with the hidden
             // permission-check argument.
-            dependencies: ["InstanceMCPCore", "oab-computer"],
+            dependencies: ["InstanceMCPCore", "oab-computer", "FakeMCPStdioServer"],
             path: "Tests/InstanceMCPCoreTests"
         ),
     ]
