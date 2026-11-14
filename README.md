@@ -571,7 +571,8 @@ To upgrade:
 3. macOS: the bearer token is copied automatically from `~/.config/oab-instance-mcp/token` to
    `~/.config/oab-computer/token` when the new config directory is first created. The old file stays in place.
    Linux: the installer creates a new token, so update the clients that use it.
-4. Not migrated, so redo them by hand: switchboard settings (`switchboard.url`, `switchboard.secret`,
+4. Not migrated, so redo them by hand, but only after the first launch of the new app (step 1) has run, because the token
+   copy in step 3 happens only when it creates `~/.config/oab-computer`: switchboard settings (`switchboard.url`, `switchboard.secret`,
    `switchboard.profile`, `switchboard.secure-set-value`), saved grants and their Keychain secrets (lend again),
    logs and audit files. Copy any of them from the old directory if you want them.
 5. Remove the old agent. It still holds port 8795 and fights the new one.
@@ -584,6 +585,8 @@ To upgrade:
    # only if you used the Playwright agent:
    launchctl bootout gui/$(id -u)/dev.openab.instance-mcp.pw-mcp
    rm ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist
+   # then restart the new agent, which could not bind port 8795 while the old one held it:
+   launchctl kickstart -k gui/$(id -u)/dev.openab.computer
    ```
 
    Linux:

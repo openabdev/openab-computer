@@ -88,22 +88,22 @@ deleted in an `always()` cleanup step.
    ```
 
 4. The `Release macOS installer` workflow builds/tests, signs, notarizes and publishes the macOS
-   artifacts, and (since 0.6.7) `oab-computer-VERSION-linux-{arm64,amd64}.tar.gz` + `.sha256`
+   artifacts, and (since 0.6.7, named `oab-instance-mcp-VERSION-linux-*` before 0.12.0) `oab-computer-VERSION-linux-{arm64,amd64}.tar.gz` + `.sha256`
    from the same run. All three jobs wait on the `release` environment approval. A manual
    dispatch can retry an existing tag; it is not a way to release an untagged commit, and it
    **must run on the tag ref** — the environment only allows `v*` refs, so a dispatch from
    `main` is rejected before any job starts ("Branch main is not allowed to deploy to release"):
 
    ```sh
-   gh workflow run release.yml --ref v0.8.4 -f tag=v0.8.4
+   gh workflow run release.yml --ref v0.12.0 -f tag=v0.12.0
    ```
 
 5. Download both artifacts and verify before installing:
 
    ```sh
    scripts/verify-release.sh \
-     oab-computer-0.8.4-universal.app.zip \
-     oab-computer-0.8.4-universal.pkg
+     oab-computer-0.12.0-universal.app.zip \
+     oab-computer-0.12.0-universal.pkg
    shasum -a 256 -c SHA256SUMS
    ```
 
@@ -157,8 +157,8 @@ lipo -create /tmp/imcp-arm64/release/oab-computer \
              /tmp/imcp-x86_64/release/oab-computer \
              -output /tmp/oab-computer
 chmod +x /tmp/oab-computer
-scripts/assemble-app.sh /tmp/oab-computer /tmp/oab-computer.app 0.8.4
-ALLOW_UNSIGNED=1 scripts/package-pkg.sh /tmp/oab-computer.app /tmp/oab-computer.pkg 0.8.4
+scripts/assemble-app.sh /tmp/oab-computer /tmp/oab-computer.app 0.12.0
+ALLOW_UNSIGNED=1 scripts/package-pkg.sh /tmp/oab-computer.app /tmp/oab-computer.pkg 0.12.0
 ```
 
 Unsigned artifacts are testing inputs only; do not install or publish them.

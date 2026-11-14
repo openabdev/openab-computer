@@ -1,8 +1,9 @@
 #!/bin/bash
 # Install the Linux hands node from a release tarball (run ON the target, as the desktop user).
 #
-#   curl -fsSL https://github.com/openabdev/openab-computer/releases/latest/download/oab-computer-VERSION-linux-$(dpkg --print-architecture).tar.gz | tar xz
-#   cd oab-computer-*-linux-* && ./install-linux.sh [--allow-login you@example.com] [--no-browser] [--headless-seat]
+#   V=<release version, e.g. 0.12.0>; A=$(dpkg --print-architecture)   # arm64 | amd64
+#   curl -fsSL "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz" | tar xz
+#   cd oab-computer-$V-linux-$A && ./install-linux.sh [--allow-login you@example.com] [--no-browser] [--headless-seat]
 #
 # --headless-seat: for a server install with no desktop (Ubuntu Server, a mini PC in a closet):
 #   installs sway and runs it headless (one 1920x1080 virtual output) as user unit oab-seat.service.
@@ -43,7 +44,8 @@ done
 if [ "${#LEGACY_FOUND[@]}" -gt 0 ]; then
   {
     echo "install: WARNING: the old unit(s) ${LEGACY_FOUND[*]} (0.11 or earlier) are still active or enabled."
-    echo "oab-instance-mcp.service listens on port $PORT like the new oab-computer.service and will fight it for that port."
+    echo "The old oab-instance-mcp.service listens on port $PORT like the new oab-computer.service and will fight it for that port;"
+    echo "the old oab-pw-mcp.service holds the Playwright port (8794) that oab-computer-pw-mcp.service needs."
     echo "This installer does not touch them. To stop and remove them, run:"
     echo "  systemctl --user disable --now ${LEGACY_FOUND[*]}"
     echo "  rm ${LEGACY_FOUND[*]/#/$UNITS/}"
