@@ -17,7 +17,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -z "${NO_GIT:-}" ]; 
   git ls-files
 else
   find . -type f -not -path "./.git/*" -not -path "./.build/*" -not -path "*/target/*" | sed 's|^\./||'
-fi | grep -v -e "^$SELF\$" -e '^scripts/private-identifiers.allow$' -e 'Cargo.lock$' >"$T/files"
+fi | grep -v -e "^$SELF\$" -e '^scripts/private-identifiers.allow$' -e '^scripts/test-check-no-private-identifiers.sh$' -e 'Cargo.lock$' >"$T/files"
 
 # Matched case-insensitively. Host names are whole words.
 HOST='(^|[^A-Za-z0-9_-])(black|rpi1|rpi2|minipc|macmini|lzmacmini|oracle-vm|p1|zsv-01|mbp|pahuds-macbook-neo)([^A-Za-z0-9_-]|$)'
