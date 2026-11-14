@@ -671,6 +671,13 @@ final class TailnetExposureTests: XCTestCase {
         XCTAssertNil(LaunchdJob.jobLabel(environment: env, parentPID: 1), "an orphan reparented to launchd is not the job")
     }
 
+    func testExecStartEnvironmentNeverCarriesTheLaunchdJobLabel() {
+        let env = resolveJobEnv(["env": ["XPC_SERVICE_NAME": .string(LaunchdJob.ownLabel), "FOO": .string("bar")]])
+        XCTAssertNil(env["XPC_SERVICE_NAME"], "neither inherited nor caller-set")
+        XCTAssertEqual(env["FOO"], "bar")
+        XCTAssertNil(LaunchdJob.jobLabel(environment: env, parentPID: 1))
+    }
+
     // MARK: parsing and the real runner
 
     func testServeStatusParsing() {
