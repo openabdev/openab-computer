@@ -31,7 +31,6 @@ flowchart LR
     subgraph mac["The instance — a Mac with someone logged in"]
         subgraph ts["tailscale serve (TLS + identity)"]
             s8444[":8444 → 127.0.0.1:8795<br/>injects Tailscale-User-Login"]
-            s8443[":8443 → 127.0.0.1:8794"]
         end
         subgraph gui["Aqua session · LaunchAgents in gui/501"]
             mcp["<b>oab-instance-mcp</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · ui_action · mouse · key · osascript"]
@@ -54,8 +53,7 @@ flowchart LR
     sb -- "tool calls over that socket" --> dial
     dial --> mcp
     s8444 --> mcp
-    cli -- "HTTPS · MCP" --> s8443
-    s8443 --> pw
+    mcp -- "--upstream, loopback only" --> pw
     mcp --> hands
     tcc -. "gates screen / input / apps" .-> hands
 ```
@@ -263,13 +261,22 @@ read-only.
 |---|---|---|---|---|---|
 | `127.0.0.1:8795` (`--host`, `--port`; `--path` for the `/mcp` route) | TCP, plain HTTP/1.1 | Processes on this Mac only | `/mcp` (POST, DELETE), `/attach` (reverse attach; off with `--no-attach`), `/healthz`. Anything else is 404 | Always, on IPv4 loopback by default. No-flag launch from Finder, the installer's LaunchAgent, or a manual launch. A no-flag launch also briefly binds the port to test it is free, without listening | `/mcp` and `/attach`: [Auth](#auth). `/healthz`: none |
 | `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. The app runs the same command only after you turn tailnet access on, from the wizard's tailnet page or the menu's "Allow tailnet access…", and removes it with "Turn Off Tailnet Access". A launch with no stored opt-in does not create it. A launch with a stored opt-in re-applies it when it is missing. A mapping that already exists is shown as "On (existing mapping, not managed by this app)" and left alone until you choose "Manage with this app" | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
-| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac. Your tailnet too, if the `:8443` mapping below exists | Playwright MCP, a **separate process** the app only connects to (`--upstream`) | Its own LaunchAgent (`poc/pw-mcp/install.sh`). The app never starts it | None in the app |
-| `https://<host>.<tailnet>.ts.net:8443` → `127.0.0.1:8794` | HTTPS, terminated by Tailscale | Your whole tailnet | Direct access to Playwright MCP (a proof-of-concept path) | Only `poc/pw-mcp/install.sh` runs `tailscale serve --bg --https=8443`. Not the app, not `install-prebuilt.sh` | **None.** No bearer token, login check or tool profile. It bypasses the agent's auth |
+| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac only. Other machines reach the browser tools only through the app's `--upstream` | Playwright MCP, a **separate process** the app only connects to (`--upstream`). It has no `:8443` or other tailnet access path | Its own LaunchAgent (`poc/pw-mcp/install.sh`), which binds `--host 127.0.0.1` and creates no `tailscale serve` mapping. The app never starts it | None in Playwright. The app's [Auth](#auth) applies to callers before it relays browser tools |
 
 The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The `:8444`
 mapping is made by the installer, by the app after you turn tailnet access on, or by the app's launch
-re-apply of that choice. The `:8443` mapping belongs to the
-Playwright installer, not to the app.
+re-apply of that choice. Nothing in this repo maps `:8443` any more. Older versions of
+`poc/pw-mcp/install.sh` did (`tailscale serve --bg --https=8443 http://127.0.0.1:8794`), which put
+the unauthenticated Playwright MCP on your whole tailnet. Re-running the new installer does not
+remove it. Check for it and remove it on any Mac that ran the old installer:
+
+```sh
+tailscale serve status              # look for :8443 pointing at http://127.0.0.1:8794
+tailscale serve --https=8443 off    # remove only that mapping
+```
+
+Browser tools keep working afterwards, because the app reaches Playwright over loopback. The new
+installer runs the read-only `serve status` at the end and prints a warning if it finds the mapping.
 
 ### Outbound connections
 
@@ -311,9 +318,8 @@ the menu) closes the tailnet path and leaves the loopback listener.
 
 A caller must pass every configured check. The installer always sets both, so a tailnet caller needs
 an allow-listed Tailscale login **and** the bearer token. A no-flag launch falls back to the token
-alone if it cannot find your login, and so does a manual launch without `--allow-login`. The `:8443`
-Playwright mapping has no auth: remove it with `tailscale serve --https=8443 off`. Browser tools
-still work, because the agent reaches Playwright over loopback. The app does not
+alone if it cannot find your login, and so does a manual launch without `--allow-login`. Playwright MCP
+has no auth of its own, so it stays on loopback and is reached only through the app. The app does not
 guard `--host`: a non-loopback value binds in plain HTTP. The menu's Local MCP row then says
 "reachable from other devices", but the app does not block it. The app
 trusts a `Tailscale-User-Login` header from any peer, so on a non-loopback bind only the bearer
@@ -341,8 +347,7 @@ The Tailnet row comes only from Tailscale state (the read-only `serve status` re
 choice), never from `--public-url`. A `--public-url` that is not the local URL is shown only on the top URL line. When the app has no
 Tailscale state of its own (an installer owns another port), the Tailnet row reads "unknown (not
 checked by this app)", whatever the public URL is. The Browser tools row says "this Mac only" about
-the app's own `--upstream` address; a separate `:8443` Playwright mapping, if you made one, is
-described in the table above.
+the app's own `--upstream` address. Playwright has no tailnet mapping; the note under the table above covers older installs.
 
 Clicking the Local MCP row or the Tailnet URL copies it. Tailnet can also read "Off", "On (existing
 mapping, not managed by this app), <url>" or "opted in, not applied (see the log)". Browser tools
@@ -492,7 +497,7 @@ oab-instance-mcp --token-file ~/.config/oab-computer/token \
 ### Browser tools for lent sessions (`--upstream`)
 
 The sandbox has no path to any browser, so browser control is served **from this Mac**: with
-`--upstream browser=http://127.0.0.1:8794/mcp` (deploy.sh adds it when the Playwright MCP
+`--upstream browser=http://127.0.0.1:8794/mcp` (the installer adds it when the Playwright MCP
 LaunchAgent from [`poc/pw-mcp`](poc/pw-mcp/README.md) is installed) the daemon re-serves
 Playwright's tools under its own `tools/list`, filtered by the connection's profile:
 
