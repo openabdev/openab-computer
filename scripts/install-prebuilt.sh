@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install a PREBUILT, already-signed oab-instance-mcp.app for the logged-in user.
+# Install a PREBUILT, already-signed oab-computer.app for the logged-in user.
 #
 # This script never signs or modifies the bundle. That is load-bearing: an ad-hoc
 # re-sign changes the app's designated requirement and silently drops the human's
@@ -9,7 +9,7 @@
 # Usage: install-prebuilt.sh <app> [--allow-login <email|auto>]
 #
 # Test seams (not used by the package): INSTALL_HOME, ALLOW_UNSIGNED=1,
-# SKIP_LAUNCH=1, SKIP_TAILSCALE=1.
+# SKIP_LAUNCH=1, SKIP_TAILSCALE=1, LEGACY_LAUNCHCTL (a stub launchctl for the old-agent warning).
 set -euo pipefail
 
 SOURCE="${1:?usage: install-prebuilt.sh <app> [--allow-login <email|auto>]}"
@@ -27,22 +27,22 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-LABEL=dev.openab.instance-mcp
+LABEL=dev.openab.computer
 OLD_LABEL=dev.openab.mac-agent
-BUNDLE_ID=dev.openab.instance-mcp
+BUNDLE_ID=dev.openab.computer
 EXPECT_TEAM="${EXPECT_TEAM:-6LPQNY95AQ}"
 HOME_DIR="${INSTALL_HOME:-$HOME}"
-BASE="$HOME_DIR/.local/oab-instance-mcp"
-APP="$BASE/oab-instance-mcp.app"
+BASE="$HOME_DIR/.local/oab-computer"
+APP="$BASE/oab-computer.app"
 TOKEN_FILE="$HOME_DIR/.config/oab-computer/token"
 LEGACY_TOKEN_FILE="$HOME_DIR/.config/oab-instance-mcp/token"
 OLDEST_TOKEN_FILE="$HOME_DIR/.config/oab-mac-agent/token"
 PLIST="$HOME_DIR/Library/LaunchAgents/$LABEL.plist"
-LOG_DIR="$HOME_DIR/Library/Logs/oab-instance-mcp"
+LOG_DIR="$HOME_DIR/Library/Logs/oab-computer"
 UID_=$(id -u)
 
 case "$SOURCE" in *.app) ;; *) echo "installer: source must be an .app bundle" >&2; exit 64 ;; esac
-[ -x "$SOURCE/Contents/MacOS/oab-instance-mcp" ] || {
+[ -x "$SOURCE/Contents/MacOS/oab-computer" ] || {
   echo "installer: app has no executable: $SOURCE" >&2; exit 66
 }
 [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$SOURCE/Contents/Info.plist" 2>/dev/null)" = "$BUNDLE_ID" ] || {
@@ -60,6 +60,33 @@ if [ "${ALLOW_UNSIGNED:-0}" != "1" ]; then
     echo "A different/ad-hoc signer is a different app to TCC and would drop existing grants." >&2
     exit 65
   }
+fi
+
+# Warn only (read-only: never stops, removes or changes the old agent). A 0.11 or earlier agent is
+# named dev.openab.instance-mcp; it listens on the same port 8795 and would fight this one.
+# Test seam: LEGACY_LAUNCHCTL replaces /bin/launchctl for this check (and enables it under SKIP_LAUNCH=1).
+LEGACY_LABEL=dev.openab.instance-mcp
+LEGACY_FOUND=()
+for L in "$LEGACY_LABEL" "$LEGACY_LABEL.pw-mcp"; do
+  if [ -n "${LEGACY_LAUNCHCTL:-}" ] || [ "${SKIP_LAUNCH:-0}" != "1" ]; then
+    if "${LEGACY_LAUNCHCTL:-/bin/launchctl}" print "gui/$UID_/$L" >/dev/null 2>&1; then
+      LEGACY_FOUND+=("$L"); continue
+    fi
+  fi
+  if [ -f "$HOME_DIR/Library/LaunchAgents/$L.plist" ]; then LEGACY_FOUND+=("$L"); fi
+done
+if [ "${#LEGACY_FOUND[@]}" -gt 0 ]; then
+  {
+    echo "installer: WARNING: the old LaunchAgent ${LEGACY_FOUND[*]} (0.11 or earlier) is still installed."
+    echo "The old main agent listens on port 8795 (the default; the new agent uses $PORT) and the old Playwright agent on 8794; they will fight the new agents for those ports;"
+    echo "until it is removed, /healthz may be answered by the old agent, so a healthy check does not prove the new agent is bound."
+    echo "This installer does not touch it. To stop and remove it, run:"
+    for L in "${LEGACY_FOUND[@]}"; do
+      echo "  launchctl bootout gui/$UID_/$L"
+      echo "  rm \"$HOME_DIR/Library/LaunchAgents/$L.plist\""
+    done
+    echo "Leftovers this installer also does not touch: the old payload under \"/Library/Application Support/OpenAB/instance-mcp\" and the old Keychain items (service dev.openab.instance-mcp.grant)."
+  } >&2
 fi
 
 TS="${TAILSCALE_CLI:-}"
@@ -170,8 +197,8 @@ rm -f "$HOME_DIR/Library/LaunchAgents/$OLD_LABEL.plist"
 
 # Copy to a sibling and verify there, then replace atomically. `ditto` preserves
 # the Developer ID signature and notarization ticket; we never run codesign here.
-STAGED="$BASE/.oab-instance-mcp.app.installing.$$"
-BACKUP="$BASE/.oab-instance-mcp.app.previous.$$"
+STAGED="$BASE/.oab-computer.app.installing.$$"
+BACKUP="$BASE/.oab-computer.app.previous.$$"
 rm -rf "$STAGED" "$BACKUP"
 /usr/bin/ditto "$SOURCE" "$STAGED"
 if [ "${ALLOW_UNSIGNED:-0}" != "1" ]; then
@@ -189,14 +216,14 @@ PB=/usr/libexec/PlistBuddy
 "$PB" -c "Add :Label string $LABEL" "$PLIST"
 "$PB" -c 'Add :ProgramArguments array' "$PLIST"
 ARGS=(
-  "$APP/Contents/MacOS/oab-instance-mcp"
+  "$APP/Contents/MacOS/oab-computer"
   --port "$PORT"
   --allow-login "$LOGIN"
   --token-file "$TOKEN_FILE"
   --menu-bar
   --public-url "https://$DNSNAME:$HTTPS_PORT/mcp"
 )
-if [ "${SKIP_LAUNCH:-0}" != "1" ] && /bin/launchctl print "gui/$UID_/dev.openab.instance-mcp.pw-mcp" >/dev/null 2>&1; then
+if [ "${SKIP_LAUNCH:-0}" != "1" ] && /bin/launchctl print "gui/$UID_/dev.openab.computer.pw-mcp" >/dev/null 2>&1; then
   ARGS+=(--upstream browser=http://127.0.0.1:8794/mcp)
 elif [ "${TEST_WITH_UPSTREAM:-0}" = "1" ]; then
   ARGS+=(--upstream browser=http://127.0.0.1:8794/mcp)
@@ -206,7 +233,7 @@ fi
 # switchboard.profile (observe|owner) optionally picks the profile. The retired
 # `desktop` (#59) is written as `observe`, never `owner`, with a warning; the
 # file itself is left as it is.
-SB_DIR="$HOME_DIR/.config/oab-instance-mcp"
+SB_DIR="$HOME_DIR/.config/oab-computer"
 if [ -s "$SB_DIR/switchboard.url" ] && [ -s "$SB_DIR/switchboard.secret" ]; then
   SB_URL=$(/usr/bin/head -n 1 "$SB_DIR/switchboard.url" | /usr/bin/tr -d '[:space:]')
   ARGS+=(--switchboard "$SB_URL" --switchboard-secret-file "$SB_DIR/switchboard.secret")
@@ -259,7 +286,7 @@ if [ -n "$OLD_REQ" ] && [ -n "$NEW_REQ" ] && [ "$OLD_REQ" != "$NEW_REQ" ]; then
   echo "Future Developer-ID releases keep this requirement stable."
 fi
 
-echo "installed oab-instance-mcp $VERSION"
+echo "installed oab-computer $VERSION"
 echo "  app: $APP"
 echo "  login: $LOGIN"
 echo "  MCP: https://$DNSNAME:$HTTPS_PORT/mcp"

@@ -38,21 +38,21 @@ public enum FirstRunSetup {
         [legacyTokenPath(home: home), oldestTokenPath(home: home)]
     }
 
-    /// `~/.config/oab-instance-mcp`: the directory the installer and the installed agent read. A no-flag launch
+    /// `~/.config/oab-computer`: the directory the installer and the installed agent read. A no-flag launch
     /// under a given home uses it for the switchboard config as well.
     public static func configDirectory(home: String) -> String {
-        home + "/.config/oab-instance-mcp"
+        home + "/.config/oab-computer"
     }
 
     /// The reverse-attach grant record under `home`: the file FileGrantStore.defaultURL names for the account.
     public static func grantsURL(home: String) -> URL {
-        URL(fileURLWithPath: home + "/Library/Application Support/oab-instance-mcp/grants.json")
+        URL(fileURLWithPath: home + "/Library/Application Support/oab-computer/grants.json")
     }
 
     /// The agent log under `home`. The menu's Open Log item opens it, and a LaunchAgent writes it through
     /// StandardErrorPath.
     public static func logPath(home: String) -> String {
-        home + "/Library/Logs/oab-instance-mcp/agent.log"
+        home + "/Library/Logs/oab-computer/agent.log"
     }
 
     /// Sends this process's stderr to `path` (append, mode 644), as a LaunchAgent's StandardErrorPath does. A Finder
@@ -91,7 +91,7 @@ public enum FirstRunSetup {
 
     /// Shown in an alert when the no-flag launch finds its port taken, for example by the installed agent.
     public static func portInUseMessage(host: String, port: UInt16) -> String {
-        "Port \(port) on \(host) is already in use, probably by the installed oab-instance-mcp agent. " +
+        "Port \(port) on \(host) is already in use, probably by the installed oab-computer agent. " +
         "This app did not start. Quit the other process, then open the app again."
     }
 
@@ -275,7 +275,7 @@ public enum FirstRunSetup {
     /// and exits 0, so the status could never be parsed. Measured on two Macs: only that variable decides it.
     static func tailscaleEnvironment(_ base: [String: String]) -> [String: String] {
         var env = base
-        if (env["TERM_PROGRAM"] ?? "").isEmpty { env["TERM_PROGRAM"] = "oab-instance-mcp" }
+        if (env["TERM_PROGRAM"] ?? "").isEmpty { env["TERM_PROGRAM"] = "oab-computer" }
         return env
     }
 

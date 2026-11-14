@@ -156,9 +156,9 @@ public struct SwitchboardConfigStore: Sendable {
         }
     }
 
-    /// `~/.config/oab-instance-mcp`, the directory the installer reads.
+    /// `~/.config/oab-computer`, the directory the installer reads.
     public static var defaultDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/oab-instance-mcp")
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/oab-computer")
     }
 
     public let directory: URL

@@ -6,7 +6,7 @@
 # RELEASE_VERSION_SOURCE overrides the source file (tests only).
 set -euo pipefail
 
-SRC="${RELEASE_VERSION_SOURCE:-$(cd "$(dirname "$0")/.." && pwd)/Sources/oab-instance-mcp/main.swift}"
+SRC="${RELEASE_VERSION_SOURCE:-$(cd "$(dirname "$0")/.." && pwd)/Sources/oab-computer/main.swift}"
 [ -f "$SRC" ] || { echo "release-version: $SRC not found" >&2; exit 66; }
 N=$(grep -c '^let version = "[^"]*"$' "$SRC" || true)
 [ "$N" = 1 ] || { echo "release-version: expected one 'let version = \"…\"' line in $SRC, found $N" >&2; exit 65; }

@@ -27,7 +27,7 @@
     {"status": 400, "expect": {"stop_rejected": 400}}
   ],
   "attach_url": [
-    {"runtime": "ws://100.111.174.31:8090", "session": "abc", "expect": "ws://100.111.174.31:8090/tools/attach/abc"},
+    {"runtime": "ws://100.64.0.2:8090", "session": "abc", "expect": "ws://100.64.0.2:8090/tools/attach/abc"},
     {"runtime": "wss://pod.tail.ts.net", "session": "s1", "expect": "wss://pod.tail.ts.net/tools/attach/s1"},
     {"runtime": "ws://host:9/base/", "session": "x", "expect": "ws://host:9/base/tools/attach/x"}
   ]

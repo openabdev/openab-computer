@@ -1,12 +1,12 @@
 # Linux hands node setup
 
-How to turn a Linux desktop box into an `oab-instance-mcp` hands node with the Rust PoC in
+How to turn a Linux desktop box into an `oab-computer` hands node with the Rust PoC in
 [`poc/reverse-attach-linux/`](../poc/reverse-attach-linux/). Written from two deployments,
 both verified end to end on 2026-09-28 (lending to an openab-pty session, the OpenAB Connect
 Screens pane, browser tools):
 
-- `rpi1` — Raspberry Pi OS / Debian 13, aarch64, the stock labwc desktop (a display exists).
-- `black` — Ubuntu 24.04 Server, Intel N95, **no desktop at all**: a headless sway seat is created
+- Pi node: Raspberry Pi OS / Debian 13, aarch64, the stock labwc desktop (a display exists).
+- Headless server: Ubuntu 24.04 Server, Intel N95, **no desktop at all**: a headless sway seat is created
   by the installer (`--headless-seat`).
 
 Read the trust warning at the top of the [README](../README.md) first. On Linux it is stricter,
@@ -29,8 +29,8 @@ flowchart LR
     subgraph node["Linux hands node — one box"]
         ts["tailscale serve :8444<br/>TLS + injects Tailscale-User-Login"]
         subgraph seat["Desktop seat · systemd --user · WAYLAND_DISPLAY=wayland-0"]
-            mcp["<b>oab-instance-mcp.service</b><br/>reverse-attach binary · 127.0.0.1:8795<br/>auth = allow-login <b>AND</b> bearer<br/>/mcp · /attach · /healthz<br/>sys_info · screenshot · bash · mouse · key<br/>exec_start · exec_poll · exec_list · exec_cancel"]
-            pw["<b>oab-pw-mcp.service</b><br/>@playwright/mcp · 127.0.0.1:8794<br/>headed distro Chromium, persistent profile"]
+            mcp["<b>oab-computer.service</b><br/>reverse-attach binary · 127.0.0.1:8795<br/>auth = allow-login <b>AND</b> bearer<br/>/mcp · /attach · /healthz<br/>sys_info · screenshot · bash · mouse · key<br/>exec_start · exec_poll · exec_list · exec_cancel"]
+            pw["<b>oab-computer-pw-mcp.service</b><br/>@playwright/mcp · 127.0.0.1:8794<br/>headed distro Chromium, persistent profile"]
         end
         subgraph hands["What the tools touch"]
             grim["grim → screenshot"]
@@ -60,7 +60,7 @@ terminates TLS and stamps the caller's Tailscale identity. Same shape as the Mac
     [Raspberry Pi notes](#raspberry-pi-notes) for the no-monitor case;
   - **none** — pass `--headless-seat` to the installer and it runs `sway` with the headless
     wlroots backend as user unit `oab-seat.service`: one 1920×1080 virtual output, no input
-    devices, no GPU or monitor needed (verified on `black`, Ubuntu 24.04 Server).
+    devices, no GPU or monitor needed (verified on a headless server, Ubuntu 24.04 Server).
 - The node on the tailnet with **MagicDNS + HTTPS certificates** enabled (needed for
   `tailscale serve`). Do **not** do this on a k3s node that hosts openab-pty pods: host-level
   `tailscaled` gives every pod tailnet egress as the node (measured, see
@@ -93,17 +93,17 @@ with no URL at all, check `curl -4 -m 8 https://controlplane.tailscale.com/` —
 
 ## 2. Get the daemon
 
-**Prebuilt (preferred).** Every `v*` release ships `oab-instance-mcp-VERSION-linux-arm64.tar.gz`
+**Prebuilt (preferred).** Every `v*` release ships `oab-computer-VERSION-linux-arm64.tar.gz`
 and `-linux-amd64.tar.gz` (built and smoke-tested in CI on native runners) beside the macOS
 installer, with a `.sha256` each:
 
 ```sh
-V=$(curl -fsSL https://api.github.com/repos/openabdev/instance-mcp/releases/latest | python3 -c 'import sys,json;print(json.load(sys.stdin)["tag_name"][1:])')
+V=0.12.0   # the first release with oab-computer-* assets (v0.11.0 and older use the old names)
 A=$(dpkg --print-architecture)          # arm64 or amd64
-curl -fsSLO "https://github.com/openabdev/instance-mcp/releases/download/v$V/oab-instance-mcp-$V-linux-$A.tar.gz"
-curl -fsSLO "https://github.com/openabdev/instance-mcp/releases/download/v$V/oab-instance-mcp-$V-linux-$A.tar.gz.sha256"
-sha256sum -c "oab-instance-mcp-$V-linux-$A.tar.gz.sha256"
-tar xzf "oab-instance-mcp-$V-linux-$A.tar.gz" && cd "oab-instance-mcp-$V-linux-$A"
+curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
+curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz.sha256"
+sha256sum -c "oab-computer-$V-linux-$A.tar.gz.sha256"
+tar xzf "oab-computer-$V-linux-$A.tar.gz" && cd "oab-computer-$V-linux-$A"
 ./install-linux.sh            # does steps 3–5 below; --allow-login / --no-browser / --port
 ./install-linux.sh --headless-seat   # same, on a box with no desktop (creates oab-seat.service)
 ```
@@ -116,8 +116,8 @@ steps 3–5 describe what it did.
 **From source** (needs Rust ≥ 1.85):
 
 ```sh
-git clone https://github.com/openabdev/instance-mcp ~/repo/instance-mcp
-cd ~/repo/instance-mcp/poc/reverse-attach-linux
+git clone https://github.com/openabdev/openab-computer ~/repo/oab-computer
+cd ~/repo/oab-computer/poc/reverse-attach-linux
 cargo build --release              # ~30 s cold on a Pi 4/5; 2.2 MB binary
 bash smoke.sh                      # 55 checks against the bundled mock runtime; all must pass
 ```
@@ -129,23 +129,23 @@ smoke runs in CI on amd64 and arm64 for every push.
 ## 3. Bearer token and the daemon unit
 
 ```sh
-mkdir -p ~/.config/oab-instance-mcp
-head -c 32 /dev/urandom | base64 | tr -d '=+/\n' | head -c 40 > ~/.config/oab-instance-mcp/token
-chmod 600 ~/.config/oab-instance-mcp/token
+mkdir -p ~/.config/oab-computer
+head -c 32 /dev/urandom | base64 | tr -d '=+/\n' | head -c 40 > ~/.config/oab-computer/token
+chmod 600 ~/.config/oab-computer/token
 
 LOGIN=$(sudo tailscale status --json | python3 -c \
   'import sys,json;d=json.load(sys.stdin);print(d["User"][str(d["Self"]["UserID"])]["LoginName"])')
 
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/oab-instance-mcp.service <<EOF
+cat > ~/.config/systemd/user/oab-computer.service <<EOF
 [Unit]
-Description=oab-instance-mcp (Rust hands node: /mcp + /attach)
+Description=oab-computer (Rust hands node: /mcp + /attach)
 After=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/oab-instance-mcp/oab-instance-mcp   # or …/target/release/reverse-attach from source
+ExecStart=%h/.local/oab-computer/oab-computer   # or …/target/release/oab-computer from source
 Environment=BIND=127.0.0.1:8795
-Environment=MCP_TOKEN_FILE=%h/.config/oab-instance-mcp/token
+Environment=MCP_TOKEN_FILE=%h/.config/oab-computer/token
 Environment=MCP_ALLOW_LOGIN=$LOGIN
 Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp
 Environment=WAYLAND_DISPLAY=wayland-0
@@ -157,7 +157,7 @@ RestartSec=2
 WantedBy=default.target
 EOF
 systemctl --user daemon-reload
-systemctl --user enable --now oab-instance-mcp.service
+systemctl --user enable --now oab-computer.service
 sudo loginctl enable-linger "$USER"      # keep user units alive without a login shell
 
 curl -s 127.0.0.1:8795/healthz           # ok
@@ -168,7 +168,7 @@ Configured checks are AND-combined, exactly like the Swift daemon: a request mus
 bearer **and** arrive with an allow-listed `Tailscale-User-Login`. That header is only
 trustworthy because `BIND` is loopback and `tailscale serve` overwrites it; never bind to a
 LAN or tailnet address. A loopback request without the header is refused (`deny … no
-Tailscale-User-Login header` in `journalctl --user -u oab-instance-mcp`), which is why even
+Tailscale-User-Login header` in `journalctl --user -u oab-computer`), which is why even
 local `POST /attach` goes through the `https://…:8444` URL below.
 
 `MCP_UPSTREAM` may be set before the browser unit exists: a down upstream just means no
@@ -177,18 +177,18 @@ local `POST /attach` goes through the `https://…:8444` URL below.
 ## 4. Browser tools (`@playwright/mcp`)
 
 ```sh
-mkdir -p ~/.local/oab-instance-mcp/pw-mcp && cd ~/.local/oab-instance-mcp/pw-mcp
+mkdir -p ~/.local/oab-computer/pw-mcp && cd ~/.local/oab-computer/pw-mcp
 npm install --save-exact @playwright/mcp@0.0.82        # same pin as poc/pw-mcp (macOS)
-cp ~/repo/instance-mcp/poc/reverse-attach-linux/pw-mcp.sh ~/.local/oab-instance-mcp/pw-mcp.sh
-chmod +x ~/.local/oab-instance-mcp/pw-mcp.sh
+cp ~/repo/oab-computer/poc/reverse-attach-linux/pw-mcp.sh ~/.local/oab-computer/pw-mcp.sh
+chmod +x ~/.local/oab-computer/pw-mcp.sh
 
-cat > ~/.config/systemd/user/oab-pw-mcp.service <<'EOF'
+cat > ~/.config/systemd/user/oab-computer-pw-mcp.service <<'EOF'
 [Unit]
-Description=Playwright MCP for the oab-instance-mcp hands node (loopback :8794)
+Description=Playwright MCP for the oab-computer hands node (loopback :8794)
 After=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/oab-instance-mcp/pw-mcp.sh
+ExecStart=%h/.local/oab-computer/pw-mcp.sh
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=DISPLAY=:0
@@ -199,19 +199,19 @@ RestartSec=3
 WantedBy=default.target
 EOF
 systemctl --user daemon-reload
-systemctl --user enable --now oab-pw-mcp.service
+systemctl --user enable --now oab-computer-pw-mcp.service
 
 # Block camera/mic/notification/geolocation prompts: YouTube raised an xdg-desktop-portal
 # "Allow app to use the Camera?" dialog that nothing but `mouse` could dismiss.
 sudo mkdir -p /etc/chromium/policies/managed
 echo '{"DefaultMediaStreamSetting": 2, "DefaultNotificationsSetting": 2, "DefaultGeolocationSetting": 2}' \
-  | sudo tee /etc/chromium/policies/managed/oab-instance-mcp.json >/dev/null
-systemctl --user restart oab-pw-mcp
+  | sudo tee /etc/chromium/policies/managed/oab-computer.json >/dev/null
+systemctl --user restart oab-computer-pw-mcp
 ```
 
 `pw-mcp.sh` uses the distro Chromium (`--executable-path /usr/bin/chromium`) so nothing is
 downloaded, launches it **headed** into the seat, keeps a persistent profile under
-`~/.local/oab-instance-mcp/pw-profile`, and lists `--allowed-hosts` in both `host` and
+`~/.local/oab-computer/pw-profile`, and lists `--allowed-hosts` in both `host` and
 `host:port` forms (Playwright answers 403 to everything otherwise). Chromium runs with its
 sandbox on; check with `tr '\0' '\n' </proc/$(pgrep -f 'chromium.*user-data-dir' | head -1)/cmdline | grep -c no-sandbox`
 → `0`.
@@ -230,7 +230,7 @@ The Playwright port is **not** served; only the daemon re-serves it, filtered by
 ## 6. Verify from another tailnet machine
 
 ```sh
-TOKEN=$(ssh <host> cat ~/.config/oab-instance-mcp/token)
+TOKEN=$(ssh <host> cat ~/.config/oab-computer/token)
 U=https://<host>.<tailnet>.ts.net:8444
 curl -s $U/healthz                                                  # ok
 curl -s -o /dev/null -w '%{http_code}\n' -X POST $U/mcp -H 'Authorization: Bearer nope' -d '{}'   # 401
@@ -291,22 +291,22 @@ exec_cancel` + 32 `browser_*` + the runtime's `instance_status`.
 ## Operate
 
 ```sh
-systemctl --user status oab-instance-mcp oab-pw-mcp
-journalctl --user -u oab-instance-mcp -f            # one line per deny / upstream error
-systemctl --user restart oab-instance-mcp           # grants are in memory: re-lend afterwards
+systemctl --user status oab-computer oab-computer-pw-mcp
+journalctl --user -u oab-computer -f            # one line per deny / upstream error
+systemctl --user restart oab-computer           # grants are in memory: re-lend afterwards
 sudo tailscale serve --https=8444 off               # stop exposing
 WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/$(id -u) wlr-randr    # outputs the tools see
 ```
 
 Grants survive a daemon restart (#12): live grants are kept in
-`~/.local/state/oab-instance-mcp/grants.json` (mode 600; override with `MCP_GRANTS_FILE`, or
+`~/.local/state/oab-computer/grants.json` (mode 600; override with `MCP_GRANTS_FILE`, or
 `MCP_GRANTS_FILE=off` to disable), and on start every grant still inside its deadline is re-dialled
-under its original id — `journalctl --user -u oab-instance-mcp` shows `grants: resuming <id>`. The
+under its original id — `journalctl --user -u oab-computer` shows `grants: resuming <id>`. The
 file holds the attach secrets, at the same trust level as the bearer token file. A grant whose
 runtime has forgotten it (pod replaced) ends with `handshake_rejected_401`; lend again.
 
 A request or stored grant that names the retired `desktop` profile runs as `observe` (#59). Each
-such mapping is logged and appended to `~/.local/state/oab-instance-mcp/audit.jsonl` (mode 600;
+such mapping is logged and appended to `~/.local/state/oab-computer/audit.jsonl` (mode 600;
 override with `MCP_AUDIT_FILE`, or `MCP_AUDIT_FILE=off` to disable). See
 [Upgrading from 0.8.x](tool-profiles.md#upgrading-from-08x-59).
 
@@ -319,7 +319,7 @@ long call: same arguments and `structuredContent` as on macOS (README Tools tabl
 point the agent here. Under `observe` neither `bash` nor the job tools exist, and a long `bash`
 call is an *unknown tool*, not a refusal that names it.
 
-- **Logs**: `$XDG_STATE_HOME/oab-instance-mcp/jobs/<job_id>.out` / `.err` (default
+- **Logs**: `$XDG_STATE_HOME/oab-computer/jobs/<job_id>.out` / `.err` (default
   `~/.local/state/…`; directory mode 700, files 600). The job writes to them directly, so they
   are never truncated and can be followed with `tail -f`. `exec_poll` reads them by byte offset
   (`stdout_since` / `stderr_since` → `stdout_next` / `stderr_next`), at most 1 MiB per stream per
@@ -342,11 +342,11 @@ call is an *unknown tool*, not a refusal that names it.
   whatever their age. GC runs at start-up and on each `exec_start`.
 
 ```sh
-ls -lt ~/.local/state/oab-instance-mcp/jobs/            # <job_id>.out / .err
-tail -f ~/.local/state/oab-instance-mcp/jobs/<job_id>.out
+ls -lt ~/.local/state/oab-computer/jobs/            # <job_id>.out / .err
+tail -f ~/.local/state/oab-computer/jobs/<job_id>.out
 ```
 
-## Headless server notes (Ubuntu 24.04 on `black`)
+## Headless server notes (Ubuntu 24.04)
 
 What a box with no desktop needed beyond the Pi, all handled by `install-linux.sh --headless-seat`:
 
@@ -367,7 +367,7 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   `locale: en-US` / `LANG=en_US.UTF-8`.
 - **Node from fnm/nvm**: `/usr/bin/node` was a symlink into `~/.local/share/fnm/...` with no
   `npm` on the system PATH; `PW_NODE_BIN` in the unit carries that directory.
-- **Pod-host rule still applies**: `black` runs k3s (ARC controller, traefik) *and* host
+- **Pod-host rule still applies**: The headless server runs k3s (ARC controller, traefik) *and* host
   `tailscaled`. That is fine only because it hosts no openab-pty pods; it must never start to.
 
 ## Raspberry Pi notes
@@ -398,7 +398,7 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   `/run/user/<uid>` when unset, the units set them explicitly, and `pw-mcp.sh` adds `DISPLAY`.
 - **`grim -t jpeg` → "jpeg support disabled"** on Debian's build. The daemon never asks grim
   for JPEG: it takes raw PPM from grim and encodes the JPEG itself.
-- **A seat with no physical input silently drops transient virtual devices.** Headless sway (black)
+- **A seat with no physical input silently drops transient virtual devices.** Headless sway
   and a Pi with no mouse advertise no pointer/keyboard capability, so a `wlrctl`/`wtype` call that
   creates a device, sends and exits within milliseconds is lost: Chromium never binds
   `wl_pointer`/`wl_keyboard` in time, yet the tool exits 0 and `mouse`/`key` report `ok: true`.
@@ -417,8 +417,8 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   use the `tailscale serve` URL even from the node itself.
 - **`pkill -f` inside `ssh host 'sh -c …'` kills the `sh -c`** whose command line matches.
   Use `pkill -x <name>` — but `-x` matches at most 15 characters of the process name, so
-  `pkill -x oab-instance-mcp` silently matches nothing.
+  `pkill -x oab-computer` silently matches nothing.
 - **Chromium `No usable sandbox!` / `Trace/breakpoint trap`** on Ubuntu 24.04+: AppArmor
-  userns restriction; see [Headless server notes](#headless-server-notes-ubuntu-2404-on-black).
+  userns restriction; see [Headless server notes](#headless-server-notes-ubuntu-2404).
 - **Headed browser "without having a XServer"** on a headless seat: Chromium picked X11; add
   `--ozone-platform=wayland` (the installer's `pw-config.json` does).

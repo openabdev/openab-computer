@@ -1,4 +1,6 @@
-# ADR: Reverse Attach — macmini dials the sandbox
+# ADR: Reverse Attach — the Mac dials the sandbox
+
+**Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
 
 - **Status:** Proposed
 - **Date:** 2026-09-25
@@ -129,7 +131,7 @@ sits on the Mac.
   keeps redialling for the remainder of the grant TTL.
 - **Assumption that must hold in deployment: the k8s node is not itself a tailnet member.** If it
   is, pods reach the whole tailnet through the node's tailscale routing regardless of the
-  sidecar (measured on p1, 2026-09-26; see the requirement doc's 4a results). Document it in
+  sidecar (measured on the k3s node, 2026-09-26; see the requirement doc's 4a results). Document it in
   the openab-pty k8s how-to; opt-in egress `NetworkPolicy` if the node must run tailscaled.
 - Residual, by design: a compromised agent can call the tools it *was* granted. Every design
   that gives an agent hands carries this; here the hands are exactly as large, and last exactly

@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "oab-instance-mcp",
+    name: "oab-computer",
     platforms: [.macOS(.v14)],
     products: [
-        .executable(name: "oab-instance-mcp", targets: ["oab-instance-mcp"]),
+        .executable(name: "oab-computer", targets: ["oab-computer"]),
         .library(name: "InstanceMCPCore", targets: ["InstanceMCPCore"]),
     ],
     targets: [
@@ -23,15 +23,15 @@ let package = Package(
         ),
         // Thin CLI: flag parsing + wiring. No logic worth testing lives here.
         .executableTarget(
-            name: "oab-instance-mcp",
+            name: "oab-computer",
             dependencies: ["InstanceMCPCore"],
-            path: "Sources/oab-instance-mcp"
+            path: "Sources/oab-computer"
         ),
         .testTarget(
             name: "InstanceMCPCoreTests",
             // The executable is a dependency only so it is built beside the tests: one test runs it with the hidden
             // permission-check argument.
-            dependencies: ["InstanceMCPCore", "oab-instance-mcp"],
+            dependencies: ["InstanceMCPCore", "oab-computer"],
             path: "Tests/InstanceMCPCoreTests"
         ),
     ]

@@ -76,7 +76,7 @@ public struct ExecPollTool: Tool {
         byte offsets returned by the previous poll. When `state` is `exited` or `killed`, \
         `exit_code` is set and no more output will appear. Output is read from the job's log \
         files (never truncated); terminal-job metadata is retained ~10 min, and the log files \
-        themselves persist on disk (~/Library/Logs/oab-instance-mcp/jobs/<job_id>.out/.err).
+        themselves persist on disk (~/Library/Logs/oab-computer/jobs/<job_id>.out/.err).
         """
     public let inputSchema: JSONValue = [
         "type": "object",
@@ -92,7 +92,7 @@ public struct ExecPollTool: Tool {
     public func call(arguments: JSONValue) async throws -> ToolResult {
         guard let id = arguments["job_id"]?.stringValue else { throw JSONRPCError.invalidParams("job_id is required") }
         guard let job = await JobRegistry.shared.job(id) else {
-            return .error("unknown job_id: \(id) (its metadata may have been garbage-collected; the log files may still exist under ~/Library/Logs/oab-instance-mcp/jobs/)")
+            return .error("unknown job_id: \(id) (its metadata may have been garbage-collected; the log files may still exist under ~/Library/Logs/oab-computer/jobs/)")
         }
         let outSince = arguments["stdout_since"]?.intValue ?? 0
         let errSince = arguments["stderr_since"]?.intValue ?? 0

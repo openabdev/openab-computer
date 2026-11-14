@@ -1,5 +1,5 @@
 #!/bin/bash
-# Assemble the minimal oab-instance-mcp.app bundle around a prebuilt binary.
+# Assemble the minimal oab-computer.app bundle around a prebuilt binary.
 #
 # This script does NOT sign. Local deploy.sh signs with Apple Development; the
 # release workflow signs with Developer ID Application. Keeping assembly separate
@@ -12,7 +12,7 @@ set -euo pipefail
 BIN="${1:?usage: assemble-app.sh <binary> <output.app> [version]}"
 OUT="${2:?usage: assemble-app.sh <binary> <output.app> [version]}"
 VERSION="${3:-}"
-BUNDLE_ID="${BUNDLE_ID:-dev.openab.instance-mcp}"
+BUNDLE_ID="${BUNDLE_ID:-dev.openab.computer}"
 
 [ -f "$BIN" ] && [ -x "$BIN" ] || {
   echo "assemble-app: binary is missing or not executable: $BIN" >&2
@@ -49,8 +49,8 @@ TMP=$(mktemp -d "$PARENT/.${NAME}.assemble.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 APP="$TMP/$NAME"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-/usr/bin/ditto "$BIN" "$APP/Contents/MacOS/oab-instance-mcp"
-chmod 755 "$APP/Contents/MacOS/oab-instance-mcp"
+/usr/bin/ditto "$BIN" "$APP/Contents/MacOS/oab-computer"
+chmod 755 "$APP/Contents/MacOS/oab-computer"
 # Makes the advanced .app.zip artifact self-contained: after unzipping, run
 #   app/Contents/Resources/install-prebuilt.sh app
 # The signed/notarized .pkg remains the normal one-click install path.
@@ -58,11 +58,11 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cp "$SCRIPT_DIR/install-prebuilt.sh" "$APP/Contents/Resources/install-prebuilt.sh"
 chmod 755 "$APP/Contents/Resources/install-prebuilt.sh"
 
-# User-visible name. The bundle id, executable and .app file name stay
-# oab-instance-mcp (TCC grants and installed paths depend on them, see #63).
+# User-visible name. The bundle id (dev.openab.computer), executable and .app file name are
+# oab-computer (TCC grants and installed paths depend on them, see #63).
 # macOS shows a name other than the file name only when the bundle localizes
 # it AND the file name equals the base CFBundleDisplayName, so the base names
-# stay oab-instance-mcp and en.lproj carries "OpenAB Computer".
+# stay oab-computer and en.lproj carries "OpenAB Computer".
 DISPLAY_NAME="OpenAB Computer"
 mkdir -p "$APP/Contents/Resources/en.lproj"
 cat >"$APP/Contents/Resources/en.lproj/InfoPlist.strings" <<EOF
@@ -75,11 +75,11 @@ cat >"$APP/Contents/Info.plist" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
-  <key>CFBundleName</key><string>oab-instance-mcp</string>
-  <key>CFBundleDisplayName</key><string>oab-instance-mcp</string>
+  <key>CFBundleName</key><string>oab-computer</string>
+  <key>CFBundleDisplayName</key><string>oab-computer</string>
   <key>LSHasLocalizedDisplayName</key><true/>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleExecutable</key><string>oab-instance-mcp</string>
+  <key>CFBundleExecutable</key><string>oab-computer</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>

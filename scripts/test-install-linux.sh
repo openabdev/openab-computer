@@ -20,8 +20,8 @@ fail() { echo "FAIL: $*" >&2; FAIL=1; }
 PKG="$T/pkg"; mkdir -p "$PKG"
 cp "$HERE/install-linux.sh" "$PKG/"
 cp "$HERE/../poc/reverse-attach-linux/pw-mcp.sh" "$PKG/"
-printf '#!/bin/sh\nexit 0\n' >"$PKG/oab-instance-mcp"
-chmod 755 "$PKG/install-linux.sh" "$PKG/pw-mcp.sh" "$PKG/oab-instance-mcp"
+printf '#!/bin/sh\nexit 0\n' >"$PKG/oab-computer"
+chmod 755 "$PKG/install-linux.sh" "$PKG/pw-mcp.sh" "$PKG/oab-computer"
 
 STUBS="$T/stubs"; mkdir -p "$STUBS"
 LOG="$T/calls.log"
@@ -29,7 +29,9 @@ stub() { # stub NAME [BODY]: logs "NAME args" to $LOG, then runs BODY (default: 
   printf '#!/bin/bash\necho "%s $*" >>"%s"\n%s\n' "$1" "$LOG" "${2:-exit 0}" >"$STUBS/$1"
   chmod 755 "$STUBS/$1"
 }
-for c in grim wlrctl wtype sway systemctl loginctl curl node npm npx chromium; do stub "$c"; done
+for c in grim wlrctl wtype sway loginctl curl node npm npx chromium; do stub "$c"; done
+# systemctl: the is-active / is-enabled queries answer "no" (no old unit present); everything else succeeds.
+stub systemctl 'case "$2" in is-active|is-enabled) exit 1;; esac; exit 0'
 stub sudo 'exit 1'                       # no passwordless sudo: the installer takes its no-sudo paths
 stub fc-list 'echo "DejaVuSans.ttf: DejaVu Sans:style=Book"'
 stub tailscale '[ "$1 $2" = "status --json" ] && echo '"'"'{"Self":{"UserID":7,"DNSName":"node.example.ts.net."},"User":{"7":{"LoginName":"ci-user"}}}'"'"'
@@ -42,9 +44,9 @@ stub ls 'case "$1" in /run/user/*) printf "wayland-0\nwayland-1\n";; *) exec '"$
 run() {
   local name="$1"; shift
   local home="$T/$name/home"
-  mkdir -p "$home/.local/oab-instance-mcp/pw-mcp/node_modules/.bin"
-  printf '#!/bin/sh\n' >"$home/.local/oab-instance-mcp/pw-mcp/node_modules/.bin/playwright-mcp"
-  chmod 755 "$home/.local/oab-instance-mcp/pw-mcp/node_modules/.bin/playwright-mcp"
+  mkdir -p "$home/.local/oab-computer/pw-mcp/node_modules/.bin"
+  printf '#!/bin/sh\n' >"$home/.local/oab-computer/pw-mcp/node_modules/.bin/playwright-mcp"
+  chmod 755 "$home/.local/oab-computer/pw-mcp/node_modules/.bin/playwright-mcp"
   : >"$LOG"
   # stdin is /dev/null: a command substitution such as `bash` in a heredoc must not wait on it.
   if ! (cd "$PKG" && HOME="$home" USER="${USER:-$(id -un)}" PATH="$STUBS:$PATH" ./install-linux.sh "$@") </dev/null >"$T/$name/out" 2>&1; then
@@ -56,7 +58,7 @@ run() {
 # expect NAME UNIT LOGIN PORT: diff the written unit against the expected text below.
 expect() {
   local name="$1" unit="$2" login="$3" port="$4" home="$T/$1/home"
-  local base="$home/.local/oab-instance-mcp" cfg="$home/.config/oab-instance-mcp"
+  local base="$home/.local/oab-computer" cfg="$home/.config/oab-computer"
   local got="$home/.config/systemd/user/$unit"
   [ -f "$got" ] || { fail "$name: $unit not written"; return; }
   sed -e "s|@BASE@|$base|g" -e "s|@CFG@|$cfg|g" -e "s|@LOGIN@|$login|g" -e "s|@PORT@|$port|g" \
@@ -66,13 +68,13 @@ expect() {
 
 # Expected units. @UPSTREAM@ becomes the browser line or an empty line (the installer writes
 # an empty $UPSTREAM line with --no-browser).
-cat >"$T/expected-oab-instance-mcp.service.in" <<'EOF'
+cat >"$T/expected-oab-computer.service.in" <<'EOF'
 [Unit]
-Description=oab-instance-mcp (Linux hands node: /mcp + /attach)
+Description=oab-computer (Linux hands node: /mcp + /attach)
 After=graphical-session.target
 
 [Service]
-ExecStart=@BASE@/oab-instance-mcp
+ExecStart=@BASE@/oab-computer
 Environment=BIND=127.0.0.1:@PORT@
 Environment=MCP_TOKEN_FILE=@CFG@/token
 Environment=MCP_ALLOW_LOGIN=@LOGIN@
@@ -87,9 +89,9 @@ KillMode=process
 [Install]
 WantedBy=default.target
 EOF
-cat >"$T/expected-oab-pw-mcp.service" <<'EOF'
+cat >"$T/expected-oab-computer-pw-mcp.service" <<'EOF'
 [Unit]
-Description=Playwright MCP for the oab-instance-mcp hands node (loopback :8794)
+Description=Playwright MCP for the oab-computer hands node (loopback :8794)
 After=graphical-session.target oab-seat.service
 
 [Service]
@@ -107,7 +109,7 @@ WantedBy=default.target
 EOF
 cat >"$T/expected-oab-seat.service" <<'EOF'
 [Unit]
-Description=Headless sway seat for the oab-instance-mcp hands node
+Description=Headless sway seat for the oab-computer hands node
 
 [Service]
 Environment=WLR_BACKENDS=headless
@@ -126,31 +128,31 @@ EOF
 # 1. Defaults plus a headless seat: browser unit, login detected from `tailscale status`.
 run browser --headless-seat
 sed 's|@UPSTREAM@|Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp|' \
-  "$T/expected-oab-instance-mcp.service.in" >"$T/expected-oab-instance-mcp.service"
-expect browser oab-instance-mcp.service ci-user 8795
-expect browser oab-pw-mcp.service ci-user 8795
+  "$T/expected-oab-computer.service.in" >"$T/expected-oab-computer.service"
+expect browser oab-computer.service ci-user 8795
+expect browser oab-computer-pw-mcp.service ci-user 8795
 expect browser oab-seat.service ci-user 8795
 for want in "systemctl --user enable --now oab-seat.service" \
-            "systemctl --user enable --now oab-pw-mcp.service" \
-            "systemctl --user enable --now oab-instance-mcp.service" \
-            "systemctl --user restart oab-instance-mcp.service" \
+            "systemctl --user enable --now oab-computer-pw-mcp.service" \
+            "systemctl --user enable --now oab-computer.service" \
+            "systemctl --user restart oab-computer.service" \
             "loginctl enable-linger"; do
   grep -qF "$want" "$T/browser/calls" || fail "browser: no call: $want"
 done
 
 # 2. --no-browser, explicit login and port: no browser unit, empty upstream line.
 run nobrowser --no-browser --allow-login ci-other --port 9000
-sed 's|@UPSTREAM@||' "$T/expected-oab-instance-mcp.service.in" >"$T/expected-oab-instance-mcp.service"
-expect nobrowser oab-instance-mcp.service ci-other 9000
-for u in oab-pw-mcp.service oab-seat.service; do
+sed 's|@UPSTREAM@||' "$T/expected-oab-computer.service.in" >"$T/expected-oab-computer.service"
+expect nobrowser oab-computer.service ci-other 9000
+for u in oab-computer-pw-mcp.service oab-seat.service; do
   [ ! -e "$T/nobrowser/home/.config/systemd/user/$u" ] || fail "nobrowser: $u written"
 done
-if grep -qF "oab-pw-mcp" "$T/nobrowser/calls"; then fail "nobrowser: oab-pw-mcp.service enabled"; fi
+if grep -qF "oab-computer-pw-mcp" "$T/nobrowser/calls"; then fail "nobrowser: oab-computer-pw-mcp.service enabled"; fi
 
 for name in browser nobrowser; do
-  unit="$T/$name/home/.config/systemd/user/oab-instance-mcp.service"
+  unit="$T/$name/home/.config/systemd/user/oab-computer.service"
   grep -qF '# Apps opened via `bash` belong to the desktop' "$unit" || fail "$name: KillMode comment mangled"
-  tok="$T/$name/home/.config/oab-instance-mcp/token"
+  tok="$T/$name/home/.config/oab-computer/token"
   if [ ! -s "$tok" ] || [ "$(stat -c %a "$tok")" != 600 ]; then fail "$name: token missing or not mode 600"; fi
 done
 
@@ -158,8 +160,8 @@ done
 # installed here, and verify rejects a missing executable.
 if command -v systemd-analyze >/dev/null; then
   for name in browser nobrowser; do
-    units=("$T/$name/home/.config/systemd/user/oab-instance-mcp.service")
-    [ "$name" = nobrowser ] || units+=("$T/$name/home/.config/systemd/user/oab-pw-mcp.service")
+    units=("$T/$name/home/.config/systemd/user/oab-computer.service")
+    [ "$name" = nobrowser ] || units+=("$T/$name/home/.config/systemd/user/oab-computer-pw-mcp.service")
     if ! out="$(HOME="$T/$name/home" systemd-analyze --user verify "${units[@]}" 2>&1)" || [ -n "$out" ]; then
       echo "$out" >&2; fail "$name: systemd-analyze verify"
     fi

@@ -1,10 +1,10 @@
-# OpenAB Computer (`oab-instance-mcp`)
+# OpenAB Computer (`oab-computer`)
 
-> **Name.** The product is now OpenAB Computer (repository `openabdev/openab-computer`, tracked in
-> [#63](https://github.com/openabdev/openab-computer/issues/63)). The executable, bundle id, release
-> asset names, config directory and Linux unit names keep the old `instance-mcp` names on purpose:
-> macOS TCC grants are keyed to the bundle id `dev.openab.instance-mcp`, and changing it would drop
-> every grant. Commands in this README use those names.
+> **Name.** The product is OpenAB Computer (repository `openabdev/openab-computer`, tracked in
+> [#63](https://github.com/openabdev/openab-computer/issues/63)). Since 0.12.0 the executable, bundle
+> id (`dev.openab.computer`), LaunchAgent, systemd units, directories and release assets are all named
+> `oab-computer`. It was `oab-instance-mcp` up to 0.11; see
+> [Upgrading from 0.11 or earlier](#upgrading-from-011-or-earlier). Commands in this README use the new names.
 
 The "hands and feet" half of [openabdev/openab#1544](https://github.com/openabdev/openab/issues/1544):
 a thin daemon that lives in a Mac's logged-in desktop session and exposes the machine to a
@@ -33,7 +33,7 @@ flowchart LR
             s8444[":8444 → 127.0.0.1:8795<br/>injects Tailscale-User-Login"]
         end
         subgraph gui["Aqua session · LaunchAgents in gui/501"]
-            mcp["<b>oab-instance-mcp</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · ui_action · mouse · key · osascript"]
+            mcp["<b>oab-computer</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · ui_action · mouse · key · osascript"]
             pw["@playwright/mcp<br/>headed Chromium, persistent profile"]
         end
         dial["<b>--switchboard</b> client<br/>dials out to /vm/attach"]
@@ -43,7 +43,7 @@ flowchart LR
             input["Input<br/>CGEvent mouse / keyboard"]
             apps["Apps<br/>osascript / JXA"]
         end
-        tcc{{"TCC grants, once, on the Mac's own screen<br/>Screen Recording · Accessibility · Full Disk Access<br/>bound to bundle id dev.openab.instance-mcp"}}
+        tcc{{"TCC grants, once, on the Mac's own screen<br/>Screen Recording · Accessibility · Full Disk Access<br/>bound to bundle id dev.openab.computer"}}
     end
 
     cli -- "HTTPS · MCP Streamable HTTP" --> s8444
@@ -74,11 +74,11 @@ this exists for what SSH cannot reach.
 - [Goal](#goal) · [Features](#features) · [Status and known limits](#status-and-known-limits) · [Quick start](#quick-start) · [Platforms](#platforms)
 - [Tools](#tools) · [Auth](#auth) · [Network interfaces and ports](#network-interfaces-and-ports)
 - [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) · [Switchboard](#serving-a-switchboard---switchboard) · [Browser tools](#browser-tools-for-lent-sessions---upstream)
-- Deploy & operate: [Download and install](#download-and-install) · [Build & test](#build--test-on-the-build-mac-the-laptop-never-compiles-swift) · [Deploy](#deploy-run-on-the-target) · [Menu bar](#menu-bar) · [Operate](#operate)
+- Deploy & operate: [Download and install](#download-and-install) · [Upgrading from 0.11](#upgrading-from-011-or-earlier) · [Build & test](#build--test-on-the-build-mac-the-laptop-never-compiles-swift) · [Deploy](#deploy-run-on-the-target) · [Menu bar](#menu-bar) · [Operate](#operate)
 - Operator notes: [TCC & signing](#tcc-grants-survive-re-deploys-only-if-the-signature-does) · [Gotchas](#gotchas)
 - Detail: [UI tools](docs/ui-tools.md) · [Operator notes and gotchas](docs/operators.md)
 
-Components: `oab-instance-mcp` is this package (Swift on macOS, zero deps; Rust on Linux). The
+Components: `oab-computer` is this package (Swift on macOS, zero deps; Rust on Linux). The
 browser server is `@playwright/mcp`, not ours ([`poc/pw-mcp/README.md`](poc/pw-mcp/README.md)).
 Design notes: [`docs/requirements/connect-closed-loop.md`](docs/requirements/connect-closed-loop.md).
 
@@ -124,7 +124,7 @@ The accessibility-tree tools are macOS only for now; Linux is deferred
 
 ## Quick start
 
-**macOS** — download `oab-instance-mcp-VERSION-universal.pkg` from
+**macOS** — download `oab-computer-VERSION-universal.pkg` from
 [Releases](https://github.com/openabdev/openab-computer/releases), double-click, and follow the
 permissions wizard ([details](#download-and-install)). Then point a caller at it:
 
@@ -150,15 +150,15 @@ curl -s https://<switchboard>.<tailnet>.ts.net/mcp/<computer> \
 ([full guide](docs/linux-setup.md)):
 
 ```sh
-V=$(curl -fsSL https://api.github.com/repos/openabdev/openab-computer/releases/latest | python3 -c 'import sys,json;print(json.load(sys.stdin)["tag_name"][1:])')
+V=0.12.0   # the first release with oab-computer-* assets (v0.11.0 and older use the old names)
 A=$(dpkg --print-architecture)   # arm64 | amd64
-curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-instance-mcp-$V-linux-$A.tar.gz"
-tar xzf oab-instance-mcp-$V-linux-$A.tar.gz && cd oab-instance-mcp-$V-linux-$A
+curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
+tar xzf oab-computer-$V-linux-$A.tar.gz && cd oab-computer-$V-linux-$A
 ./install-linux.sh                # a box with no desktop: add --headless-seat
 ```
 
 The URL is `https://<host>.<tailnet>.ts.net:8444/mcp` and the bearer token is in
-`~/.config/oab-instance-mcp/token` on the node.
+`~/.config/oab-computer/token` on the node.
 
 ## Platforms
 
@@ -176,7 +176,7 @@ The URL is `https://<host>.<tailnet>.ts.net:8444/mcp` and the bearer token is in
 The rest of this README is the macOS reference; the two platforms share the wire contract, auth
 and reverse-attach shape, so callers configure them identically. On Linux the job tools
 (`exec_start`, `exec_poll`, `exec_list`, `exec_cancel`) take the same arguments and return the
-same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-instance-mcp/jobs/`
+same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-computer/jobs/`
 (default `~/.local/state/…`), and they are `owner`-only there too
 ([`docs/linux-setup.md`](docs/linux-setup.md#background-jobs)).
 
@@ -186,7 +186,7 @@ same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-instance-mcp
 |---|---|---|
 | `sys_info` | host, OS, chip, displays, tailnet IPs, console user, TCC status | call first; tells the model what will work |
 | `exec` | `zsh -f -c <command>` as the desktop user | `cwd` (a leading `~` is expanded and validated — a missing dir or unreadable external volume returns a clear error, not a hang), `env`, `timeout_secs` (≤600), `max_output_bytes` (≤1 MiB/stream). Spawned with `POSIX_SPAWN_SETSID`; timeout → `killpg` → exit 137, `timed_out=true`. `structuredContent` carries exit/stdout/stderr/duration. Use for commands that finish in seconds |
-| `exec_start` | start a background job, return a `job_id` immediately | for work that outlives one request (release builds). Same shell/session/TCC as `exec`; `cwd`, `env`, `timeout_secs` (0 = no timeout, stop via `exec_cancel`). stdout/stderr are tee'd to `~/Library/Logs/oab-instance-mcp/jobs/<job_id>.out`/`.err` (never truncated; survive after the job is forgotten; `tail -f`-able) |
+| `exec_start` | start a background job, return a `job_id` immediately | for work that outlives one request (release builds). Same shell/session/TCC as `exec`; `cwd`, `env`, `timeout_secs` (0 = no timeout, stop via `exec_cancel`). stdout/stderr are tee'd to `~/Library/Logs/oab-computer/jobs/<job_id>.out`/`.err` (never truncated; survive after the job is forgotten; `tail -f`-able) |
 | `exec_poll` | fetch a job's state + incremental output | `job_id`, optional `stdout_since`/`stderr_since` byte offsets (from the prior poll) for only-new output; reads from the log files by seek. Terminal `state` (`exited`/`killed`) carries `exit_code`; `out_path`/`err_path` point at the files |
 | `exec_list` | all running jobs + the 10 most recently finished | recover a forgotten `job_id` or see what is running; each entry has state, pid, exit_code, command, cwd, timestamps, stdout/stderr byte sizes |
 | `exec_cancel` | stop a running job (or drop a finished one) | `job_id`, `signal` `KILL` (default) / `TERM` — signals the whole process group; poll once more for final output. Finished jobs are dropped from the registry (log files stay on disk) |
@@ -227,12 +227,12 @@ Configured checks are **AND**-combined: a request must pass every check that is 
 - `--token <s>` / `--token-file <p>` — additionally require `Authorization: Bearer`, constant-time
   compared. The token after the `Bearer` scheme (case-insensitive) must match byte for byte;
   whitespace around the whole header value is stripped by the HTTP parser, nothing inside it is.
-  **`deploy.sh` now generates one at `~/.config/oab-computer/token` on macOS (mode 600; Linux keeps `~/.config/oab-instance-mcp/token`) and passes
+  **`deploy.sh` now generates one at `~/.config/oab-computer/token` (mode 600) and passes
   `--token-file`**, so the deployed agent requires *both* an allow-listed Tailscale login *and* the
   bearer token. This is defence-in-depth: a leaked tailnet auth key that enrols a node as
   your Tailscale login passes the login check but still gets `401` without the token (verified
   2026-09-23: no token → 401, correct token → 200, wrong token → 401). The token is stable across
-  re-deploys; rotate by deleting `~/.config/oab-computer/token` (macOS) and re-deploying. The first 0.12 run copies a 0.11 token from `~/.config/oab-instance-mcp/token` once, when `~/.config/oab-computer` is created; after that the old file is never read again, so a deleted token is not restored from it. (The switchboard files and grants still live under `~/.config/oab-instance-mcp` for now.) The menu bar shows a masked form and
+  re-deploys; rotate by deleting `~/.config/oab-computer/token` (macOS) and re-deploying. The first 0.12 run copies a 0.11 token from `~/.config/oab-instance-mcp/token` once, when `~/.config/oab-computer` is created; after that the old file is never read again, so a deleted token is not restored from it. The menu bar shows a masked form and
   copies the full token (see below); it is never written to `agent.log`.
 - `--insecure-local` — allow bare loopback requests with no Tailscale headers. Debugging only.
 - `/healthz` is unauthenticated and says only `ok`.
@@ -368,7 +368,7 @@ differences:
 - There is no switchboard and no menu bar.
 - `install-linux.sh` runs `sudo tailscale serve` for `:8444` only with passwordless sudo.
   Otherwise it prints the command.
-- `install-linux.sh` also starts Playwright MCP on `127.0.0.1:8794` (user unit `oab-pw-mcp.service`)
+- `install-linux.sh` also starts Playwright MCP on `127.0.0.1:8794` (user unit `oab-computer-pw-mcp.service`)
   when `node` and `npm` are present, and sets `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp`. Skip
   it with `--no-browser`. It makes no tailnet mapping for 8794. `MCP_UPSTREAM` takes plain `http://`
   URLs only.
@@ -445,9 +445,9 @@ runs.
 
 ```sh
 openab-sb gen-secret                    # on the switchboard: verifier → [vm].secret_sha256
-oab-instance-mcp --token-file ~/.config/oab-computer/token \
+oab-computer --token-file ~/.config/oab-computer/token \
   --switchboard wss://<switchboard>.<tailnet>.ts.net/vm/attach \
-  --switchboard-secret-file ~/.config/oab-instance-mcp/switchboard.secret \
+  --switchboard-secret-file ~/.config/oab-computer/switchboard.secret \
   --switchboard-profile observe         # observe (default) | owner
 ```
 
@@ -463,7 +463,7 @@ oab-instance-mcp --token-file ~/.config/oab-computer/token \
   does not clean an existing log, so rotate audit files written by an older release.
 - **Secure fields:** `ui_action` `set_value` on a password field is refused through a switchboard
   by default, and nothing is typed into the app. To allow it, write `allow` to
-  `~/.config/oab-instance-mcp/switchboard.secure-set-value` and re-run the installer (flag
+  `~/.config/oab-computer/switchboard.secure-set-value` and re-run the installer (flag
   `--switchboard-allow-secure-set-value`). Do this only when the switchboard has
   `audit_args = false` or runs openab-sb 0.2.2 or later. Otherwise, fill secure fields over a
   direct `/mcp` connection.
@@ -473,7 +473,7 @@ oab-instance-mcp --token-file ~/.config/oab-computer/token \
   minutes on `401`/`403` instead of stopping. The contract is openab-sb `SOUTHBOUND-CONTRACT.md`.
 - **Rotation:** the secret file is re-read on every dial. Update the file, and the next retry
   picks it up.
-- **Installed with the package:** put the URL in `~/.config/oab-instance-mcp/switchboard.url`, the
+- **Installed with the package:** put the URL in `~/.config/oab-computer/switchboard.url`, the
   secret in `switchboard.secret` (mode 600) and, optionally, the profile in `switchboard.profile`
   and `allow` in `switchboard.secure-set-value`.
   Then re-run the installer: it writes the flags into the LaunchAgent plist whenever both files
@@ -514,7 +514,7 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
 
 Tagged releases publish a universal, Developer-ID-signed and Apple-notarized installer:
 
-1. Download `oab-instance-mcp-VERSION-universal.pkg` from
+1. Download `oab-computer-VERSION-universal.pkg` from
    [GitHub Releases](https://github.com/openabdev/openab-computer/releases).
 2. Sign into Tailscale and keep a desktop user logged in.
 3. Double-click the package. It auto-detects your Tailscale login/name, preserves or creates the
@@ -525,7 +525,7 @@ Tagged releases publish a universal, Developer-ID-signed and Apple-notarized ins
    both are on. Click Allow on each row, turn the switch on in System Settings, and return to the
    wizard, which re-tests on its own. Use Check Again if the row does not update. Page 2 is optional
    Full Disk Access, which has a Skip link. Browser tools work without any of them. Future releases
-   keep the same Developer ID + bundle id, so grants survive.
+   keep the same Developer ID + bundle id, so grants survive (the 0.12 rename changed the bundle id once; see [Upgrading from 0.11 or earlier](#upgrading-from-011-or-earlier)).
 5. The same wizard remains available from the menu bar as **Set Up Permissions…**; use the menu
    item to copy the MCP URL and bearer token into OpenAB Connect/Remote.
 
@@ -534,20 +534,88 @@ Linux hands nodes: see [Quick start](#quick-start) and [`docs/linux-setup.md`](d
 The `.app.zip` beside the package is an advanced/manual artifact. After unzipping:
 
 ```sh
-/path/to/oab-instance-mcp.app/Contents/Resources/install-prebuilt.sh \
-  /path/to/oab-instance-mcp.app --allow-login auto
+/path/to/oab-computer.app/Contents/Resources/install-prebuilt.sh \
+  /path/to/oab-computer.app --allow-login auto
 ```
 
 The installer never re-signs the app: doing so would change the identity TCC grants are bound to.
 See [`docs/releasing.md`](docs/releasing.md) for artifacts, signing/notarization, required secrets,
 local packaging smoke, and the current first-release signing blocker.
 
+## Upgrading from 0.11 or earlier
+
+0.12.0 renames the product's technical names from `oab-instance-mcp` to `oab-computer`. This is a
+breaking change with no compatibility layer: nothing is read from or written to the old names, except
+the token copy in step 3 (the old path is its source only) and the warn-only check for the old agent. The product name stays OpenAB Computer.
+
+| | 0.11 and earlier | 0.12.0 |
+|---|---|---|
+| Executable, app file | `oab-instance-mcp`, `oab-instance-mcp.app` | `oab-computer`, `oab-computer.app` |
+| Bundle id, LaunchAgent label | `dev.openab.instance-mcp` | `dev.openab.computer` |
+| Playwright LaunchAgent, Linux unit | `dev.openab.instance-mcp.pw-mcp`, `oab-pw-mcp.service` | `dev.openab.computer.pw-mcp`, `oab-computer-pw-mcp.service` |
+| Linux unit | `oab-instance-mcp.service` | `oab-computer.service` |
+| Install, config, logs | `~/.local/oab-instance-mcp`, `~/.config/oab-instance-mcp`, `~/Library/Logs/oab-instance-mcp` | `~/.local/oab-computer`, `~/.config/oab-computer`, `~/Library/Logs/oab-computer` |
+| Saved grants, audit log (macOS), state (Linux) | `~/Library/Application Support/oab-instance-mcp`, `$XDG_STATE_HOME/oab-instance-mcp` | `~/Library/Application Support/oab-computer`, `$XDG_STATE_HOME/oab-computer` |
+| Keychain service (attach secrets) | `dev.openab.instance-mcp.grant` | `dev.openab.computer.grant` |
+| Environment variables | `OAB_INSTANCE_MCP_*` | `OAB_COMPUTER_*` |
+| Release assets | `oab-instance-mcp-VERSION-*` | `oab-computer-VERSION-*` |
+
+To upgrade:
+
+1. Install 0.12.0 with the new installer (the `.pkg`, `install-prebuilt.sh`, or `install-linux.sh` from the
+   new Linux tarball). The installer only warns when it finds the old agent. It never stops or removes it.
+2. macOS: grant Screen Recording and Accessibility again (and Full Disk Access if you use it). TCC
+   grants are keyed to the bundle id, which changed. To drop the stale entries, run
+   `tccutil reset ScreenCapture dev.openab.instance-mcp` and
+   `tccutil reset Accessibility dev.openab.instance-mcp` (and `tccutil reset SystemPolicyAllFiles dev.openab.instance-mcp` for Full Disk Access).
+3. The bearer token is copied automatically from `~/.config/oab-instance-mcp/token` to
+   `~/.config/oab-computer/token`, mode 600, and the old file stays in place. macOS: the copy happens when the
+   new config directory is first created. Linux: `install-linux.sh` copies whenever
+   `~/.config/oab-computer/token` does not exist yet. If `~/.config/oab-computer` already exists on macOS, nothing is copied and a new token is generated when the token file is missing. An existing new token is never overwritten. On Linux a new token is generated only when neither file exists. A user who never had an old token gets a new one and must update their clients.
+4. Not migrated, so redo them by hand, but only after the new installer or app has run once so that `~/.config/oab-computer` exists: switchboard settings (`switchboard.url`, `switchboard.secret`,
+   `switchboard.profile`, `switchboard.secure-set-value`), saved grants and their Keychain secrets (lend again),
+   logs and audit files (on Linux, grants and audit under `~/.local/state/oab-instance-mcp` stay there too). You may copy the switchboard files, logs and audit files from the old directory
+   if you want them. Do not copy `grants.json`: the grant secrets stay under the old Keychain service, so
+   lend each grant again.
+5. Remove the old agent. It still holds port 8795 and fights the new one.
+
+   macOS:
+
+   ```sh
+   launchctl bootout gui/$(id -u)/dev.openab.instance-mcp
+   rm ~/Library/LaunchAgents/dev.openab.instance-mcp.plist
+   # only if you used the Playwright agent:
+   launchctl bootout gui/$(id -u)/dev.openab.instance-mcp.pw-mcp
+   rm ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist
+   # then restart the new agent, which could not bind port 8795 while the old one held it:
+   launchctl kickstart -k gui/$(id -u)/dev.openab.computer
+   ```
+
+   If you used the Playwright agent, install the new one from a clone of this repo (`poc/pw-mcp/install.sh`),
+   then run the main installer (the `.pkg` or `install-prebuilt.sh`) again. The installer adds the browser
+   upstream to the agent only when the new Playwright agent is already loaded, and a restart alone does not.
+
+   Linux:
+
+   ```sh
+   systemctl --user disable --now oab-instance-mcp.service
+   rm ~/.config/systemd/user/oab-instance-mcp.service
+   # only if you used the Playwright unit (not on --no-browser nodes):
+   systemctl --user disable --now oab-pw-mcp.service
+   rm ~/.config/systemd/user/oab-pw-mcp.service
+   systemctl --user daemon-reload
+   # then restart the new unit, which could not bind port 8795 while the old one held it:
+   systemctl --user restart oab-computer.service
+   ```
+
+   After the new agent works you can delete the old directories.
+
 ## Build & test (on the build Mac; the laptop never compiles Swift)
 
 ```sh
-rsync -a --delete --exclude .build --exclude .git ./ <mac>:~/src/oab-instance-mcp/
-ssh <mac> 'cd ~/src/oab-instance-mcp && swift build -c release && swift test'
-ssh <mac> 'cd ~/src/oab-instance-mcp && bash scripts/smoke.sh'   # loopback, every step time-bounded
+rsync -a --delete --exclude .build --exclude .git ./ <mac>:~/src/oab-computer/
+ssh <mac> 'cd ~/src/oab-computer && swift build -c release && swift test'
+ssh <mac> 'cd ~/src/oab-computer && bash scripts/smoke.sh'   # loopback, every step time-bounded
 ```
 
 `~/src` is on the internal disk on purpose: `~/build` is a RAID symlink and LaunchAgents cannot
@@ -556,26 +624,26 @@ read the RAID (TCC on external volumes).
 ## Deploy (run on the target)
 
 ```sh
-ssh <mac> 'cd ~/src/oab-instance-mcp && \
+ssh <mac> 'cd ~/src/oab-computer && \
   KEYCHAIN=~/Library/Keychains/signing.keychain-db KEYCHAIN_PASSWORD_FILE=~/.config/signing/keychain-password \
   bash scripts/deploy.sh you@example.com <codesign-identity-sha1>'
 ```
 
-`deploy.sh` wraps the binary in `~/.local/oab-instance-mcp/oab-instance-mcp.app` (bundle id
-`dev.openab.instance-mcp`) so TCC grants bind to a stable identity, signs it with the
-given Apple Development identity (any cert of yours; TCC grants are keyed on identity + bundle id, so keep using the same one), installs LaunchAgent `dev.openab.instance-mcp` in `gui/501`,
+`deploy.sh` wraps the binary in `~/.local/oab-computer/oab-computer.app` (bundle id
+`dev.openab.computer`) so TCC grants bind to a stable identity, signs it with the
+given Apple Development identity (any cert of yours; TCC grants are keyed on identity + bundle id, so keep using the same one), installs LaunchAgent `dev.openab.computer` in `gui/501`,
 and runs `tailscale serve --bg --https=8444 http://127.0.0.1:8795`.
 
 Then, once, on the Mac's own screen, System Settings → Privacy & Security:
 
-- Screen & System Audio Recording → enable **OpenAB Computer** (older builds: `oab-instance-mcp`)
-- Accessibility → enable **OpenAB Computer** (older builds: `oab-instance-mcp`)
+- Screen & System Audio Recording → enable **OpenAB Computer**
+- Accessibility → enable **OpenAB Computer**
 
-From 0.9.0 the app shows as **OpenAB Computer** in System Settings, Finder and the menu bar. Older
-docs and earlier builds call it **oab-instance-mcp**; it is the same app (bundle id
-`dev.openab.instance-mcp`), so grants made under the old name carry over.
+The app shows as **OpenAB Computer** in System Settings, Finder and the menu bar. Its bundle id is
+`dev.openab.computer` since 0.12.0 (earlier builds used `dev.openab.instance-mcp`), so grants made to
+a build before 0.12.0 do not carry over.
 
-then `launchctl kickstart -k gui/501/dev.openab.instance-mcp`. `sys_info` reports both as `true` when
+then `launchctl kickstart -k gui/501/dev.openab.computer`. `sys_info` reports both as `true` when
 done. Grants survive re-signing with the same identity + bundle id (verified across 0.1.0→0.2.0).
 
 Also on the Mac: `sudo pmset -a displaysleep 0`. With display sleep on, an idle Mac returns black
@@ -622,13 +690,13 @@ and the profiles in [docs/tool-profiles.md](docs/tool-profiles.md). The menu off
 ## Operate
 
 ```sh
-ssh <mac> 'launchctl print gui/501/dev.openab.instance-mcp | grep -E "state|pid"'
-ssh <mac> 'tail -20 ~/Library/Logs/oab-instance-mcp/agent.log'      # one line per session open / tools/call / deny
-ssh <mac> 'launchctl kickstart -k gui/501/dev.openab.instance-mcp'  # restart
+ssh <mac> 'launchctl print gui/501/dev.openab.computer | grep -E "state|pid"'
+ssh <mac> 'tail -20 ~/Library/Logs/oab-computer/agent.log'      # one line per session open / tools/call / deny
+ssh <mac> 'launchctl kickstart -k gui/501/dev.openab.computer'  # restart
 ssh <mac> '/Applications/Tailscale.app/Contents/MacOS/Tailscale serve status'
 curl -s https://<host>.<tailnet>.ts.net:8444/healthz
-ssh <mac> 'ls -lt ~/Library/Logs/oab-instance-mcp/jobs/'             # exec_start job logs (<id>.out/.err), GC'd after 7 days
-ssh <mac> 'tail -f ~/Library/Logs/oab-instance-mcp/jobs/<job_id>.out'  # follow a background build live
+ssh <mac> 'ls -lt ~/Library/Logs/oab-computer/jobs/'             # exec_start job logs (<id>.out/.err), GC'd after 7 days
+ssh <mac> 'tail -f ~/Library/Logs/oab-computer/jobs/<job_id>.out'  # follow a background build live
 ```
 
 Measured from the laptop: `sys_info` 0.75 s, `exec` 0.47 s, a 1 s exec timeout returns in 1.6 s.

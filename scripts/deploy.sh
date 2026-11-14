@@ -16,7 +16,7 @@ set -euo pipefail
 LOGIN="${1:?usage: deploy.sh <allow-login-email> <codesign-identity>}"
 IDENTITY="${2:?usage: deploy.sh <allow-login-email> <codesign-identity>}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BIN="$ROOT/.build/release/oab-instance-mcp"
+BIN="$ROOT/.build/release/oab-computer"
 EXPECT_TEAM="${EXPECT_TEAM:-6LPQNY95AQ}"
 
 [ -x "$BIN" ] || { echo "build first: swift build -c release" >&2; exit 1; }
@@ -25,7 +25,7 @@ NEWEST_SRC=$(find "$ROOT/Sources" -name '*.swift' -newer "$BIN" | head -1)
 VERSION=$("$BIN" --version)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-APP="$TMP/oab-instance-mcp.app"
+APP="$TMP/oab-computer.app"
 
 "$ROOT/scripts/assemble-app.sh" "$BIN" "$APP" "$VERSION"
 
@@ -37,7 +37,7 @@ if [ -n "${KEYCHAIN:-}" ]; then
   KC_ARGS=(--keychain "$KEYCHAIN")
 fi
 codesign --force --options runtime --timestamp=none \
-  ${KC_ARGS[@]+"${KC_ARGS[@]}"} --sign "$IDENTITY" --identifier dev.openab.instance-mcp "$APP"
+  ${KC_ARGS[@]+"${KC_ARGS[@]}"} --sign "$IDENTITY" --identifier dev.openab.computer "$APP"
 codesign --verify --deep --strict "$APP"
 
 TEAM=$(codesign -dvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')

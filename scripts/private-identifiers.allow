@@ -1,0 +1,8 @@
+# Intentional exceptions for scripts/check-no-private-identifiers.sh. Format: <pattern> <path>  # reason
+# Patterns: host tailnet tsnet ip email login token. Keep this list short.
+login .mailmap  # git author mapping: maps the old commit email to the GitHub noreply identity
+email .mailmap  # same
+host README.md  # the word "black" in "an idle Mac returns black screenshots" (display sleep), not a host
+host docs/operators.md  # same: "solid black" screenshot
+host poc/reverse-attach-linux/src/platform/linux/seat.rs  # Rust test variable named black (a blank output)
+host poc/reverse-attach-linux/src/jobs/tests.rs  # Rust test variable p1 (first poll)

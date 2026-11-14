@@ -139,9 +139,9 @@ final class HTTPParserTests: XCTestCase {
     }
 
     func testHeaderKeysLowercased() {
-        let d = Data("GET / HTTP/1.1\r\nTailscale-User-Login: A@B.com\r\n\r\n".utf8)
+        let d = Data("GET / HTTP/1.1\r\nTailscale-User-Login: a@example.com\r\n\r\n".utf8)
         guard case .request(let r, _) = HTTPParser.parse(d) else { return XCTFail() }
-        XCTAssertEqual(r.headers["tailscale-user-login"], "A@B.com")
+        XCTAssertEqual(r.headers["tailscale-user-login"], "a@example.com")
     }
 
     func testHeaderValueWhitespaceStripped() {
@@ -184,8 +184,8 @@ final class AuthPolicyTests: XCTestCase {
     }
 
     func testLoginAllowlistCaseInsensitive() {
-        let p = AuthPolicy(allowedLogins: ["Pahud@Example.com"])
-        XCTAssertEqual(p.decide(headers: ["tailscale-user-login": "pahud@example.com"], remoteIsLoopback: true), .allow(principal: "pahud@example.com"))
+        let p = AuthPolicy(allowedLogins: ["Owner@Example.com"])
+        XCTAssertEqual(p.decide(headers: ["tailscale-user-login": "owner@example.com"], remoteIsLoopback: true), .allow(principal: "owner@example.com"))
         XCTAssertEqual(p.decide(headers: ["tailscale-user-login": "other@example.com"], remoteIsLoopback: true), .deny(reason: "login other@example.com not allowed"))
     }
 

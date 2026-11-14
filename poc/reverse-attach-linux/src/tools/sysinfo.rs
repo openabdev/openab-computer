@@ -5,10 +5,10 @@ use serde_json::{json, Value};
 
 use crate::platform;
 
-pub const AGENT_NAME: &str = "instance-mcp-rpi";
+pub const AGENT_NAME: &str = "oab-computer-rpi";
 /// The release version this binary reports (`sys_info.agent.version`, MCP `serverInfo`).
 /// The release workflow sets `OAB_RELEASE_VERSION` from the tag, which it requires to equal
-/// `let version` in `Sources/oab-instance-mcp/main.swift`, so the tag is the only source.
+/// `let version` in `Sources/oab-computer/main.swift`, so the tag is the only source.
 /// A build without it (local, `cargo test`) reports `<crate version>-dev`, never a release
 /// number; the crate version in Cargo.toml is not bumped per release (#74).
 pub const AGENT_VERSION: &str = match option_env!("OAB_RELEASE_VERSION") {

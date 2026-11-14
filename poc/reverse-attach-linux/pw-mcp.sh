@@ -12,7 +12,7 @@
 #  - PW_NODE_BIN: the directory of a non-system node (fnm/nvm) so npm/npx resolve.
 export PATH="${PW_NODE_BIN:+$PW_NODE_BIN:}/usr/local/bin:/usr/bin:/bin"
 export LANG="${LANG:-en_US.UTF-8}"
-BASE="$HOME/.local/oab-instance-mcp"
+BASE="$HOME/.local/oab-computer"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 export DISPLAY="${DISPLAY:-:0}"

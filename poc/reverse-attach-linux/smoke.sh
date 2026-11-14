@@ -3,15 +3,15 @@
 # Runs entirely on loopback of the node. Every step is time-bounded.
 set -u
 cd "$(dirname "$0")"
-BIN=./target/release/reverse-attach
+BIN=./target/release/oab-computer
 LOG=/tmp/mock-runtime.jsonl
-RA_LOG=/tmp/reverse-attach.log
+RA_LOG=/tmp/oab-computer-smoke.log
 pass=0; fail=0
 ok()   { echo "PASS $1"; pass=$((pass+1)); }
 bad()  { echo "FAIL $1"; fail=$((fail+1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 :: $2"; fi; }
 
-pkill -x reverse-attach 2>/dev/null; pkill -f mock_runtime.py 2>/dev/null; sleep 0.3
+pkill -f "^\./target/release/oab-computer" 2>/dev/null; pkill -f mock_runtime.py 2>/dev/null; sleep 0.3
 rm -f "$LOG" "$RA_LOG"
 # Never touch the real ~/.local/state grants file from a test run.
 GRANTS_DIR=$(mktemp -d)
@@ -115,7 +115,7 @@ if q=="killed":
     sc=byid(13)["result"]["structuredContent"]; print(f'{sc["state"]},{sc.get("exit_code")}')
 EOF
 }
-check "initialize → serverInfo instance-mcp-rpi" "[[ \$(py init) == instance-mcp-rpi ]]"
+check "initialize → serverInfo oab-computer-rpi" "[[ \$(py init) == oab-computer-rpi ]]"
 check "owner tools/list = sys_info,screenshot,bash,mouse,key,exec_*" "[[ \$(py tools) == sys_info,screenshot,bash,mouse,key,exec_start,exec_poll,exec_list,exec_cancel ]]"
 check "sys_info hostname = $(hostname)" "[[ \$(py sys) == $(hostname) ]]"
 # Release builds set OAB_RELEASE_VERSION at compile time and EXPECT_AGENT_VERSION here (#74);
@@ -134,7 +134,7 @@ check "ping → pong" "[[ \$(py pong) == True ]]"
 JOB=$(py job)
 check "exec_start → job_id" "[[ '$JOB' == job-* ]]"
 check "exec_poll by offset returns only new output" "[[ \$(py poll2) == True ]]"
-check "job log tee'd under XDG_STATE_HOME" "[[ -s '$GRANTS_DIR/oab-instance-mcp/jobs/$JOB.out' ]]"
+check "job log tee'd under XDG_STATE_HOME" "[[ -s '$GRANTS_DIR/oab-computer/jobs/$JOB.out' ]]"
 check "job survived the attach drop (polled on attach 2)" "[[ \$(py survived) == running ]]"
 check "exec_cancel → killed with exit code" "[[ \$(py killed) == killed,137 ]]"
 
@@ -234,6 +234,6 @@ start_ra
 check "a revoked grant is not resumed" "[[ \$($C 127.0.0.1:8790/attach | python3 -c 'import sys,json;print(len(json.load(sys.stdin)[\"grants\"]))') == 0 ]]"
 
 echo
-echo "reverse-attach stderr:"; sed 's/^/  /' $RA_LOG
+echo "oab-computer stderr:"; sed 's/^/  /' $RA_LOG
 echo "RESULT: $pass passed, $fail failed"
 [[ $fail == 0 ]]

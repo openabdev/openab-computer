@@ -66,7 +66,7 @@ impl Upstream {
         let r = self.post(&json!({
             "jsonrpc": "2.0", "id": 0, "method": "initialize",
             "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "instance-mcp-rpi", "version": AGENT_VERSION}}
+                       "clientInfo": {"name": "oab-computer-rpi", "version": AGENT_VERSION}}
         }))?;
         if !(200..300).contains(&r.status) {
             return Err(format!(
@@ -476,7 +476,7 @@ pub(crate) fn answer_request(
                 "protocolVersion": negotiated,
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": {
-                    "name": "instance-mcp-rpi",
+                    "name": "oab-computer-rpi",
                     "version": AGENT_VERSION
                 },
                 "instructions": instructions(profile)

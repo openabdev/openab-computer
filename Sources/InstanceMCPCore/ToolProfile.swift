@@ -2,7 +2,7 @@ import Foundation
 
 /// Which tools a connection may see and call. Chosen by *this* side — the Mac is
 /// the MCP server, so scoping is a per-connection tool list here, never MCP
-/// parsing in a proxy (instance-mcp `docs/adr/reverse-attach.md`).
+/// parsing in a proxy (openab-computer `docs/adr/reverse-attach.md`).
 ///
 /// Two profiles (openab-computer#59), named after the one boundary that is real:
 /// shell-equivalent or not.

@@ -35,7 +35,7 @@
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
-LABEL org.opencontainers.image.source="https://github.com/openabdev/instance-mcp" \
+LABEL org.opencontainers.image.source="https://github.com/openabdev/openab-computer" \
       org.opencontainers.image.title="oab-toolchain" \
       org.opencontainers.image.description="Sandbox toolchain image for the sandbox adapter (docs/adr/sandbox-adapter.md)" \
       org.opencontainers.image.base.name="docker.io/library/debian:bookworm-slim"

@@ -41,7 +41,7 @@ written as placeholders or as "an M4 Mac mini".
 - **A LaunchAgent cannot read external volumes without Full Disk Access.** A `cwd` on
   `/Volumes/…` (e.g. a RAID where builds live) does not fail with EPERM — the syscall
   *blocks*, so an un-guarded `exec` would hang to its timeout. Two fixes: `ExecCwd` time-boxes
-  a readability probe and returns a clear "grant Full Disk Access to dev.openab.instance-mcp"
+  a readability probe and returns a clear "grant Full Disk Access to dev.openab.computer"
   error instead of hanging; and granting FDA to the bundle in System Settings → Privacy &
   Security → Full Disk Access makes the volume readable (verified 2026-09-23: same `ls
   /Volumes/…` went from a 15 s timeout to 39 ms). The grant sticks across re-signing like the

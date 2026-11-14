@@ -2,8 +2,8 @@
 //! (same contract as the Swift `JobRegistry`).
 //!
 //! Each job's stdout and stderr go straight to files, `<dir>/<job_id>.out` and
-//! `<job_id>.err` (`$XDG_STATE_HOME/oab-instance-mcp/jobs/`, else
-//! `~/.local/state/oab-instance-mcp/jobs/`). The files are the single source of
+//! `<job_id>.err` (`$XDG_STATE_HOME/oab-computer/jobs/`, else
+//! `~/.local/state/oab-computer/jobs/`). The files are the single source of
 //! truth: `exec_poll` reads them by byte offset, nothing is kept in memory or
 //! truncated, and a human can `tail -f` them.
 //!
@@ -304,7 +304,7 @@ fn default_dir() -> Option<PathBuf> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
-    Some(base.join("oab-instance-mcp/jobs"))
+    Some(base.join("oab-computer/jobs"))
 }
 
 /// Unit tests never write into the real state directory.

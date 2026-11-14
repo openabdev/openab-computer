@@ -44,19 +44,19 @@ final class MenuModelTests: XCTestCase {
     }
 
     func testLaunchdDetectionUsesAJobLabelOnly() {
-        XCTAssertTrue(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "dev.openab.instance-mcp"], parentPID: 1))
-        XCTAssertEqual(LaunchdJob.jobLabel(environment: ["XPC_SERVICE_NAME": "dev.openab.instance-mcp"], parentPID: 1), "dev.openab.instance-mcp")
-        XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "dev.openab.instance-mcp"], parentPID: 4242),
+        XCTAssertTrue(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "dev.openab.computer"], parentPID: 1))
+        XCTAssertEqual(LaunchdJob.jobLabel(environment: ["XPC_SERVICE_NAME": "dev.openab.computer"], parentPID: 1), "dev.openab.computer")
+        XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "dev.openab.computer"], parentPID: 4242),
                        "a child of the app inherits the label but its parent is not launchd")
         XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: [:]))
         XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "0"]), "a terminal session")
         XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": ""]))
-        XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "application.dev.openab.instance-mcp.1234.5678"]),
+        XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: ["XPC_SERVICE_NAME": "application.dev.openab.computer.1234.5678"]),
                        "an app opened from Finder is not a job that can be booted out")
     }
 
     func testAForeignInheritedJobLabelIsNotThisAppsLaunchdJob() {
-        let foreign = ["XPC_SERVICE_NAME": "actions.runner.oablab.macmini-oablab"]
+        let foreign = ["XPC_SERVICE_NAME": "actions.runner.oablab.runner-1"]
         XCTAssertNil(LaunchdJob.jobLabel(environment: foreign))
         XCTAssertFalse(LaunchdJob.isRunByLaunchd(environment: foreign))
         // Quit then boots nothing out; it just exits.
@@ -110,8 +110,8 @@ final class MenuModelTests: XCTestCase {
         MenuModel.quit(jobLabel: nil, bootout: { booted.append($0) }, exitProcess: { exits += 1 })
         XCTAssertEqual(booted, [])
         XCTAssertEqual(exits, 1)
-        MenuModel.quit(jobLabel: "dev.openab.instance-mcp", bootout: { booted.append($0) }, exitProcess: { exits += 1 })
-        XCTAssertEqual(booted, ["dev.openab.instance-mcp"])
+        MenuModel.quit(jobLabel: "dev.openab.computer", bootout: { booted.append($0) }, exitProcess: { exits += 1 })
+        XCTAssertEqual(booted, ["dev.openab.computer"])
         XCTAssertEqual(exits, 1)
     }
 

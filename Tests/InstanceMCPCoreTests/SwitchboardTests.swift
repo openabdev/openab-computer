@@ -35,7 +35,7 @@ final class SwitchboardPolicyTests: XCTestCase {
     }
 
     func testSwitchboardConfigUsesTheURLAsIsAndNeverExpires() {
-        let url = URL(string: "wss://macmini.tail.ts.net/vm/attach")!
+        let url = URL(string: "wss://host.tail.ts.net/vm/attach")!
         let c = ReverseAttachClient.Config.switchboard(url: url, secret: "s", profile: .observe)
         XCTAssertEqual(c.attachURL, url)
         XCTAssertEqual(c.kind, .switchboard)
@@ -64,8 +64,8 @@ final class SwitchboardConfigTests: XCTestCase {
     }
 
     func testRefusesPlaintextAcrossTheNetwork() {
-        XCTAssertThrowsError(try Switchboard.validate("ws://100.74.35.49:8790/vm/attach")) {
-            XCTAssertEqual($0 as? Switchboard.ConfigError, .plaintextToRemote("100.74.35.49"))
+        XCTAssertThrowsError(try Switchboard.validate("ws://100.64.0.7:8790/vm/attach")) {
+            XCTAssertEqual($0 as? Switchboard.ConfigError, .plaintextToRemote("100.64.0.7"))
         }
     }
 

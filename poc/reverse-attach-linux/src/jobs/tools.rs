@@ -48,7 +48,7 @@ pub(crate) fn tool_specs() -> Vec<Value> {
                             a process that left the group, e.g. with setsid). Output is read from the \
                             job's log files (never truncated; at most 1 MiB per stream per poll, poll \
                             again from the returned offsets for the rest). The files are \
-                            $XDG_STATE_HOME/oab-instance-mcp/jobs/<job_id>.out/.err (default \
+                            $XDG_STATE_HOME/oab-computer/jobs/<job_id>.out/.err (default \
                             ~/.local/state/...); `out_path`/`err_path` give the exact paths.",
             "inputSchema": {
                 "type": "object",

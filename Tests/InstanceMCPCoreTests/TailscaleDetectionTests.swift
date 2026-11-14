@@ -4,8 +4,8 @@ import XCTest
 
 private let statusJSON = Data("""
 {"BackendState":"Running","AuthURL":"https://login.tailscale.com/a/tskey-SECRET123",
- "Self":{"DNSName":"mac.tailb836bb.ts.net.","UserID":8041768352297354,"HostName":"mac"},
- "User":{"8041768352297354":{"LoginName":"owner@example.com","DisplayName":"Owner"}}}
+ "Self":{"DNSName":"mac.tail1234.ts.net.","UserID":12345,"HostName":"mac"},
+ "User":{"12345":{"LoginName":"owner@example.com","DisplayName":"Owner"}}}
 """.utf8)
 
 private final class TSClock: @unchecked Sendable {
@@ -105,8 +105,8 @@ final class TailscaleDetectionTests: XCTestCase {
     }
 
     func testTheCLIGetsTERM_PROGRAMBecauseTheAppBinaryNeedsItOutsideATerminal() {
-        XCTAssertEqual(FirstRunSetup.tailscaleEnvironment([:])["TERM_PROGRAM"], "oab-instance-mcp")
-        XCTAssertEqual(FirstRunSetup.tailscaleEnvironment(["TERM_PROGRAM": ""])["TERM_PROGRAM"], "oab-instance-mcp")
+        XCTAssertEqual(FirstRunSetup.tailscaleEnvironment([:])["TERM_PROGRAM"], "oab-computer")
+        XCTAssertEqual(FirstRunSetup.tailscaleEnvironment(["TERM_PROGRAM": ""])["TERM_PROGRAM"], "oab-computer")
         XCTAssertEqual(FirstRunSetup.tailscaleEnvironment(["TERM_PROGRAM": "ghostty", "A": "b"]),
                        ["TERM_PROGRAM": "ghostty", "A": "b"], "an existing value is kept")
     }

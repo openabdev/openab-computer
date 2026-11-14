@@ -26,6 +26,18 @@ jobs:
           globs: |
             docs/**/*.md
 
+  no-private-identifiers:
+    name: No private identifiers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: ShellCheck
+        run: shellcheck scripts/check-no-private-identifiers.sh scripts/test-check-no-private-identifiers.sh
+      - name: Repo is clean, and the check fails on a forbidden pattern
+        run: |
+          bash scripts/check-no-private-identifiers.sh
+          bash scripts/test-check-no-private-identifiers.sh
+
   pw-mcp-loopback:
     name: Playwright MCP stays on loopback (#115)
     runs-on: ubuntu-latest
@@ -46,7 +58,11 @@ jobs:
       - name: Build
         run: swift build
       - name: Packaging smoke (unsigned; release signing is tag-only)
-        run: scripts/test-packaging.sh .build/debug/oab-instance-mcp
+        run: scripts/test-packaging.sh .build/debug/oab-computer
+      - name: Name consistency and warn-only old-agent check (stub launchctl/systemctl)
+        run: |
+          bash scripts/test-name-consistency.sh
+          bash scripts/test-legacy-agent.sh
       - name: Test
         run: swift test
 
@@ -81,10 +97,14 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ShellCheck
-        run: shellcheck scripts/install-linux.sh scripts/test-install-linux.sh
+        run: shellcheck scripts/install-linux.sh scripts/test-install-linux.sh scripts/test-name-consistency.sh scripts/test-legacy-agent.sh
       - name: Generated units (fake HOME, stubbed systemctl/tailscale/loginctl)
         # Diffs each written unit against its expected text and runs systemd-analyze verify (#90).
         run: bash scripts/test-install-linux.sh
+      - name: Names agree between installer, units and release assets; old agent only warned about
+        run: |
+          bash scripts/test-name-consistency.sh
+          bash scripts/test-legacy-agent.sh
 
   linux-hands-node:
     name: Linux hands node (${{ matrix.arch }})
@@ -148,8 +168,8 @@ jobs:
         run: bash smoke.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: reverse-attach-linux-${{ matrix.arch }}
-          path: poc/reverse-attach-linux/target/release/reverse-attach
+          name: oab-computer-linux-${{ matrix.arch }}
+          path: poc/reverse-attach-linux/target/release/oab-computer
       - name: Smoke a plain build (reports -dev)
         # After the upload: rebuilds only this crate without OAB_RELEASE_VERSION, so smoke.sh
         # checks the "<crate>-dev" fallback a local build reports (#74). The first smoke run

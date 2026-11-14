@@ -47,7 +47,7 @@ public struct UIActionTool: Tool {
 
     /// Error texts, pinned by tests. None of them ever contains the input `value`.
     public enum Errors {
-        public static let notTrusted = "Accessibility not granted: ui_action cannot act on other apps' windows. Grant Accessibility to OpenAB Computer (oab-instance-mcp, bundle id dev.openab.instance-mcp) in System Settings → Privacy & Security → Accessibility, then restart the agent."
+        public static let notTrusted = "Accessibility not granted: ui_action cannot act on other apps' windows. Grant Accessibility to OpenAB Computer (oab-computer, bundle id dev.openab.computer) in System Settings → Privacy & Security → Accessibility, then restart the agent."
         public static let selfApp = "ui_action cannot act on OpenAB Computer's own windows"
         public static let busy = "another ui_action is still running and the timeout_ms budget ran out waiting for it; nothing was done. Retry"
         public static func staleSnapshot(_ id: String) -> String {

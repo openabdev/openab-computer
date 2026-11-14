@@ -551,10 +551,10 @@ final class TailnetExposureTests: XCTestCase {
     func testTheReleaseBinaryDoesNotContainTheTestOverrideName() throws {
         let dir = Bundle(for: TailnetExposureTests.self).bundleURL.deletingLastPathComponent()
         // .../.build/<triple>/debug/ -> .../release/
-        let release = dir.deletingLastPathComponent().appendingPathComponent("release/oab-instance-mcp")
+        let release = dir.deletingLastPathComponent().appendingPathComponent("release/oab-computer")
         guard FileManager.default.fileExists(atPath: release.path) else { throw XCTSkip("no release binary built") }
         let data = try Data(contentsOf: release)
-        XCTAssertNil(data.range(of: Data("OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE".utf8)))
+        XCTAssertNil(data.range(of: Data("OAB_COMPUTER_NO_TAILNET_EXPOSURE".utf8)))
     }
 
     func testWithdrawReportsAMappingThatWillNotGoAway() {

@@ -1,5 +1,5 @@
 [package]
-name = "reverse-attach"
+name = "oab-computer"
 # Matches the app release version. Releases still compile in OAB_RELEASE_VERSION from the tag (#74).
 version = "0.12.0"
 edition = "2021"

@@ -9,7 +9,7 @@ enum Input {
     static func requireAccessibility() throws {
         guard AXIsProcessTrusted() else {
             throw ToolError("Accessibility not granted: input events would be silently dropped. " +
-                            "Grant Accessibility to OpenAB Computer (oab-instance-mcp) in System Settings → Privacy & Security → Accessibility, then restart the agent.")
+                            "Grant Accessibility to OpenAB Computer (oab-computer) in System Settings → Privacy & Security → Accessibility, then restart the agent.")
         }
     }
 

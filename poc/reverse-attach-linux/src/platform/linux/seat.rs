@@ -1,11 +1,11 @@
 //! Input devices that live as long as the daemon, on the wlroots seat.
 //!
-//! Why this exists: a seat with no physical input (black's headless sway, a Pi with no
+//! Why this exists: a seat with no physical input (the server's headless sway, a Pi with no
 //! mouse or keyboard) advertises no pointer/keyboard capability, so clients such as Chromium
 //! hold no `wl_pointer`/`wl_keyboard`. `wlrctl` and `wtype` each create a virtual device,
 //! send their events and exit within milliseconds: the capability flickers on, the client's
 //! `get_pointer`/`get_keyboard` round-trip loses the race, and every event is dropped — while
-//! the tool exits 0 and the MCP call reports `ok: true`. Measured on black (2026-09-29):
+//! the tool exits 0 and the MCP call reports `ok: true`. Measured on the server (2026-09-29):
 //! a transient `wtype` was ignored; the same keys typed while another virtual keyboard stayed
 //! connected arrived.
 //!
@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use crate::platform::desktop::{Button, DesktopError};
 
 /// How long a freshly created device is given before its first event, so clients can see
-/// the new capability and bind `wl_pointer` / `wl_keyboard`. 1.5 s worked on black; 400 ms
+/// the new capability and bind `wl_pointer` / `wl_keyboard`. 1.5 s worked on a headless server; 400 ms
 /// is ample for one round-trip on a local socket.
 const SETTLE: Duration = Duration::from_millis(400);
 
@@ -610,7 +610,7 @@ fn anchor_slot() -> &'static Mutex<Option<Child>> {
 }
 
 /// `wtype -s` multiplies milliseconds by 1000 in a C `int`: anything above ~2147 s wraps
-/// negative and wtype exits at once (seen on black with 3600000). 30 minutes, respawned.
+/// negative and wtype exits at once (seen on a headless server with 3600000). 30 minutes, respawned.
 const ANCHOR_MS: &str = "1800000";
 
 /// Make sure the keyboard capability is up before `wtype` types. Respawns the anchor when it

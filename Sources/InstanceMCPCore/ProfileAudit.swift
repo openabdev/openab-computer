@@ -6,7 +6,7 @@ import Foundation
 /// `desktop` and the daemon serves `observe` instead, it appends one JSON line here
 /// as well as logging it. The file is append-only and separate from the daemon log,
 /// so the record survives log rotation and is easy to inspect:
-/// `~/Library/Application Support/oab-instance-mcp/audit.jsonl`, mode 600 in a 0700
+/// `~/Library/Application Support/oab-computer/audit.jsonl`, mode 600 in a 0700
 /// directory, beside `grants.json`. The Linux node writes the same record shape.
 ///
 /// Writing is best-effort: a failure is logged and never blocks the grant.
@@ -41,7 +41,7 @@ public final class FileAuditLog: AuditLog, @unchecked Sendable {
 
     public static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/oab-instance-mcp/audit.jsonl")
+            .appendingPathComponent("Library/Application Support/oab-computer/audit.jsonl")
     }
 
     public init(url: URL = FileAuditLog.defaultURL, log: @escaping @Sendable (String) -> Void = { _ in }) {

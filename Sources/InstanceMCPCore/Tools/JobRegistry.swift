@@ -84,7 +84,7 @@ public actor JobRegistry {
     private let maxAgeDays: Double        // startup GC threshold for log *files*
 
     public init(logDir: String? = nil, retention: TimeInterval = 600, maxJobs: Int = 64, maxAgeDays: Double = 7) {
-        self.logDir = logDir ?? (NSHomeDirectory() + "/Library/Logs/oab-instance-mcp/jobs")
+        self.logDir = logDir ?? (NSHomeDirectory() + "/Library/Logs/oab-computer/jobs")
         self.retention = retention
         self.maxJobs = maxJobs
         self.maxAgeDays = maxAgeDays
@@ -180,7 +180,7 @@ public actor JobRegistry {
     /// Drain both pipes into the job's log files and reap the child on a detached task, so
     /// the spawning MCP call returns immediately. A timeout (> 0) kills the process group.
     private nonisolated func superviseDetached(job: Job, proc: SpawnedProcess, timeout: TimeInterval, outFile: Int32, errFile: Int32) {
-        let ioQueue = DispatchQueue(label: "oab-instance-mcp.job.io", attributes: .concurrent)
+        let ioQueue = DispatchQueue(label: "oab-computer.job.io", attributes: .concurrent)
         let group = DispatchGroup()
         for (readFD, writeFD) in [(proc.stdoutFD, outFile), (proc.stderrFD, errFile)] {
             group.enter()

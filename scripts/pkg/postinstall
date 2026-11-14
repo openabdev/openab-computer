@@ -7,14 +7,14 @@ set -euo pipefail
 CONSOLE_USER=$(/usr/bin/stat -f '%Su' /dev/console)
 case "$CONSOLE_USER" in
   ''|root|loginwindow|_mbsetupuser)
-    echo "oab-instance-mcp: no logged-in desktop user; sign in, then run the package again" >&2
+    echo "oab-computer: no logged-in desktop user; sign in, then run the package again" >&2
     exit 1
     ;;
 esac
 UID_=$(/usr/bin/id -u "$CONSOLE_USER")
 HOME_DIR=$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory | \
   /usr/bin/sed 's/^NFSHomeDirectory: //')
-[ -d "$HOME_DIR" ] || { echo "oab-instance-mcp: home not found for $CONSOLE_USER" >&2; exit 1; }
+[ -d "$HOME_DIR" ] || { echo "oab-computer: home not found for $CONSOLE_USER" >&2; exit 1; }
 GID_=$(/usr/bin/id -g "$CONSOLE_USER")
 
 # Repair only our own per-user paths before dropping root. v0.6.0's relocatable
@@ -23,18 +23,18 @@ GID_=$(/usr/bin/id -g "$CONSOLE_USER")
 # This also makes a partially interrupted package retry idempotent. Do not chown
 # a parent directory owned by the user, and never touch unrelated files.
 for owned in \
-  "$HOME_DIR/.local/oab-instance-mcp" \
-  "$HOME_DIR/.config/oab-instance-mcp" \
-  "$HOME_DIR/Library/Logs/oab-instance-mcp" \
-  "$HOME_DIR/Library/LaunchAgents/dev.openab.instance-mcp.plist"; do
+  "$HOME_DIR/.local/oab-computer" \
+  "$HOME_DIR/.config/oab-computer" \
+  "$HOME_DIR/Library/Logs/oab-computer" \
+  "$HOME_DIR/Library/LaunchAgents/dev.openab.computer.plist"; do
   if [ -e "$owned" ]; then /usr/sbin/chown -R "$UID_:$GID_" "$owned"; fi
 done
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-SOURCE="/Library/Application Support/OpenAB/instance-mcp/oab-instance-mcp.app"
+SOURCE="/Library/Application Support/OpenAB/computer/oab-computer.app"
 HELPER="$SCRIPT_DIR/install-prebuilt.sh"
-[ -d "$SOURCE" ] || { echo "oab-instance-mcp: package payload app is missing" >&2; exit 1; }
-[ -x "$HELPER" ] || { echo "oab-instance-mcp: package installer helper is missing" >&2; exit 1; }
+[ -d "$SOURCE" ] || { echo "oab-computer: package payload app is missing" >&2; exit 1; }
+[ -x "$HELPER" ] || { echo "oab-computer: package installer helper is missing" >&2; exit 1; }
 
 # `asuser` places launchctl/Tailscale in the GUI bootstrap namespace; sudo drops
 # filesystem/process identity. The helper itself never needs root.
