@@ -141,6 +141,20 @@ public struct NetworkUpstream: Equatable, Sendable {
     public init(name: String, url: URL) { self.name = name; self.url = url }
 }
 
+/// The Switchboard row's input: the supervisor's status (nil until it reports) and how to print a time.
+public struct NetworkSwitchboard {
+    public let status: SwitchboardStatus?
+    public let now: Date
+    public let timeText: (Date) -> String
+    public init(status: SwitchboardStatus?, now: Date = Date(), timeText: @escaping (Date) -> String) {
+        self.status = status; self.now = now; self.timeText = timeText
+    }
+    public var text: String {
+        guard let status else { return "Switchboard: starting…" }
+        return status.title(now: now, timeText: timeText)
+    }
+}
+
 public struct NetworkRow: Equatable, Sendable {
     public enum Kind: Equatable, Sendable { case localMCP, tailnet, browser, switchboard, reverseAttach }
     public let kind: Kind
@@ -161,7 +175,7 @@ extension MenuModel {
             return existingMapping && !optedIn ? .onExisting(url: publicURL) : .on(url: publicURL)
         }
         if optedIn { return .optedInNotApplied }
-        if uncertain && !offered { return .unknown }
+        if uncertain { return .unknown }
         return .off
     }
 
@@ -183,7 +197,7 @@ extension MenuModel {
 
     public static func networkSection(bindHost: String, bindPort: Int, path: String,
                                       upstreams: [NetworkUpstream], tailnet: NetworkTailnetState,
-                                      switchboardTitle: String?, liveGrants: Int?, attachEnabled: Bool) -> NetworkSection {
+                                      switchboard: NetworkSwitchboard?, liveGrants: Int?, attachEnabled: Bool) -> NetworkSection {
         var rows: [NetworkRow] = []
 
         let localURL = "http://\(hostForURL(bindHost)):\(bindPort)\(path)"
@@ -210,8 +224,8 @@ extension MenuModel {
             rows.append(NetworkRow(kind: .browser, text: "Browser tools: \(address) \(who)", copyValue: nil))
         }
 
-        if let switchboardTitle {
-            rows.append(NetworkRow(kind: .switchboard, text: switchboardTitle, copyValue: nil))
+        if let switchboard {
+            rows.append(NetworkRow(kind: .switchboard, text: switchboard.text, copyValue: nil))
         }
 
         if !attachEnabled {
@@ -219,7 +233,7 @@ extension MenuModel {
         } else if let n = liveGrants {
             rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: \(n) live grant\(n == 1 ? "" : "s")", copyValue: nil))
         } else {
-            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: on", copyValue: nil))
+            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: checking…", copyValue: nil))
         }
         return NetworkSection(header: "Network", rows: rows)
     }

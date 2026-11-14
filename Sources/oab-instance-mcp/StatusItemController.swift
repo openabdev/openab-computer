@@ -364,10 +364,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let tailnetState = MenuModel.networkTailnetState(
             offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL ?? externalPublicURL,
             optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
-            existingMapping: exposure?.existingMapping ?? false, uncertain: exposure?.uncertain ?? false)
+            existingMapping: exposure?.existingMapping ?? (externalPublicURL != nil), uncertain: exposure?.uncertain ?? false)
         let section = MenuModel.networkSection(
             bindHost: bindHost, bindPort: bindPort, path: path, upstreams: upstreams, tailnet: tailnetState,
-            switchboardTitle: switchboardSupervisor == nil ? nil : switchboardTitleText(),
+            switchboard: switchboardSupervisor == nil ? nil : switchboardRowInput(),
             liveGrants: nil, attachEnabled: attachEnabled)
         menu.addItem(.separator())
         menu.addItem(label(section.header))
@@ -509,13 +509,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(forget)
     }
 
-    private func switchboardTitleText() -> String {
-        guard let status = switchboardStatus else { return "Switchboard: starting…" }
-        return status.title { Self.timeFormatter.string(from: $0) }
+    private func switchboardRowInput() -> NetworkSwitchboard {
+        NetworkSwitchboard(status: switchboardStatus) { Self.timeFormatter.string(from: $0) }
     }
 
     private func refreshSwitchboardTitle() {
-        switchboardTitleItem?.title = switchboardTitleText()
+        switchboardTitleItem?.title = switchboardRowInput().text
     }
 
     @objc private func configureSwitchboard() {
@@ -554,7 +553,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if attachEnabled {
             let section = MenuModel.networkSection(
                 bindHost: bindHost, bindPort: bindPort, path: path, upstreams: [], tailnet: .off,
-                switchboardTitle: nil, liveGrants: grants.count, attachEnabled: true)
+                switchboard: nil, liveGrants: grants.count, attachEnabled: true)
             if let text = section.rows.first(where: { $0.kind == .reverseAttach })?.text { attachRowItem?.title = text }
         }
         var index = menu.index(of: anchor)

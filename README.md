@@ -273,7 +273,7 @@ Playwright installer, not to the app.
 | Mint call, HTTP(S) | `http(s)://<runtime>/admin/sessions/<session>/tools-attach` | Only when the `/attach` body carries an `admin_credential` | Get a one-time attach secret |
 | `tailscale status --self --peers=false --json` | Local child process (read-only) | On the no-flag first-run launch, when you turn tailnet access on, and in the recheck while no Tailscale login is detected | Find your Tailscale login and tailnet name, and tell whether `tailscaled` is running |
 | `tailscale serve status --json` | Local child process (read-only) | When the app checks the `:8444` mapping: at launch, when you turn tailnet access on or off, and on the recheck while no Tailscale login is detected | See whether `:8444` is mapped, and to what |
-| `tailscale serve --bg --https=8444 http://127.0.0.1:8795` and `tailscale serve --https=8444 off` | Local child process (changes the mapping) | Only after you turn tailnet access on or off in the wizard or the menu. If you had turned it on, a launch re-applies it once when the mapping is missing | Create or remove the tailnet HTTPS mapping on `:8444` |
+| `tailscale serve --bg --https=8444 http://127.0.0.1:8795` and `tailscale serve --https=8444 off` | Local child process (changes the mapping) | When you turn tailnet access on or off in the wizard or the menu. If you had turned it on, a launch re-applies it once when the mapping is missing. With no Tailscale login detected, launch and the recheck run `serve --https=8444 off` if `:8444` still maps to this app | Create or remove the tailnet HTTPS mapping on `:8444` |
 
 The menu bar and the permission wizard also start local processes (`open`, `launchctl`, a
 `--permission-check` re-run of the app). These make no network connections.
@@ -287,8 +287,10 @@ your user can.
 - It does not bind a non-loopback address unless you pass `--host`.
 - It serves no TLS. Tailscale terminates TLS in front of it.
 - It never runs `tailscale funnel`, `up`, `set` or `cert`. It runs `tailscale serve` (and
-  `serve … off`) only for port 8444, and only after you turn tailnet access on or off (plus the
-  one launch re-apply of a choice you already made).
+  `serve … off`) only for port 8444. It does so after you turn tailnet access on or off, for the
+  one launch re-apply of a choice you already made, and for one safety removal: when no Tailscale
+  login is detected, at launch and on its recheck, it runs `tailscale serve --https=8444 off` if
+  `:8444` still maps to this app, because the bearer token alone would then guard that path.
 - Nothing in the menu's Network section probes a port or changes a setting. The rows are read from
   the app's own state.
 - On the switchboard path it dials out and opens no extra listener.
@@ -330,7 +332,8 @@ mapping, not managed by this app), <url>" or "opted in, not applied (see the log
 appears only when an `--upstream` named `browser` is configured, and says "(remote)" for a
 non-loopback host. Reverse attach reads "off" with `--no-attach`. The tailnet actions (Allow, Turn
 Off, Manage with this app) and the Switchboard actions (Configure, Reconnect, Disconnect & forget)
-stay in the menu next to their rows.
+stay in the menu: the tailnet actions right after the Tailnet row, the Switchboard actions after the
+permissions block.
 
 ### macOS app and Linux node
 

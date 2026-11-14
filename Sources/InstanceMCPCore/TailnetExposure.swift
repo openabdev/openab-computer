@@ -379,7 +379,20 @@ public final class TailnetExposure: @unchecked Sendable {
     public func adoptExistingMapping() -> Outcome? {
         operation.lock(); defer { operation.unlock() }
         guard loginDetected, !optedIn else { return nil }
-        guard case .success(.ours) = readMapping(), case .success(let dns) = selfDNSName() else { return nil }
+        lock.lock(); uncertainState = false; lock.unlock()
+        // An unreadable status proves nothing about a hand-made mapping, so the menu must say "unknown", not "Off".
+        switch readMapping() {
+        case .failure(let why):
+            lock.lock(); uncertainState = true; lock.unlock()
+            log("tailnet access: could not read Tailscale Serve status to look for an existing mapping on port \(Self.httpsPort) (\(why))")
+            return nil
+        case .success(.ours): break
+        case .success: return nil
+        }
+        guard case .success(let dns) = selfDNSName() else {
+            lock.lock(); uncertainState = true; lock.unlock()
+            return nil
+        }
         let result = "https://\(dns):\(Self.httpsPort)/mcp"
         setURL(result)
         lock.lock(); existingMappingState = true; lock.unlock()
@@ -475,7 +488,7 @@ public final class TailnetExposure: @unchecked Sendable {
     }
 
     private func setChoice(_ on: Bool, url newURL: String? = nil) {
-        lock.lock(); unconfirmedState = false; existingMappingState = false; lock.unlock()
+        lock.lock(); unconfirmedState = false; existingMappingState = false; uncertainState = false; lock.unlock()
         defaults.set(on, forKey: Self.optInKey)
         setURL(on ? newURL : nil)
     }

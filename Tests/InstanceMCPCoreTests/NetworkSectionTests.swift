@@ -6,10 +6,18 @@ final class NetworkSectionTests: XCTestCase {
     private let tailURL = "https://<host>.<tailnet>.ts.net:8444/mcp"
 
     private func section(host: String = "127.0.0.1", port: Int = 8795, upstreams: [NetworkUpstream] = [],
-                         tailnet: NetworkTailnetState = .off, switchboard: String? = "Switchboard: not configured",
+                         tailnet: NetworkTailnetState = .off, switchboard: String? = "notConfigured",
                          grants: Int? = 0, attach: Bool = true) -> NetworkSection {
         MenuModel.networkSection(bindHost: host, bindPort: port, path: "/mcp", upstreams: upstreams, tailnet: tailnet,
-                                 switchboardTitle: switchboard, liveGrants: grants, attachEnabled: attach)
+                                 switchboard: sb(switchboard), liveGrants: grants, attachEnabled: attach)
+    }
+    private func sb(_ kind: String?) -> NetworkSwitchboard? {
+        guard let kind else { return nil }
+        if kind == "starting" { return NetworkSwitchboard(status: nil) { _ in "t" } }
+        let state: ReverseAttachClient.State? = kind == "connected" ? .attached : nil
+        let status = SwitchboardStatus.make(state: state, lastClose: nil, configured: kind == "connected",
+                                            profile: .observe, computer: "m")
+        return NetworkSwitchboard(status: status) { _ in "t" }
     }
     private func text(_ s: NetworkSection, _ kind: NetworkRow.Kind) -> String? { s.rows.first { $0.kind == kind }?.text }
     private func upstream(_ name: String, _ url: String) -> NetworkUpstream { NetworkUpstream(name: name, url: URL(string: url)!) }
@@ -58,7 +66,7 @@ final class NetworkSectionTests: XCTestCase {
         XCTAssertEqual(s(true, tailURL, true, true, false), .on(url: tailURL))
         XCTAssertEqual(s(true, nil, true, false, false), .optedInNotApplied)
         XCTAssertEqual(s(false, nil, false, false, true), .unknown)
-        XCTAssertEqual(s(true, nil, false, false, true), .off)
+        XCTAssertEqual(s(true, nil, false, false, true), .unknown)
         XCTAssertEqual(s(true, nil, false, false, false), .off)
         XCTAssertEqual(s(false, nil, false, false, false), .off)
     }
@@ -78,14 +86,15 @@ final class NetworkSectionTests: XCTestCase {
         XCTAssertEqual(text(section(grants: 0), .reverseAttach), "Reverse attach: 0 live grants")
         XCTAssertEqual(text(section(grants: 1), .reverseAttach), "Reverse attach: 1 live grant")
         XCTAssertEqual(text(section(grants: 3), .reverseAttach), "Reverse attach: 3 live grants")
-        XCTAssertEqual(text(section(grants: nil), .reverseAttach), "Reverse attach: on")
+        XCTAssertEqual(text(section(grants: nil), .reverseAttach), "Reverse attach: checking…")
         XCTAssertEqual(text(section(grants: 3, attach: false), .reverseAttach), "Reverse attach: off")
     }
 
     func testSwitchboardRowIsTheStatusTitle() {
-        XCTAssertEqual(text(section(switchboard: "Switchboard: not configured"), .switchboard), "Switchboard: not configured")
-        XCTAssertEqual(text(section(switchboard: "Switchboard: connected as desktop · this Mac m"), .switchboard),
-                       "Switchboard: connected as desktop · this Mac m")
+        XCTAssertEqual(text(section(switchboard: "notConfigured"), .switchboard), "Switchboard: not configured")
+        XCTAssertEqual(text(section(switchboard: "connected"), .switchboard),
+                       "Switchboard: connected as observe · this Mac m")
+        XCTAssertEqual(text(section(switchboard: "starting"), .switchboard), "Switchboard: starting…")
         XCTAssertNil(text(section(switchboard: nil), .switchboard))
     }
 
