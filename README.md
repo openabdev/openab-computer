@@ -289,7 +289,7 @@ your user can.
 - It never runs `tailscale funnel`, `up`, `set` or `cert`. It runs `tailscale serve` (and
   `serve … off`) only for port 8444. It does so after you turn tailnet access on or off, for the
   one launch re-apply of a choice you already made, and for one safety removal: when no Tailscale
-  login is detected, at launch and on its recheck, it runs `tailscale serve --https=8444 off` if
+  login is detected and no `--allow-login` is configured, at launch and on its recheck, it runs `tailscale serve --https=8444 off` if
   `:8444` still maps to this app, because the bearer token alone would then guard that path.
 - Nothing in the menu's Network section probes a port or changes a setting. The rows are read from
   the app's own state.
@@ -326,6 +326,11 @@ Browser tools: 127.0.0.1:8794 (separate process, this Mac only)
 Switchboard: not configured
 Reverse attach: 0 live grants
 ```
+
+The Tailnet row comes only from Tailscale state (the read-only `serve status` result and your stored
+choice), never from `--public-url`. A `--public-url` that is not the local URL appears on its own row,
+"Public URL: <url> (as configured with --public-url, not checked)". When an installer owns another
+port and the app has no Tailscale state, a `*.ts.net` public URL leaves the Tailnet row at "unknown".
 
 Clicking the Local MCP row or the Tailnet URL copies it. Tailnet can also read "Off", "On (existing
 mapping, not managed by this app), <url>" or "opted in, not applied (see the log)". Browser tools

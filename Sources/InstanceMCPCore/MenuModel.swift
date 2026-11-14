@@ -156,7 +156,7 @@ public struct NetworkSwitchboard {
 }
 
 public struct NetworkRow: Equatable, Sendable {
-    public enum Kind: Equatable, Sendable { case localMCP, tailnet, browser, switchboard, reverseAttach }
+    public enum Kind: Equatable, Sendable { case localMCP, tailnet, publicURL, browser, switchboard, reverseAttach }
     public let kind: Kind
     public let text: String
     /// Set for rows a click copies: the local URL, and the tailnet URL when there is one.
@@ -179,6 +179,26 @@ extension MenuModel {
         return .off
     }
 
+    /// The `--public-url` row input: the configured URL when it is not the local one. It is shown as configured
+    /// and never feeds the Tailnet row, which comes only from Tailscale state.
+    public static func configuredPublicURL(publicURL: String, localURL: String) -> String? {
+        publicURL == localURL ? nil : publicURL
+    }
+
+    /// Tailnet state when the app has no Tailscale state of its own (an installer owns another port). A
+    /// tailnet-looking `--public-url` without a confirming `serve status` is unknown, never On; anything else is Off.
+    public static func tailnetStateWithoutExposure(publicURL: String?) -> NetworkTailnetState {
+        guard let host = publicURL.flatMap({ URL(string: $0)?.host?.lowercased() }), host.hasSuffix(".ts.net")
+        else { return .off }
+        return .unknown
+    }
+
+    /// An installer launch (allow list, so not token-only) whose Tailscale login could not be read: the tailnet
+    /// state is unknown, not off.
+    public static func tailnetStatusUnreadable(offered: Bool, tokenOnly: Bool) -> Bool {
+        !offered && !tokenOnly
+    }
+
     /// True only for 127.0.0.0/8, ::1 and localhost. Anything else, including a host that does not parse, is not
     /// loopback: the safer reading for a row that says who can reach the port.
     public static func isLoopbackHost(_ host: String) -> Bool {
@@ -197,7 +217,8 @@ extension MenuModel {
 
     public static func networkSection(bindHost: String, bindPort: Int, path: String,
                                       upstreams: [NetworkUpstream], tailnet: NetworkTailnetState,
-                                      switchboard: NetworkSwitchboard?, liveGrants: Int?, attachEnabled: Bool) -> NetworkSection {
+                                      switchboard: NetworkSwitchboard?, liveGrants: Int?, attachEnabled: Bool,
+                                      publicURL: String? = nil) -> NetworkSection {
         var rows: [NetworkRow] = []
 
         let localURL = "http://\(hostForURL(bindHost)):\(bindPort)\(path)"
@@ -215,6 +236,11 @@ extension MenuModel {
             rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: opted in, not applied (see the log)", copyValue: nil))
         case .unknown:
             rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: unknown (Tailscale status unreadable)", copyValue: nil))
+        }
+
+        if let publicURL {
+            rows.append(NetworkRow(kind: .publicURL, text: "Public URL: \(publicURL) (as configured with --public-url, not checked)",
+                                   copyValue: publicURL))
         }
 
         if let browser = upstreams.first(where: { $0.name == "browser" }) {

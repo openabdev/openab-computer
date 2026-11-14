@@ -361,15 +361,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         let tailnet = MenuModel.tailnetMenu(offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL,
                                           optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
                                           existingMapping: exposure?.existingMapping ?? false)
-        let tailnetState = MenuModel.networkTailnetState(
-            publicURL: exposure?.publicURL ?? externalPublicURL,
-            optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
-            existingMapping: exposure?.existingMapping ?? (externalPublicURL != nil), uncertain: (exposure?.uncertain ?? false)
-                || (exposure.map { !$0.offersExposure && !$0.tokenOnly } ?? false))
+        let tailnetState: NetworkTailnetState = exposure == nil
+            ? MenuModel.tailnetStateWithoutExposure(publicURL: externalPublicURL)
+            : MenuModel.networkTailnetState(
+                publicURL: exposure?.publicURL,
+                optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
+                existingMapping: exposure?.existingMapping ?? false,
+                uncertain: (exposure?.uncertain ?? false)
+                    || (exposure.map { MenuModel.tailnetStatusUnreadable(offered: $0.offersExposure, tokenOnly: $0.tokenOnly) } ?? false))
         let section = MenuModel.networkSection(
             bindHost: bindHost, bindPort: bindPort, path: path, upstreams: upstreams, tailnet: tailnetState,
             switchboard: switchboardSupervisor == nil ? nil : switchboardRowInput(),
-            liveGrants: nil, attachEnabled: attachEnabled)
+            liveGrants: nil, attachEnabled: attachEnabled, publicURL: externalPublicURL)
         menu.addItem(.separator())
         menu.addItem(label(section.header))
         switchboardTitleItem = nil
@@ -429,9 +432,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
 
-    /// An installer-owned `--public-url` (no exposure object) counts as a tailnet URL only when it is not the local one.
+    /// An installer-owned `--public-url` (no exposure object) is shown as configured, on its own row, when it is
+    /// not the local URL. It never produces a Tailnet state.
     private var externalPublicURL: String? {
-        exposure == nil && url != "http://\(MenuModel.hostForURL(bindHost)):\(bindPort)\(path)" ? url : nil
+        guard exposure == nil else { return nil }
+        return MenuModel.configuredPublicURL(publicURL: url, localURL: "http://\(MenuModel.hostForURL(bindHost)):\(bindPort)\(path)")
     }
 
     private func permissionMenuItems(_ resolved: ResolvedPermissions) -> [NSMenuItem] {
