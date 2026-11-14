@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build a macOS installer package around an ALREADY-SIGNED app.
 #
-# Usage: package-pkg.sh <oab-instance-mcp.app> <output.pkg> [version]
+# Usage: package-pkg.sh <oab-computer.app> <output.pkg> [version]
 # Env:   PKG_SIGN_IDENTITY="Developer ID Installer: ..."  (optional for smoke;
 #                                                            required for release)
 #        EXPECT_TEAM=6LPQNY95AQ
@@ -13,7 +13,7 @@ OUT="${2:?usage: package-pkg.sh <app> <output.pkg> [version]}"
 VERSION="${3:-}"
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 EXPECT_TEAM="${EXPECT_TEAM:-6LPQNY95AQ}"
-IDENTIFIER="${PKG_IDENTIFIER:-dev.openab.instance-mcp.installer}"
+IDENTIFIER="${PKG_IDENTIFIER:-dev.openab.computer.installer}"
 
 [ -d "$APP" ] || { echo "package-pkg: app not found: $APP" >&2; exit 66; }
 case "$OUT" in *.pkg) ;; *) echo "package-pkg: output must end in .pkg" >&2; exit 64 ;; esac
@@ -35,8 +35,8 @@ trap 'rm -rf "$TMP"' EXIT
 PAYLOAD="$TMP/payload"
 SCRIPTS="$TMP/scripts"
 COMPONENTS="$TMP/components.plist"
-mkdir -p "$PAYLOAD/Library/Application Support/OpenAB/instance-mcp" "$SCRIPTS" "$(dirname "$OUT")"
-/usr/bin/ditto "$APP" "$PAYLOAD/Library/Application Support/OpenAB/instance-mcp/oab-instance-mcp.app"
+mkdir -p "$PAYLOAD/Library/Application Support/OpenAB/computer" "$SCRIPTS" "$(dirname "$OUT")"
+/usr/bin/ditto "$APP" "$PAYLOAD/Library/Application Support/OpenAB/computer/oab-computer.app"
 cp "$ROOT/scripts/install-prebuilt.sh" "$SCRIPTS/install-prebuilt.sh"
 cp "$ROOT/scripts/pkg/postinstall" "$SCRIPTS/postinstall"
 chmod 755 "$SCRIPTS/install-prebuilt.sh" "$SCRIPTS/postinstall"
@@ -68,7 +68,7 @@ rm -f "$OUT"
 /usr/bin/pkgbuild "${ARGS[@]}" "$OUT"
 
 /usr/sbin/pkgutil --payload-files "$OUT" | /usr/bin/grep -q \
-  '^\./Library/Application Support/OpenAB/instance-mcp/oab-instance-mcp.app/Contents/MacOS/oab-instance-mcp$'
+  '^\./Library/Application Support/OpenAB/computer/oab-computer.app/Contents/MacOS/oab-computer$'
 if [ -n "${PKG_SIGN_IDENTITY:-}" ]; then
   /usr/sbin/pkgutil --check-signature "$OUT" | /usr/bin/grep -q 'Developer ID Installer'
 fi

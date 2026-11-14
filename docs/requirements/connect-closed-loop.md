@@ -1,5 +1,7 @@
 # Requirement — OpenAB Connect closed loop: agent operates the Mac mini, human observes
 
+**Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
+
 > Recorded 2026-09-22 (mid-Step-1 PoC). Not scheduled; captured so Step 2/3 design
 > choices do not foreclose it. Parent design: openabdev/openab#1544.
 

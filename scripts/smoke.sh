@@ -1,8 +1,8 @@
 #!/bin/bash
-# Loopback smoke test for oab-instance-mcp. Every step is time-bounded; the server it
+# Loopback smoke test for oab-computer. Every step is time-bounded; the server it
 # starts is killed on exit. Usage: scripts/smoke.sh [path-to-binary] [port]
 set -u
-B="${1:-.build/release/oab-instance-mcp}"
+B="${1:-.build/release/oab-computer}"
 PORT="${2:-8797}"
 URL="http://127.0.0.1:$PORT/mcp"
 LOG="$(mktemp)"
@@ -15,7 +15,7 @@ post() { # post <json> [extra curl args...]
 }
 field() { python3 -c 'import json,sys; r=json.load(sys.stdin); print(eval(sys.argv[1]))' "$1"; }
 
-pkill -f "oab-instance-mcp --port $PORT" 2>/dev/null || true
+pkill -f "oab-computer --port $PORT" 2>/dev/null || true
 
 echo "--- no auth flags (expect refusal, exit 64) ---"
 t 5 "$B" --port "$PORT"; echo "exit=$?"

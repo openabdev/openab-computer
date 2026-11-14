@@ -142,10 +142,10 @@ the change is reported to the granter.
 | `POST /attach {"profile":"desktop"}` | a `desktop` grant | 202, runs as `observe`. The grant JSON has `"profile":"observe"`, `"requested_profile":"desktop"` and a `warning`. The daemon log and the audit file record the mapping |
 | `POST /attach` without `profile` | macOS `desktop`, Linux `observe` | `observe` on both |
 | `POST /attach` with `sandbox` or any other unknown name | 400 (two different messages) | 400 `profile must be one of [owner, observe]` on both |
-| A grant stored as `desktop` (macOS `~/Library/Application Support/oab-instance-mcp/grants.json`, Linux `grants.json`) | resumed as `desktop` | kept and re-dialled under its id, as `observe`. `GET /attach` shows `profile: observe`, `requested_profile: desktop` and the `warning`. The file is rewritten with `profile: observe` and the requested name |
+| A grant stored as `desktop` (macOS `~/Library/Application Support/oab-computer/grants.json`, Linux `grants.json`) | resumed as `desktop` | kept and re-dialled under its id, as `observe`. `GET /attach` shows `profile: observe`, `requested_profile: desktop` and the `warning`. The file is rewritten with `profile: observe` and the requested name |
 | A grant stored as `sandbox` or an unknown name | dropped | dropped (unchanged, #46) |
 | macOS `--switchboard-profile desktop` (a flag in the LaunchAgent plist) | `desktop` | serves `observe`, prints the warning to the agent log, and logs `switchboard: dialling … as observe (requested desktop)`. Any other unknown value still exits with status 64 |
-| macOS `~/.config/oab-instance-mcp/switchboard.profile` containing `desktop` | copied into the plist | the installer writes `--switchboard-profile observe` and prints a warning. It does not edit your file |
+| macOS `~/.config/oab-computer/switchboard.profile` containing `desktop` | copied into the plist | the installer writes `--switchboard-profile observe` and prints a warning. It does not edit your file |
 | Linux environment and config | no profile setting exists | nothing to migrate |
 
 `requested_profile` is in every grant JSON (it equals `profile` when nothing was mapped).
@@ -161,8 +161,8 @@ string counts as absent on both platforms: the row keeps its stored profile.
 
 **Audit file.** Every mapping is also appended as one JSON line to an audit file, separate from
 the daemon log so it survives log rotation: macOS
-`~/Library/Application Support/oab-instance-mcp/audit.jsonl`, Linux
-`~/.local/state/oab-instance-mcp/audit.jsonl` (`$XDG_STATE_HOME` if set; override with
+`~/Library/Application Support/oab-computer/audit.jsonl`, Linux
+`~/.local/state/oab-computer/audit.jsonl` (`$XDG_STATE_HOME` if set; override with
 `MCP_AUDIT_FILE`, or `MCP_AUDIT_FILE=off` to disable). The file is mode 600 in a 0700 directory and
 is only appended to. A record looks like this:
 
@@ -177,7 +177,7 @@ no `grant`, `session` or `principal`). A write failure is logged and never block
 **To restore shell or browser access**, grant `owner` explicitly: pick Owner in OpenAB Connect or
 OpenAB Remote, or send `POST /attach` with `"profile":"owner"`. The new grant replaces the old one
 for the same runtime and session. For a switchboard, choose `owner` in the menu bar's Configure…
-(it asks for confirmation), or write `owner` to `~/.config/oab-instance-mcp/switchboard.profile`
+(it asks for confirmation), or write `owner` to `~/.config/oab-computer/switchboard.profile`
 and re-run the installer, which bakes the file into the LaunchAgent plist. A hand-edited profile
 file alone does not apply: the daemon ignores it until the menu bar saves again, so a restart
 serves the profile in the plist. To keep `observe` and silence the warning, write `observe` there

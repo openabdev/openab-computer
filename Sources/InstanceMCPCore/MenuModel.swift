@@ -10,7 +10,7 @@ public enum LaunchdJob {
     /// The variable is inherited by every child of a job, so a shell inside another LaunchAgent (an Actions runner, a
     /// coding agent) carries that job's label. Only this app's own label counts: booting out any other would stop an
     /// unrelated service, and a restart would wait for a KeepAlive that does not exist.
-    public static let ownLabel = "dev.openab.instance-mcp"
+    public static let ownLabel = "dev.openab.computer"
 
     /// A child of this app (a second copy started through the exec tool) inherits the label too, but its parent is the
     /// app, not launchd (pid 1), so the parent pid must be 1 as well.

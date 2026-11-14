@@ -1,5 +1,7 @@
 # ADR: Linux-first Rust port — one core, per-OS backends
 
+**Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
+
 - **Status:** Proposed
 - **Date:** 2026-09-27
 - **Related:** [openabdev/instance-mcp#15](https://github.com/openabdev/instance-mcp/issues/15) (FR + phased plan + arch diagrams), [`reverse-attach.md`](reverse-attach.md), [`sandbox-adapter.md`](sandbox-adapter.md)

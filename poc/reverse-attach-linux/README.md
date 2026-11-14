@@ -43,7 +43,7 @@ mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
   `exec_start` + `exec_poll`. Under `observe` a long `bash` is an *unknown tool*.
 - Background jobs (`src/jobs/`, #32 item 4, `owner` only): `exec_start` / `exec_poll` /
   `exec_list` / `exec_cancel`, same arguments and `structuredContent` as the Swift tools, with
-  `bash -c` in a new session. stdout/stderr go to `$XDG_STATE_HOME/oab-instance-mcp/jobs/<id>.out`
+  `bash -c` in a new session. stdout/stderr go to `$XDG_STATE_HOME/oab-computer/jobs/<id>.out`
   / `.err` (dir 700, files 600, never truncated); `exec_poll` reads by byte offset, at most
   1 MiB per stream per poll. A job stays `running` until its shell has exited and its process
   group is empty; the shell is reaped only then, so cancel and timeout can signal the group
@@ -70,7 +70,7 @@ bash smoke.sh                  # RESULT: 55 passed, 0 failed
 | mint path | `ttl_secs=60` seen by the runtime's mint endpoint; `expires_in_secs=60` in the grant |
 | control contract | `POST /attach` 202 with every Connect-required grant field; `GET /attach` wrapper; `GET /attach/{id}`; `DELETE` 204 + removal; principal and dynamic expiry |
 | redial / stop | close `1000` → redialed after 1 s; close `4010` → `state=ended, ended=revoked`; wrong secret → `ended=handshake_rejected_401` with exactly one attempt; unreachable runtime → `ended=deadline` |
-| MCP | `serverInfo.name=instance-mcp-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=<node>`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
+| MCP | `serverInfo.name=oab-computer-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=<node>`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
 | desktop (removed in #59) | list = `sys_info,screenshot`; forced `exec` → error, not executed (2026-09-28 run). Since #59 `smoke.sh` checks that a `desktop` request runs as `observe` with `requested_profile` and a `warning`, and that a stored `desktop` grant resumes as `observe` |
 | close handshake | client echoes the Close frame (was a bare EOF before the `socket.flush()` fix in `dial_loop`) |
 
@@ -96,7 +96,7 @@ JPEG in 0.07 s vs a 2.0 MB PNG in 1.0 s.
 `sys_info` carries the `host` / `displays` / `permissions.screen_recording` / `agent.version`
 fields the Screens pane reads.
 
-On a Raspberry Pi: systemd user unit `oab-instance-mcp.service` (BIND 127.0.0.1:8795, seat env
+On a Raspberry Pi: systemd user unit `oab-computer.service` (BIND 127.0.0.1:8795, seat env
 `WAYLAND_DISPLAY=wayland-0`, linger on) + `tailscale serve --bg --https=8444 http://127.0.0.1:8795`
 → `https://<node>.<tailnet>.ts.net:8444/mcp`. Verified from the laptop: wrong token 401,
 initialize 200 with `Mcp-Session-Id`, `sys_info` host=<node> displays=1, Connect-shaped screenshot
@@ -118,7 +118,7 @@ config. Verified from the laptop: click into a field → `type` → screenshot s
 Same pattern as the Mac: `@playwright/mcp` runs beside the daemon on loopback and the daemon
 re-serves its tools under its own `tools/list`, filtered by the connection's profile.
 
-- `pw-mcp.sh` + systemd user unit `oab-pw-mcp.service`: `@playwright/mcp@0.0.82` pinned (same
+- `pw-mcp.sh` + systemd user unit `oab-computer-pw-mcp.service`: `@playwright/mcp@0.0.82` pinned (same
   as `poc/pw-mcp`), **headed** Chromium launched into the labwc seat (`WAYLAND_DISPLAY`,
   `XDG_RUNTIME_DIR`, `DISPLAY=:0` for labwc's Xwayland), using the distro Chromium
   (`--executable-path /usr/bin/chromium`, arm64-native, no Playwright download), persistent
@@ -131,7 +131,7 @@ re-serves its tools under its own `tools/list`, filtered by the connection's pro
 - Profile filter (#59): `owner` sees every upstream tool (all 32, and any added later);
   `observe` sees none. `profile_conformance` checks both against the 32-tool fixture in
   `conformance/profile_vectors.json` through a fake upstream.
-- Chromium managed policy `/etc/chromium/policies/managed/oab-instance-mcp.json` blocks
+- Chromium managed policy `/etc/chromium/policies/managed/oab-computer.json` blocks
   camera/mic/notification/geolocation prompts: YouTube triggered the xdg-desktop-portal
   "Allow app to use the Camera?" dialog, which nothing but `mouse` could dismiss.
 
@@ -144,14 +144,14 @@ on the Pi's desktop, so `screenshot` / Connect's Screens pane show what the agen
 
 ## Grant persistence (#12)
 
-Live grants are written to `MCP_GRANTS_FILE` (default `$XDG_STATE_HOME/oab-instance-mcp/grants.json`,
+Live grants are written to `MCP_GRANTS_FILE` (default `$XDG_STATE_HOME/oab-computer/grants.json`,
 `off` disables), mode 600 in a 0700 directory, replaced atomically on every create / replace /
 `DELETE` / terminal end. On start, grants still inside their deadline are re-dialled under the same
 id. Smoke covers `kill -9` → restart → redial, same id, secret absent from `GET /attach`, and a
 revoked grant not resumed.
 
 A `desktop` request or stored row runs as `observe` (#59), and each mapping is appended as one
-JSON line to `MCP_AUDIT_FILE` (default `$XDG_STATE_HOME/oab-instance-mcp/audit.jsonl`, `off`
+JSON line to `MCP_AUDIT_FILE` (default `$XDG_STATE_HOME/oab-computer/audit.jsonl`, `off`
 disables), mode 600. Smoke checks the `attach` and `resume` records.
 
 ## Not yet (vs the Swift implementation)

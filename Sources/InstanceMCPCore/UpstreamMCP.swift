@@ -94,7 +94,7 @@ public actor UpstreamMCP {
         let (status, body, headers) = try await postRaw([
             "jsonrpc": "2.0", "id": 0, "method": "initialize",
             "params": ["protocolVersion": "2025-06-18", "capabilities": [:],
-                       "clientInfo": ["name": "oab-instance-mcp", "version": "upstream"]],
+                       "clientInfo": ["name": "oab-computer", "version": "upstream"]],
         ])
         guard (200..<300).contains(status) else { throw UpstreamError.http(status, body) }
         sessionID = headers.first { $0.key.lowercased() == "mcp-session-id" }?.value

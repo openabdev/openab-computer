@@ -41,7 +41,7 @@ public struct UISnapshotTool: Tool {
 
     /// Error texts, pinned by tests.
     public enum Errors {
-        public static let notTrusted = "Accessibility not granted: ui_snapshot cannot read other apps' windows. Grant Accessibility to OpenAB Computer (oab-instance-mcp, bundle id dev.openab.instance-mcp) in System Settings → Privacy & Security → Accessibility, then restart the agent."
+        public static let notTrusted = "Accessibility not granted: ui_snapshot cannot read other apps' windows. Grant Accessibility to OpenAB Computer (oab-computer, bundle id dev.openab.computer) in System Settings → Privacy & Security → Accessibility, then restart the agent."
         public static let noFrontmost = "no frontmost app (the screen may be locked or at the login window); pass app or pid"
         public static let budgetSpent = "the timeout_ms budget ran out before the target app was chosen; raise timeout_ms, or pass app or pid"
         public static let selfApp = "ui_snapshot cannot read OpenAB Computer's own windows"

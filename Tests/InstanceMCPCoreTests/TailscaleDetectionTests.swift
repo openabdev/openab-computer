@@ -105,8 +105,8 @@ final class TailscaleDetectionTests: XCTestCase {
     }
 
     func testTheCLIGetsTERM_PROGRAMBecauseTheAppBinaryNeedsItOutsideATerminal() {
-        XCTAssertEqual(FirstRunSetup.tailscaleEnvironment([:])["TERM_PROGRAM"], "oab-instance-mcp")
-        XCTAssertEqual(FirstRunSetup.tailscaleEnvironment(["TERM_PROGRAM": ""])["TERM_PROGRAM"], "oab-instance-mcp")
+        XCTAssertEqual(FirstRunSetup.tailscaleEnvironment([:])["TERM_PROGRAM"], "oab-computer")
+        XCTAssertEqual(FirstRunSetup.tailscaleEnvironment(["TERM_PROGRAM": ""])["TERM_PROGRAM"], "oab-computer")
         XCTAssertEqual(FirstRunSetup.tailscaleEnvironment(["TERM_PROGRAM": "ghostty", "A": "b"]),
                        ["TERM_PROGRAM": "ghostty", "A": "b"], "an existing value is kept")
     }

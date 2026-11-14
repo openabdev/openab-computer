@@ -1,5 +1,7 @@
 # Design — bearer-token authn as defence-in-depth for the MCP endpoint
 
+**Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
+
 > Recorded 2026-09-23. Implements the "two callers, two trust levels, one daemon"
 > constraint from [`connect-closed-loop.md`](connect-closed-loop.md), first slice: add a
 > shared bearer token so a leaked tailnet credential alone cannot reach the agent.

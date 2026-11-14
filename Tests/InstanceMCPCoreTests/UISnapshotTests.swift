@@ -342,7 +342,7 @@ final class UISnapshotWalkerTests: XCTestCase {
         XCTAssertThrowsError(try walk([el("AXWindow", "w", a)])) { e in
             XCTAssertEqual((e as? ToolError)?.description, UISnapshotTool.Errors.notTrusted)
         }
-        XCTAssertTrue(UISnapshotTool.Errors.notTrusted.contains("dev.openab.instance-mcp"))
+        XCTAssertTrue(UISnapshotTool.Errors.notTrusted.contains("dev.openab.computer"))
         XCTAssertTrue(UISnapshotTool.Errors.notTrusted.contains("Privacy & Security → Accessibility"))
     }
 
@@ -608,7 +608,7 @@ final class UISnapshotTargetTests: XCTestCase {
         UIRunningApp(pid: 30, bundleID: "a.helper", name: "Helper"),
         UIRunningApp(pid: 31, bundleID: "b.helper", name: "Helper"),
         UIRunningApp(pid: 40, bundleID: "com.apple.AirPlayUIAgent", name: "AirPlayUIAgent", regular: false),
-        UIRunningApp(pid: 99, bundleID: "dev.openab.instance-mcp", name: "oab-instance-mcp", regular: false),
+        UIRunningApp(pid: 99, bundleID: "dev.openab.computer", name: "oab-computer", regular: false),
     ]
 
     private func resolve(app: String? = nil, pid: Int32? = nil, front: Int32? = nil,
@@ -632,7 +632,7 @@ final class UISnapshotTargetTests: XCTestCase {
         XCTAssertEqual(failure(resolve(app: "Nope")),
                        "app not found: no running app has bundle id or name 'Nope'. Running apps: Finder, Helper, TextEdit")
         XCTAssertEqual(failure(resolve(pid: 99)), UISnapshotTool.Errors.selfApp)
-        XCTAssertEqual(failure(resolve(app: "dev.openab.instance-mcp")), UISnapshotTool.Errors.selfApp)
+        XCTAssertEqual(failure(resolve(app: "dev.openab.computer")), UISnapshotTool.Errors.selfApp)
         XCTAssertEqual(failure(resolve()), UISnapshotTool.Errors.noFrontmost)
         XCTAssertEqual(try resolve(front: 10).get().name, "Finder")
         XCTAssertEqual(try resolve(front: 55).get(), UIRunningApp(pid: 55, bundleID: nil, name: nil))

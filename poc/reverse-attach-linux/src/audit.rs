@@ -5,8 +5,8 @@
 //! it. The file is append-only and separate from the journal, so the record
 //! survives log rotation. Same record shape as the macOS daemon.
 //!
-//! Path: `MCP_AUDIT_FILE`, else `$XDG_STATE_HOME/oab-instance-mcp/audit.jsonl`,
-//! else `~/.local/state/oab-instance-mcp/audit.jsonl`. `MCP_AUDIT_FILE=off`
+//! Path: `MCP_AUDIT_FILE`, else `$XDG_STATE_HOME/oab-computer/audit.jsonl`,
+//! else `~/.local/state/oab-computer/audit.jsonl`. `MCP_AUDIT_FILE=off`
 //! disables it. Mode 600 in a 0700 directory. Writing is best-effort: a failure
 //! is logged and never blocks the grant.
 
@@ -36,7 +36,7 @@ fn default_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
-    Some(base.join("oab-instance-mcp/audit.jsonl"))
+    Some(base.join("oab-computer/audit.jsonl"))
 }
 
 /// One `profile_mapped` record. `source` is `attach` or `resume`.

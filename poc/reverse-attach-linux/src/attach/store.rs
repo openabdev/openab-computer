@@ -10,8 +10,8 @@
 //! at the same trust level as the bearer token file beside it (both 600 in the
 //! daemon user's home). Ended, cancelled and expired grants are never written.
 //!
-//! Path: `MCP_GRANTS_FILE`, else `$XDG_STATE_HOME/oab-instance-mcp/grants.json`,
-//! else `~/.local/state/oab-instance-mcp/grants.json`. `MCP_GRANTS_FILE=off`
+//! Path: `MCP_GRANTS_FILE`, else `$XDG_STATE_HOME/oab-computer/grants.json`,
+//! else `~/.local/state/oab-computer/grants.json`. `MCP_GRANTS_FILE=off`
 //! disables persistence.
 
 use std::fs;
@@ -65,7 +65,7 @@ fn default_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
-    Some(base.join("oab-instance-mcp/grants.json"))
+    Some(base.join("oab-computer/grants.json"))
 }
 
 /// Snapshot the registry's live grants to disk. No-op when persistence is off.

@@ -88,7 +88,7 @@ public struct ExecTool: Tool {
         let pid = proc.pid
 
         let collector = OutputCollector(cap: cap)
-        let ioQueue = DispatchQueue(label: "oab-instance-mcp.exec.io", attributes: .concurrent)
+        let ioQueue = DispatchQueue(label: "oab-computer.exec.io", attributes: .concurrent)
         let group = DispatchGroup()
         for (fd, stream) in [(proc.stdoutFD, 0), (proc.stderrFD, 1)] {
             group.enter()

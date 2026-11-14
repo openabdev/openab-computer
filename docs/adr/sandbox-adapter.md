@@ -1,5 +1,7 @@
 # ADR: Sandbox Adapter
 
+**Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
+
 - **Status:** Proposed
 - **Date:** 2026-09-24
 - **Issue:** [#1](https://github.com/openabdev/instance-mcp/issues/1)

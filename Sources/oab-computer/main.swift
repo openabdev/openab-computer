@@ -39,9 +39,9 @@ struct Options {
 
 func usage() -> Never {
     print("""
-    oab-instance-mcp \(version) — MCP server exposing this Mac (exec / screenshot / ui_snapshot / ui_action / mouse / key / osascript / sys_info)
+    oab-computer \(version) — MCP server exposing this Mac (exec / screenshot / ui_snapshot / ui_action / mouse / key / osascript / sys_info)
 
-    USAGE: oab-instance-mcp [--host 127.0.0.1] [--port 8795] [--path /mcp]
+    USAGE: oab-computer [--host 127.0.0.1] [--port 8795] [--path /mcp]
                         [--allow-login <email>]... [--token <str> | --token-file <path>]
                         [--insecure-local] [--quiet] [--menu-bar] [--public-url <https://…/mcp>]
 
@@ -66,7 +66,7 @@ func usage() -> Never {
                       Mac to one openab-pty session (this Mac dials the pod; see the ADR).
       --no-grant-persistence
                       Keep reverse-attach grants in memory only. By default live grants are
-                      saved (record: ~/Library/Application Support/oab-instance-mcp/grants.json,
+                      saved (record: ~/Library/Application Support/oab-computer/grants.json,
                       mode 600; secret: login Keychain) and re-dialled after a restart.
       --switchboard <wss://host/vm/attach>
                       Dial an openab-sb switchboard and serve this computer's tools on that socket, so
@@ -175,11 +175,11 @@ if firstRunLaunch {
     FirstRunSetup.redirectStderr(toLogAt: FirstRunSetup.logPath(home: home))
     #if DEBUG
     // Test seam, compiled into debug builds only (swift test). Release builds have no override and always use 8795.
-    if let raw = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_FIRST_RUN_PORT"] {
+    if let raw = ProcessInfo.processInfo.environment["OAB_COMPUTER_FIRST_RUN_PORT"] {
         if let p = Int(raw), (1...65535).contains(p) {
             opts.port = UInt16(p)
         } else {
-            fputs("no-flag launch: OAB_INSTANCE_MCP_FIRST_RUN_PORT=\(raw) rejected (not 1 to 65535); using \(opts.port)\n", stderr)
+            fputs("no-flag launch: OAB_COMPUTER_FIRST_RUN_PORT=\(raw) rejected (not 1 to 65535); using \(opts.port)\n", stderr)
         }
     }
     #endif
@@ -200,7 +200,7 @@ if firstRunLaunch {
         firstRunNotice = plan.notice
         firstRunLines = plan.logLines
     } catch {
-        showFirstRunAlert("Could not prepare the token file: \(error). Quit any other oab-instance-mcp that is running, " +
+        showFirstRunAlert("Could not prepare the token file: \(error). Quit any other oab-computer that is running, " +
                           "remove \(FirstRunSetup.lockPath(for: FirstRunSetup.tokenPath(home: home))) if it is left over from a crash, " +
                           "then open the app again. Details are in \(FirstRunSetup.logPath(home: home)).")
         exit(73)
@@ -255,7 +255,7 @@ let log: @Sendable (String) -> Void = { msg in
 }
 
 let server = MCPServer(
-    name: "oab-instance-mcp",
+    name: "oab-computer",
     version: version,
     instructions: """
         You are operating a real Mac (\(Host.current().localizedName ?? "unknown")) through its logged-in \
@@ -301,7 +301,7 @@ let attachManager: AttachManager? = opts.attach
 // be read from Tailscale now; a configured allow list alone is not proof that a login exists at this launch.
 // (Skipped under the debug-only test switch below, so test-launched binaries never run the Tailscale CLI.)
 #if DEBUG
-let exposureProbeSkipped = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] != nil
+let exposureProbeSkipped = ProcessInfo.processInfo.environment["OAB_COMPUTER_NO_TAILNET_EXPOSURE"] != nil
 #else
 let exposureProbeSkipped = false
 #endif
@@ -319,7 +319,7 @@ let installerOwnsOtherPort = !firstRunLaunch && TailnetExposure.installerOwnsOth
 // Debug builds only: the process tests set an environment variable so a test-launched binary never touches Tailscale.
 // A release build has no such switch, so nothing in the environment can skip the no-login withdrawal below.
 #if DEBUG
-let tailnetExposureDisabledForTests = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] != nil
+let tailnetExposureDisabledForTests = ProcessInfo.processInfo.environment["OAB_COMPUTER_NO_TAILNET_EXPOSURE"] != nil
 #else
 let tailnetExposureDisabledForTests = false
 #endif
@@ -359,7 +359,7 @@ do {
     fputs("failed to start listener: \(error)\n", stderr); exit(2)
 }
 let startupPermissions = PermissionProbe.current()
-log("oab-instance-mcp \(version) starting on http://\(opts.host):\(opts.port)\(opts.path) " +
+log("oab-computer \(version) starting on http://\(opts.host):\(opts.port)\(opts.path) " +
     "auth=[logins:\(opts.allowLogins.sorted().joined(separator: ",")) token:\(opts.token != nil) insecure-local:\(opts.insecureLocal)] " +
     "attach=\(opts.attach) upstreams=[\(opts.upstreams.map { $0.0 }.joined(separator: ","))] " +
     "screen_recording=\(startupPermissions.screenRecording.isGranted) " +

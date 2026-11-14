@@ -115,7 +115,7 @@ if q=="killed":
     sc=byid(13)["result"]["structuredContent"]; print(f'{sc["state"]},{sc.get("exit_code")}')
 EOF
 }
-check "initialize → serverInfo instance-mcp-rpi" "[[ \$(py init) == instance-mcp-rpi ]]"
+check "initialize → serverInfo oab-computer-rpi" "[[ \$(py init) == oab-computer-rpi ]]"
 check "owner tools/list = sys_info,screenshot,bash,mouse,key,exec_*" "[[ \$(py tools) == sys_info,screenshot,bash,mouse,key,exec_start,exec_poll,exec_list,exec_cancel ]]"
 check "sys_info hostname = $(hostname)" "[[ \$(py sys) == $(hostname) ]]"
 # Release builds set OAB_RELEASE_VERSION at compile time and EXPECT_AGENT_VERSION here (#74);
@@ -134,7 +134,7 @@ check "ping → pong" "[[ \$(py pong) == True ]]"
 JOB=$(py job)
 check "exec_start → job_id" "[[ '$JOB' == job-* ]]"
 check "exec_poll by offset returns only new output" "[[ \$(py poll2) == True ]]"
-check "job log tee'd under XDG_STATE_HOME" "[[ -s '$GRANTS_DIR/oab-instance-mcp/jobs/$JOB.out' ]]"
+check "job log tee'd under XDG_STATE_HOME" "[[ -s '$GRANTS_DIR/oab-computer/jobs/$JOB.out' ]]"
 check "job survived the attach drop (polled on attach 2)" "[[ \$(py survived) == running ]]"
 check "exec_cancel → killed with exit code" "[[ \$(py killed) == killed,137 ]]"
 

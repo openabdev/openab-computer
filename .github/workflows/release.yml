@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: instance-mcp-release-${{ github.ref }}
+  group: oab-computer-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -73,13 +73,13 @@ jobs:
           swift build -c release --arch arm64 --scratch-path "$RUNNER_TEMP/build-arm64"
           swift build -c release --arch x86_64 --scratch-path "$RUNNER_TEMP/build-x86_64"
           /usr/bin/lipo -create \
-            "$RUNNER_TEMP/build-arm64/release/oab-instance-mcp" \
-            "$RUNNER_TEMP/build-x86_64/release/oab-instance-mcp" \
-            -output "$DIST/oab-instance-mcp"
-          chmod 755 "$DIST/oab-instance-mcp"
-          /usr/bin/lipo -info "$DIST/oab-instance-mcp" | grep -q 'x86_64 arm64\|arm64 x86_64'
-          [ "$($DIST/oab-instance-mcp --version)" = "$VERSION" ]
-          scripts/assemble-app.sh "$DIST/oab-instance-mcp" "$DIST/oab-instance-mcp.app" "$VERSION"
+            "$RUNNER_TEMP/build-arm64/release/oab-computer" \
+            "$RUNNER_TEMP/build-x86_64/release/oab-computer" \
+            -output "$DIST/oab-computer"
+          chmod 755 "$DIST/oab-computer"
+          /usr/bin/lipo -info "$DIST/oab-computer" | grep -q 'x86_64 arm64\|arm64 x86_64'
+          [ "$($DIST/oab-computer --version)" = "$VERSION" ]
+          scripts/assemble-app.sh "$DIST/oab-computer" "$DIST/oab-computer.app" "$VERSION"
 
       - name: Import Developer ID certificates
         shell: bash
@@ -110,7 +110,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP="$DIST/oab-instance-mcp.app"
+          APP="$DIST/oab-computer.app"
           /usr/bin/codesign --force --deep --options runtime --timestamp \
             --keychain "$KEYCHAIN" --sign "$APP_SIGN_IDENTITY" "$APP"
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP"
@@ -122,18 +122,18 @@ jobs:
             --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
           xcrun stapler staple "$APP"
           xcrun stapler validate "$APP"
-          rm -f "$DIST/oab-instance-mcp-$VERSION-universal.app.zip"
+          rm -f "$DIST/oab-computer-$VERSION-universal.app.zip"
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" \
-            "$DIST/oab-instance-mcp-$VERSION-universal.app.zip"
+            "$DIST/oab-computer-$VERSION-universal.app.zip"
 
       - name: Build, sign, and notarize installer pkg
         shell: bash
         run: |
           set -euo pipefail
-          PKG="$DIST/oab-instance-mcp-$VERSION-universal.pkg"
+          PKG="$DIST/oab-computer-$VERSION-universal.pkg"
           EXPECT_TEAM="$EXPECTED_TEAM_ID" PKG_SIGN_IDENTITY="$INSTALLER_SIGN_IDENTITY" \
             PKG_KEYCHAIN="$KEYCHAIN" \
-            scripts/package-pkg.sh "$DIST/oab-instance-mcp.app" "$PKG" "$VERSION"
+            scripts/package-pkg.sh "$DIST/oab-computer.app" "$PKG" "$VERSION"
           /usr/sbin/pkgutil --check-signature "$PKG" | grep -q 'Developer ID Installer'
           xcrun notarytool submit "$PKG" \
             --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID" --wait
@@ -141,7 +141,7 @@ jobs:
           xcrun stapler validate "$PKG"
           /usr/sbin/spctl -a -vv --type install "$PKG"
           scripts/verify-release.sh \
-            "$DIST/oab-instance-mcp-$VERSION-universal.app.zip" "$PKG" "$EXPECTED_TEAM_ID"
+            "$DIST/oab-computer-$VERSION-universal.app.zip" "$PKG" "$EXPECTED_TEAM_ID"
 
       - name: Checksums and release
         shell: bash
@@ -149,14 +149,14 @@ jobs:
           set -euo pipefail
           cd "$DIST"
           /usr/bin/shasum -a 256 \
-            "oab-instance-mcp-$VERSION-universal.app.zip" \
-            "oab-instance-mcp-$VERSION-universal.pkg" > SHA256SUMS
+            "oab-computer-$VERSION-universal.app.zip" \
+            "oab-computer-$VERSION-universal.pkg" > SHA256SUMS
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --verify-tag --generate-notes --title "oab-computer $VERSION"
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            "oab-instance-mcp-$VERSION-universal.app.zip" \
-            "oab-instance-mcp-$VERSION-universal.pkg" SHA256SUMS
+            "oab-computer-$VERSION-universal.app.zip" \
+            "oab-computer-$VERSION-universal.pkg" SHA256SUMS
 
       - name: Clean signing material
         if: always()
@@ -219,9 +219,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          NAME="oab-instance-mcp-$VERSION-linux-${{ matrix.arch }}"
+          NAME="oab-computer-$VERSION-linux-${{ matrix.arch }}"
           mkdir -p "$NAME"
-          cp poc/reverse-attach-linux/target/release/reverse-attach "$NAME/oab-instance-mcp"
+          cp poc/reverse-attach-linux/target/release/reverse-attach "$NAME/oab-computer"
           cp poc/reverse-attach-linux/pw-mcp.sh scripts/install-linux.sh "$NAME/"
           cp poc/reverse-attach-linux/README.md "$NAME/README.md"
           tar czf "$NAME.tar.gz" "$NAME"

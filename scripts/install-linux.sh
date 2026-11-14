@@ -1,20 +1,20 @@
 #!/bin/bash
 # Install the Linux hands node from a release tarball (run ON the target, as the desktop user).
 #
-#   curl -fsSL https://github.com/openabdev/instance-mcp/releases/latest/download/oab-instance-mcp-VERSION-linux-$(dpkg --print-architecture).tar.gz | tar xz
-#   cd oab-instance-mcp-*-linux-* && ./install-linux.sh [--allow-login you@example.com] [--no-browser] [--headless-seat]
+#   curl -fsSL https://github.com/openabdev/openab-computer/releases/latest/download/oab-computer-VERSION-linux-$(dpkg --print-architecture).tar.gz | tar xz
+#   cd oab-computer-*-linux-* && ./install-linux.sh [--allow-login you@example.com] [--no-browser] [--headless-seat]
 #
 # --headless-seat: for a server install with no desktop (Ubuntu Server, a mini PC in a closet):
 #   installs sway and runs it headless (one 1920x1080 virtual output) as user unit oab-seat.service.
 #   Boxes that already run a wlroots desktop (Raspberry Pi OS labwc, sway) do not need it.
 #
-# Installs the binary + units under ~/.local/oab-instance-mcp, generates or keeps the bearer
+# Installs the binary + units under ~/.local/oab-computer, generates or keeps the bearer
 # token, detects the Tailscale login, installs @playwright/mcp if node is present, enables
 # linger and `tailscale serve --https=8444`. Idempotent. Full walkthrough: docs/linux-setup.md.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BASE="$HOME/.local/oab-instance-mcp"
-CFG="$HOME/.config/oab-instance-mcp"
+BASE="$HOME/.local/oab-computer"
+CFG="$HOME/.config/oab-computer"
 UNITS="$HOME/.config/systemd/user"
 ALLOW_LOGIN=""; BROWSER=1; PORT=8795; SERVE_PORT=8444; HEADLESS_SEAT=0
 while [ $# -gt 0 ]; do
@@ -32,6 +32,25 @@ need() { command -v "$1" >/dev/null || { echo "missing: $1 (apt-get install $2)"
 need tailscale tailscale; need grim grim; need wlrctl wlrctl; need wtype wtype; need python3 python3
 [ "$(id -u)" != 0 ] || { echo "run as the desktop user, not root" >&2; exit 64; }
 
+# Warn only (read-only: never stops, disables or removes the old units). A 0.11 or earlier node runs
+# oab-instance-mcp.service on the same port; it would fight the new oab-computer.service for it.
+LEGACY_FOUND=()
+for U in oab-instance-mcp.service oab-pw-mcp.service; do
+  if systemctl --user is-active --quiet "$U" >/dev/null 2>&1 || systemctl --user is-enabled --quiet "$U" >/dev/null 2>&1; then
+    LEGACY_FOUND+=("$U")
+  fi
+done
+if [ "${#LEGACY_FOUND[@]}" -gt 0 ]; then
+  {
+    echo "install: WARNING: the old unit(s) ${LEGACY_FOUND[*]} (0.11 or earlier) are still active or enabled."
+    echo "oab-instance-mcp.service listens on port $PORT like the new oab-computer.service and will fight it for that port."
+    echo "This installer does not touch them. To stop and remove them, run:"
+    echo "  systemctl --user disable --now ${LEGACY_FOUND[*]}"
+    echo "  rm ${LEGACY_FOUND[*]/#/$UNITS/}"
+    echo "  systemctl --user daemon-reload"
+  } >&2
+fi
+
 # node installed via fnm/nvm is often a symlink with npm/npx only beside the real binary.
 NODE_BIN=""
 if command -v node >/dev/null; then NODE_BIN="$(dirname "$(readlink -f "$(command -v node)")")"; export PATH="$NODE_BIN:$PATH"; fi
@@ -41,14 +60,14 @@ if [ "$HEADLESS_SEAT" = 1 ]; then
   need sway sway
   mkdir -p "$HOME/.config/sway"
   [ -f "$HOME/.config/sway/config" ] || cat >"$HOME/.config/sway/config" <<'SWAY'
-# Headless seat for the oab-instance-mcp hands node: one virtual 1080p output, no input devices.
+# Headless seat for the oab-computer hands node: one virtual 1080p output, no input devices.
 output HEADLESS-1 resolution 1920x1080 position 0,0
 default_border none
 focus_follows_mouse no
 SWAY
   cat >"$UNITS/oab-seat.service" <<'UNIT'
 [Unit]
-Description=Headless sway seat for the oab-instance-mcp hands node
+Description=Headless sway seat for the oab-computer hands node
 
 [Service]
 Environment=WLR_BACKENDS=headless
@@ -81,7 +100,7 @@ if [ -z "$ALLOW_LOGIN" ]; then
   [ -n "$ALLOW_LOGIN" ] || { echo "cannot detect Tailscale login; is this node logged in? (or pass --allow-login)" >&2; exit 78; }
 fi
 
-install -m 755 "$HERE/oab-instance-mcp" "$BASE/oab-instance-mcp"
+install -m 755 "$HERE/oab-computer" "$BASE/oab-computer"
 if [ ! -s "$CFG/token" ]; then
   head -c 32 /dev/urandom | base64 | tr -d '=+/\n' | head -c 40 > "$CFG/token"; chmod 600 "$CFG/token"
   echo "generated bearer token at $CFG/token"
@@ -125,9 +144,9 @@ JSON
     sudo -n apt-get install -y -qq fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji >/dev/null 2>&1 || \
       echo "note: install fonts (fonts-dejavu-core fonts-noto-cjk) or pages render as boxes" >&2
   fi
-  cat >"$UNITS/oab-pw-mcp.service" <<UNIT
+  cat >"$UNITS/oab-computer-pw-mcp.service" <<UNIT
 [Unit]
-Description=Playwright MCP for the oab-instance-mcp hands node (loopback :8794)
+Description=Playwright MCP for the oab-computer hands node (loopback :8794)
 After=graphical-session.target oab-seat.service
 
 [Service]
@@ -147,7 +166,7 @@ UNIT
   if sudo -n true 2>/dev/null; then
     sudo mkdir -p /etc/chromium/policies/managed
     echo '{"DefaultMediaStreamSetting": 2, "DefaultNotificationsSetting": 2, "DefaultGeolocationSetting": 2}' \
-      | sudo tee /etc/chromium/policies/managed/oab-instance-mcp.json >/dev/null
+      | sudo tee /etc/chromium/policies/managed/oab-computer.json >/dev/null
   else
     echo "note: could not write Chromium policy (no sudo); camera/mic prompts will need a mouse click" >&2
   fi
@@ -157,13 +176,13 @@ fi
 
 # Unquoted heredoc so $VARS expand: escape any literal backtick or $ in it (#90).
 # scripts/test-install-linux.sh diffs the written units against their expected text.
-cat >"$UNITS/oab-instance-mcp.service" <<UNIT
+cat >"$UNITS/oab-computer.service" <<UNIT
 [Unit]
-Description=oab-instance-mcp (Linux hands node: /mcp + /attach)
+Description=oab-computer (Linux hands node: /mcp + /attach)
 After=graphical-session.target
 
 [Service]
-ExecStart=$BASE/oab-instance-mcp
+ExecStart=$BASE/oab-computer
 Environment=BIND=127.0.0.1:$PORT
 Environment=MCP_TOKEN_FILE=$CFG/token
 Environment=MCP_ALLOW_LOGIN=$ALLOW_LOGIN
@@ -180,9 +199,9 @@ WantedBy=default.target
 UNIT
 
 systemctl --user daemon-reload
-[ -z "$UPSTREAM" ] || systemctl --user enable --now oab-pw-mcp.service
-systemctl --user enable --now oab-instance-mcp.service
-systemctl --user restart oab-instance-mcp.service
+[ -z "$UPSTREAM" ] || systemctl --user enable --now oab-computer-pw-mcp.service
+systemctl --user enable --now oab-computer.service
+systemctl --user restart oab-computer.service
 sudo -n loginctl enable-linger "$USER" 2>/dev/null || loginctl enable-linger "$USER" 2>/dev/null || echo "note: enable linger manually: sudo loginctl enable-linger $USER" >&2
 
 if sudo -n true 2>/dev/null; then

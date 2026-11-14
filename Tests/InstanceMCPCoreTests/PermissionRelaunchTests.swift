@@ -265,7 +265,7 @@ final class HiddenPermissionCheckTests: XCTestCase {
     /// Runs the real built executable. Needs the executable target built next to the test bundle.
     func testBuiltExecutableExitsZeroOrOneWithoutOutput() throws {
         let dir = Bundle(for: Self.self).bundleURL.deletingLastPathComponent()
-        let exe = dir.appendingPathComponent("oab-instance-mcp")
+        let exe = dir.appendingPathComponent("oab-computer")
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: exe.path), "executable not built beside the tests")
         let p = Process()
         p.executableURL = exe

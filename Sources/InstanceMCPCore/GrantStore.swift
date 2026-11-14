@@ -9,10 +9,10 @@ import Security
 ///
 /// Split by sensitivity:
 /// - the **record** (id, runtime, session, profile, principal, dates) is JSON in
-///   `~/Library/Application Support/oab-instance-mcp/grants.json`, mode 600 in a
+///   `~/Library/Application Support/oab-computer/grants.json`, mode 600 in a
 ///   0700 directory — inspectable, no secret in it;
 /// - the **attach secret** is a generic password in the login Keychain, service
-///   `dev.openab.instance-mcp.grant`, account = grant id, accessible only after
+///   `dev.openab.computer.grant`, account = grant id, accessible only after
 ///   first unlock on this device. The Keychain ACL binds it to this code-signing
 ///   identity, like the TCC grants.
 ///
@@ -90,7 +90,7 @@ public final class FileGrantStore: GrantStore, @unchecked Sendable {
 
     public static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/oab-instance-mcp/grants.json")
+            .appendingPathComponent("Library/Application Support/oab-computer/grants.json")
     }
 
     public init(url: URL = FileGrantStore.defaultURL, secrets: SecretStore = KeychainSecretStore(),
@@ -166,7 +166,7 @@ public final class FileGrantStore: GrantStore, @unchecked Sendable {
 }
 
 public struct KeychainSecretStore: SecretStore {
-    public static let service = "dev.openab.instance-mcp.grant"
+    public static let service = "dev.openab.computer.grant"
     public init() {}
 
     private func query(_ account: String) -> [String: Any] {
@@ -180,7 +180,7 @@ public struct KeychainSecretStore: SecretStore {
         var add = query(account)
         add[kSecValueData as String] = Data(secret.utf8)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        add[kSecAttrLabel as String] = "oab-instance-mcp attach grant"
+        add[kSecAttrLabel as String] = "oab-computer attach grant"
         return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 

@@ -1,12 +1,12 @@
 #!/bin/bash
-# Install the Playwright MCP LaunchAgent beside oab-instance-mcp (run ON the target Mac).
+# Install the Playwright MCP LaunchAgent beside oab-computer (run ON the target Mac).
 # Renders the plist with this user's $HOME (launchd does not expand ~), installs the
 # wrapper and pins @playwright/mcp. Playwright MCP listens on 127.0.0.1:8794 only and is
-# NOT exposed to the tailnet; browser tools are reached through oab-instance-mcp (#115).
+# NOT exposed to the tailnet; browser tools are reached through oab-computer (#115).
 set -euo pipefail
-LABEL=dev.openab.instance-mcp.pw-mcp
-BASE="$HOME/.local/oab-instance-mcp"
-LOGS="$HOME/Library/Logs/oab-instance-mcp"
+LABEL=dev.openab.computer.pw-mcp
+BASE="$HOME/.local/oab-computer"
+LOGS="$HOME/Library/Logs/oab-computer"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale # read by warn_legacy_8443_mapping
 # shellcheck source=check-legacy-mapping.sh disable=SC2034
@@ -38,4 +38,4 @@ for _ in $(seq 1 40); do launchctl print "gui/$UID_/$LABEL" >/dev/null 2>&1 || b
 launchctl bootstrap "gui/$UID_" "$PLIST"
 launchctl print "gui/$UID_/$LABEL" | grep -E 'state|pid ='
 warn_legacy_8443_mapping
-echo "Browser tools: reach them through oab-instance-mcp with --upstream browser=http://127.0.0.1:8794/mcp (the main installer adds it when this agent is loaded)."
+echo "Browser tools: reach them through oab-computer with --upstream browser=http://127.0.0.1:8794/mcp (the main installer adds it when this agent is loaded)."

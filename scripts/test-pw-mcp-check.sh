@@ -33,7 +33,7 @@ mkdir "$T/bin"
 stub() { # $1 = mode
   cat >"$T/bin/tailscale" <<STUB
 #!/bin/sh
-[ "\$TERM_PROGRAM" = oab-pw-mcp-installer ] || exit 9
+[ "\$TERM_PROGRAM" = oab-computer-pw-mcp-installer ] || exit 9
 [ "\$1 \$2" = "serve status" ] || { echo "unexpected: \$*" >&2; exit 8; }
 case "$1" in
   present) printf 'https://host.example.ts.net:8443 (tailnet only)\n|-- / proxy http://127.0.0.1:8794\n\nhttps://host.example.ts.net:8444 (tailnet only)\n|-- / proxy http://127.0.0.1:8795\n' ;;

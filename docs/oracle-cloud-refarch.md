@@ -1,5 +1,15 @@
 # Reference architecture: instance-mcp on an Oracle Cloud Ubuntu VM
 
+**Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
+
+| Old (0.8–0.11) | New (0.12.0) |
+|---|---|
+| `oab-instance-mcp` (binary, app, directories, unit, tarball) | `oab-computer` |
+| `dev.openab.instance-mcp` (bundle id, LaunchAgent) | `dev.openab.computer` |
+| `dev.openab.instance-mcp.pw-mcp`, `oab-pw-mcp.service` | `dev.openab.computer.pw-mcp`, `oab-computer-pw-mcp.service` |
+| `oab-instance-mcp.service` | `oab-computer.service` |
+| `OAB_INSTANCE_MCP_*` | `OAB_COMPUTER_*` |
+
 > Agent-friendly prompt block (copy-paste to set up a new VM)
 >
 > ```

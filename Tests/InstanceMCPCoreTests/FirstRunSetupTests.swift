@@ -332,19 +332,37 @@ final class FirstRunSetupTests: XCTestCase {
 
     func testAgentLogIsTheFileTheMenuOpensUnderTheSameHome() {
         XCTAssertEqual(FirstRunSetup.logPath(home: "/Users/x"),
-                       "/Users/x/Library/Logs/oab-instance-mcp/agent.log")
+                       "/Users/x/Library/Logs/oab-computer/agent.log")
         XCTAssertEqual(FirstRunSetup.grantsURL(home: "/Users/x").path,
-                       "/Users/x/Library/Application Support/oab-instance-mcp/grants.json")
-        XCTAssertEqual(FirstRunSetup.configDirectory(home: "/Users/x"), "/Users/x/.config/oab-instance-mcp")
+                       "/Users/x/Library/Application Support/oab-computer/grants.json")
+        XCTAssertEqual(FirstRunSetup.configDirectory(home: "/Users/x"), "/Users/x/.config/oab-computer")
     }
 
-    // MARK: flag launch (process level, the built `oab-instance-mcp` binary)
+    /// The Swift half of scripts/test-name-consistency.sh: every user-visible name the app derives is
+    /// the 0.12.0 name, and none is the old one. `legacyTokenPath` is the one deliberate exception.
+    func testUserVisibleNamesAreOabComputer() {
+        let names = [
+            FirstRunSetup.configDirectory(home: "/h"),
+            FirstRunSetup.logPath(home: "/h"),
+            FirstRunSetup.grantsURL(home: "/h").path,
+            FirstRunSetup.tokenPath(home: "/h"),
+            KeychainSecretStore.service,
+            LaunchdJob.ownLabel,
+        ]
+        for name in names {
+            XCTAssertTrue(name.contains("computer"), name)
+            XCTAssertFalse(name.contains("instance-mcp"), name)
+        }
+        XCTAssertEqual(KeychainSecretStore.service, LaunchdJob.ownLabel + ".grant")
+    }
+
+    // MARK: flag launch (process level, the built `oab-computer` binary)
 
     private func builtBinary() throws -> URL {
         let dir = Bundle(for: FirstRunSetupTests.self).bundleURL.deletingLastPathComponent()
-        let url = dir.appendingPathComponent("oab-instance-mcp")
+        let url = dir.appendingPathComponent("oab-computer")
         guard FileManager.default.isExecutableFile(atPath: url.path) else {
-            throw XCTSkip("oab-instance-mcp is not built next to the test bundle: \(url.path)")
+            throw XCTSkip("oab-computer is not built next to the test bundle: \(url.path)")
         }
         return url
     }
@@ -377,7 +395,7 @@ final class FirstRunSetupTests: XCTestCase {
                            "--no-attach", "--no-grant-persistence", "--quiet"]
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home
-        environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] = "1"
+        environment["OAB_COMPUTER_NO_TAILNET_EXPOSURE"] = "1"
         child.environment = environment
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice
@@ -420,9 +438,9 @@ final class FirstRunSetupTests: XCTestCase {
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home
         // Moves only the no-flag launch's port, for the free-port test. Unset means the default 8795.
-        environment["OAB_INSTANCE_MCP_FIRST_RUN_PORT"] = port.map(String.init)
+        environment["OAB_COMPUTER_FIRST_RUN_PORT"] = port.map(String.init)
         // Structural guard: the test-launched binary builds no TailnetExposure, so it can never run `tailscale serve`.
-        environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] = "1"
+        environment["OAB_COMPUTER_NO_TAILNET_EXPOSURE"] = "1"
         let child = Process()
         child.executableURL = binary
         child.arguments = []

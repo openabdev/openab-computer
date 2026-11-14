@@ -1,4 +1,4 @@
-# Releasing oab-instance-mcp for macOS
+# Releasing oab-computer for macOS
 
 A release is a **universal (arm64 + x86_64), Developer-ID-signed and Apple-notarized** app plus a
 signed/notarized installer package. The package is the normal download; the app zip is for advanced
@@ -10,21 +10,21 @@ A `vMAJOR.MINOR.PATCH` tag publishes a GitHub Release titled `oab-computer VERSI
 
 | Artifact | Use |
 |---|---|
-| `oab-instance-mcp-VERSION-universal.pkg` | Recommended. Double-click; installs/configures the app for the logged-in desktop user |
-| `oab-instance-mcp-VERSION-universal.app.zip` | Pre-signed app, no package receipt. Contains `Contents/Resources/install-prebuilt.sh` for manual installation |
+| `oab-computer-VERSION-universal.pkg` | Recommended. Double-click; installs/configures the app for the logged-in desktop user |
+| `oab-computer-VERSION-universal.app.zip` | Pre-signed app, no package receipt. Contains `Contents/Resources/install-prebuilt.sh` for manual installation |
 | `SHA256SUMS` | SHA-256 of both artifacts |
 
-Only the release title uses the new name: asset names (`oab-instance-mcp-VERSION-*`), the binary,
-the bundle id and the install paths stay `oab-instance-mcp` on purpose (see #63).
+Since 0.12.0 the asset names (`oab-computer-VERSION-*`), the binary, the bundle id and the install
+paths all use `oab-computer` (up to 0.11 they were `oab-instance-mcp`).
 
 The installer:
 
 1. verifies bundle id, code signature and team `6LPQNY95AQ` **before** stopping the running service;
 2. detects the current Tailscale login and MagicDNS name from structured `tailscale status --json`;
-3. installs to `~/.local/oab-instance-mcp/oab-instance-mcp.app` without re-signing it;
-4. creates a bearer token once at `~/.config/oab-computer/token`, mode 600, and preserves it on updates (the first 0.12 install copies a 0.11 token from `~/.config/oab-instance-mcp/token` once; Linux keeps `~/.config/oab-instance-mcp`);
-5. writes/starts the Aqua-user LaunchAgent `dev.openab.instance-mcp`;
-6. adds the Playwright upstream when `dev.openab.instance-mcp.pw-mcp` is installed; and
+3. installs to `~/.local/oab-computer/oab-computer.app` without re-signing it;
+4. creates a bearer token once at `~/.config/oab-computer/token`, mode 600, and preserves it on updates (the first 0.12 install copies a 0.11 token from `~/.config/oab-instance-mcp/token` once; the Linux installer generates a new token and copies nothing);
+5. writes/starts the Aqua-user LaunchAgent `dev.openab.computer`;
+6. adds the Playwright upstream when `dev.openab.computer.pw-mcp` is installed; and
 7. configures `tailscale serve --https=8444` to loopback port 8795.
 
 A logged-in GUI user and a logged-in Tailscale app are prerequisites. Package scripts run as root,
@@ -34,8 +34,8 @@ LaunchAgent or config is written to root's home.
 ## One-time TCC grant
 
 After the first Developer-ID release install, enable **OpenAB Computer** once under System Settings →
-Privacy & Security (older docs and builds before 0.9.0 list it as **oab-instance-mcp**; the bundle id
-`dev.openab.instance-mcp` is unchanged, so it is the same entry):
+Privacy & Security (builds before 0.12.0 used the bundle id `dev.openab.instance-mcp`, so their
+entries do not carry over and must be granted again):
 
 - Full Disk Access
 - Screen & System Audio Recording
@@ -76,7 +76,7 @@ deleted in an `always()` cleanup step.
 
 ## Cut a release
 
-1. Update `let version = "…"` in `Sources/oab-instance-mcp/main.swift` and merge with green CI.
+1. Update `let version = "…"` in `Sources/oab-computer/main.swift` and merge with green CI.
    This is the only version to bump. The Linux binary takes its version from the tag at build
    time (see [Linux version](#linux-version)); do not bump `poc/reverse-attach-linux/Cargo.toml`.
 2. Ensure the matching active-team release secrets above exist.
@@ -88,7 +88,7 @@ deleted in an `always()` cleanup step.
    ```
 
 4. The `Release macOS installer` workflow builds/tests, signs, notarizes and publishes the macOS
-   artifacts, and (since 0.6.7) `oab-instance-mcp-VERSION-linux-{arm64,amd64}.tar.gz` + `.sha256`
+   artifacts, and (since 0.6.7) `oab-computer-VERSION-linux-{arm64,amd64}.tar.gz` + `.sha256`
    from the same run. All three jobs wait on the `release` environment approval. A manual
    dispatch can retry an existing tag; it is not a way to release an untagged commit, and it
    **must run on the tag ref** — the environment only allows `v*` refs, so a dispatch from
@@ -102,8 +102,8 @@ deleted in an `always()` cleanup step.
 
    ```sh
    scripts/verify-release.sh \
-     oab-instance-mcp-0.8.4-universal.app.zip \
-     oab-instance-mcp-0.8.4-universal.pkg
+     oab-computer-0.8.4-universal.app.zip \
+     oab-computer-0.8.4-universal.pkg
    shasum -a 256 -c SHA256SUMS
    ```
 
@@ -125,7 +125,7 @@ The Linux hands node reports the release version in `sys_info.agent.version` and
 `serverInfo.version` (#74). It is not read from `poc/reverse-attach-linux/Cargo.toml`:
 
 - The release workflow's Linux job checks that the tag equals `let version` in
-  `Sources/oab-instance-mcp/main.swift`, the same gate as the macOS job, then builds with
+  `Sources/oab-computer/main.swift`, the same gate as the macOS job, then builds with
   `OAB_RELEASE_VERSION=<tag without v>`, which `option_env!` compiles into the binary.
   Both jobs and PR CI read the version with `scripts/release-version.sh [tag]`, which
   requires one `MAJOR.MINOR.PATCH` line and exact string equality with the tag.
@@ -140,7 +140,7 @@ CI runs this on every PR:
 
 ```sh
 swift build
-scripts/test-packaging.sh .build/debug/oab-instance-mcp
+scripts/test-packaging.sh .build/debug/oab-computer
 ```
 
 It assembles the app, proves unsigned input is rejected by the production installer, exercises the
@@ -153,12 +153,12 @@ To build a universal unsigned artifact manually on a Mac:
 ```sh
 swift build -c release --arch arm64 --scratch-path /tmp/imcp-arm64
 swift build -c release --arch x86_64 --scratch-path /tmp/imcp-x86_64
-lipo -create /tmp/imcp-arm64/release/oab-instance-mcp \
-             /tmp/imcp-x86_64/release/oab-instance-mcp \
-             -output /tmp/oab-instance-mcp
-chmod +x /tmp/oab-instance-mcp
-scripts/assemble-app.sh /tmp/oab-instance-mcp /tmp/oab-instance-mcp.app 0.8.4
-ALLOW_UNSIGNED=1 scripts/package-pkg.sh /tmp/oab-instance-mcp.app /tmp/oab-instance-mcp.pkg 0.8.4
+lipo -create /tmp/imcp-arm64/release/oab-computer \
+             /tmp/imcp-x86_64/release/oab-computer \
+             -output /tmp/oab-computer
+chmod +x /tmp/oab-computer
+scripts/assemble-app.sh /tmp/oab-computer /tmp/oab-computer.app 0.8.4
+ALLOW_UNSIGNED=1 scripts/package-pkg.sh /tmp/oab-computer.app /tmp/oab-computer.pkg 0.8.4
 ```
 
 Unsigned artifacts are testing inputs only; do not install or publish them.

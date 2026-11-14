@@ -69,7 +69,7 @@ public enum ExecCwd {
 
     static func externalVolumeHint(_ path: String, verb: String) -> String {
         "cwd \(path) is on an external volume and \(verb). If this daemon runs as a LaunchAgent, "
-            + "macOS TCC blocks external-volume access unless the app bundle (dev.openab.instance-mcp) is granted "
+            + "macOS TCC blocks external-volume access unless the app bundle (dev.openab.computer) is granted "
             + "Full Disk Access in System Settings → Privacy & Security → Full Disk Access. "
             + "Grant it and restart the agent, or use an internal-disk path."
     }
