@@ -121,3 +121,106 @@ public enum MenuModel {
         return TailnetMenu(stateLine: nil, actionTitle: nil, action: nil)
     }
 }
+
+// MARK: Network section
+
+/// How the Tailnet row sees the exposure. Built from the same inputs as `tailnetMenu`.
+public enum NetworkTailnetState: Equatable, Sendable {
+    case off
+    case on(url: String)
+    /// A mapping exists that this app did not set up.
+    case onExisting(url: String)
+    case optedInNotApplied
+    /// Tailscale status could not be read, so "Off" would be a guess.
+    case unknown
+}
+
+public struct NetworkUpstream: Equatable, Sendable {
+    public let name: String
+    public let url: URL
+    public init(name: String, url: URL) { self.name = name; self.url = url }
+}
+
+public struct NetworkRow: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable { case localMCP, tailnet, browser, switchboard, reverseAttach }
+    public let kind: Kind
+    public let text: String
+    /// Set for rows a click copies: the local URL, and the tailnet URL when there is one.
+    public let copyValue: String?
+}
+
+public struct NetworkSection: Equatable, Sendable {
+    public let header: String
+    public let rows: [NetworkRow]
+}
+
+extension MenuModel {
+    public static func networkTailnetState(offered: Bool, publicURL: String?, optedIn: Bool,
+                                           existingMapping: Bool, uncertain: Bool) -> NetworkTailnetState {
+        if let publicURL {
+            return existingMapping && !optedIn ? .onExisting(url: publicURL) : .on(url: publicURL)
+        }
+        if optedIn { return .optedInNotApplied }
+        if uncertain && !offered { return .unknown }
+        return .off
+    }
+
+    /// True only for 127.0.0.0/8, ::1 and localhost. Anything else, including a host that does not parse, is not
+    /// loopback: the safer reading for a row that says who can reach the port.
+    public static func isLoopbackHost(_ host: String) -> Bool {
+        var h = host.trimmingCharacters(in: .whitespaces).lowercased()
+        if h.hasPrefix("[") && h.hasSuffix("]") { h = String(h.dropFirst().dropLast()) }
+        if h == "localhost" || h == "::1" { return true }
+        let parts = h.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) && Int($0) != nil && Int($0)! <= 255 })
+        else { return false }
+        return parts[0] == "127"
+    }
+
+    public static func hostForURL(_ host: String) -> String {
+        host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+    }
+
+    public static func networkSection(bindHost: String, bindPort: Int, path: String,
+                                      upstreams: [NetworkUpstream], tailnet: NetworkTailnetState,
+                                      switchboardTitle: String?, liveGrants: Int?, attachEnabled: Bool) -> NetworkSection {
+        var rows: [NetworkRow] = []
+
+        let localURL = "http://\(hostForURL(bindHost)):\(bindPort)\(path)"
+        let reach = isLoopbackHost(bindHost) ? "(this Mac only)" : "⚠ (reachable from other devices)"
+        rows.append(NetworkRow(kind: .localMCP, text: "Local MCP: \(localURL) \(reach)", copyValue: localURL))
+
+        switch tailnet {
+        case .off:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: Off", copyValue: nil))
+        case .on(let url):
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: On, \(url) (your tailnet only)", copyValue: url))
+        case .onExisting(let url):
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: On (existing mapping, not managed by this app), \(url)", copyValue: url))
+        case .optedInNotApplied:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: opted in, not applied (see the log)", copyValue: nil))
+        case .unknown:
+            rows.append(NetworkRow(kind: .tailnet, text: "Tailnet: unknown (Tailscale status unreadable)", copyValue: nil))
+        }
+
+        if let browser = upstreams.first(where: { $0.name == "browser" }) {
+            let host = browser.url.host ?? ""
+            let address = browser.url.port.map { "\(hostForURL(host)):\($0)" } ?? hostForURL(host)
+            let who = isLoopbackHost(host) ? "(separate process, this Mac only)" : "(remote)"
+            rows.append(NetworkRow(kind: .browser, text: "Browser tools: \(address) \(who)", copyValue: nil))
+        }
+
+        if let switchboardTitle {
+            rows.append(NetworkRow(kind: .switchboard, text: switchboardTitle, copyValue: nil))
+        }
+
+        if !attachEnabled {
+            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: off", copyValue: nil))
+        } else if let n = liveGrants {
+            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: \(n) live grant\(n == 1 ? "" : "s")", copyValue: nil))
+        } else {
+            rows.append(NetworkRow(kind: .reverseAttach, text: "Reverse attach: on", copyValue: nil))
+        }
+        return NetworkSection(header: "Network", rows: rows)
+    }
+}

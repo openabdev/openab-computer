@@ -247,19 +247,21 @@ profile (below).
 
 This section describes `main` (app version 0.12.0). The latest release is v0.11.0, so a released
 build may differ. Checked by reading the code and by a read-only look at a running agent
-(an older 0.10.1 install) and a bare 0.12.0 launch.
+(an older 0.10.1 install) and a bare 0.12.0 launch. The menu bar item's Network section shows the
+same facts (see [What the menu shows](#what-the-menu-shows)).
 
 ### Listening sockets
 
 | Address:port | Protocol | Who can reach it | What it is for | How it is enabled | Auth |
 |---|---|---|---|---|---|
 | `127.0.0.1:8795` (`--host`, `--port`; `--path` for the `/mcp` route) | TCP, plain HTTP/1.1 | Processes on this Mac only | `/mcp` (POST, DELETE), `/attach` (reverse attach; off with `--no-attach`), `/healthz`. Anything else is 404 | Always, on IPv4 loopback by default. No-flag launch from Finder, the installer's LaunchAgent, or a manual launch. A no-flag launch also briefly binds the port to test it is free, without listening | `/mcp` and `/attach`: [Auth](#auth). `/healthz`: none |
-| `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | Not opened by the app. `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. A Finder launch alone does not | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
+| `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. The app runs the same command only after you turn tailnet access on, from the wizard's tailnet page or the menu's "Allow tailnet access…", and removes it with "Turn Off Tailnet Access". A Finder launch alone does not create it. A mapping that already exists is shown as "On (existing mapping, not managed by this app)" and left alone until you choose "Manage with this app" | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
 | `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac. Your tailnet too, if the `:8443` mapping below exists | Playwright MCP, a **separate process** the app only connects to (`--upstream`) | Its own LaunchAgent (`poc/pw-mcp/install.sh`). The app never starts it | None in the app |
 | `https://<host>.<tailnet>.ts.net:8443` → `127.0.0.1:8794` | HTTPS, terminated by Tailscale | Your whole tailnet | Direct access to Playwright MCP (a proof-of-concept path) | Only `poc/pw-mcp/install.sh` runs `tailscale serve --bg --https=8443`. Not the app, not `install-prebuilt.sh` | **None.** No bearer token, login check or tool profile. It bypasses the agent's auth |
 
-The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The `:8443`
-mapping belongs to the Playwright installer, not to the app.
+The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The `:8444`
+mapping is made by the installer or by the app on your request. The `:8443` mapping belongs to the
+Playwright installer, not to the app.
 
 ### Outbound connections
 
@@ -269,7 +271,9 @@ mapping belongs to the Playwright installer, not to the app.
 | Switchboard, WebSocket | `wss://<switchboard-host>.<tailnet>.ts.net/vm/attach`. `ws://` only to loopback | Only with `--switchboard` or a saved switchboard config. Redials for the life of the process | [Serving a switchboard](#serving-a-switchboard---switchboard) |
 | Reverse attach, WebSocket | `ws(s)://<runtime>/tools/attach/<session>`. The runtime and port come from the grant | Only after a `POST /attach`. Saved grants are redialled at launch | [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) |
 | Mint call, HTTP(S) | `http(s)://<runtime>/admin/sessions/<session>/tools-attach` | Only when the `/attach` body carries an `admin_credential` | Get a one-time attach secret |
-| `tailscale status --self --peers=false --json` | Local child process | Only on the no-flag first-run launch | Find your Tailscale login |
+| `tailscale status --self --peers=false --json` | Local child process (read-only) | On the no-flag first-run launch, when you turn tailnet access on, and in the recheck while no Tailscale login is detected | Find your Tailscale login and tailnet name, and tell whether `tailscaled` is running |
+| `tailscale serve status --json` | Local child process (read-only) | When the app checks the `:8444` mapping: at launch, when you turn tailnet access on or off, and on the recheck while no Tailscale login is detected | See whether `:8444` is mapped, and to what |
+| `tailscale serve --bg --https=8444 http://127.0.0.1:8795` and `tailscale serve --https=8444 off` | Local child process (changes the mapping) | Only after you turn tailnet access on or off in the wizard or the menu. If you had turned it on, a launch re-applies it once when the mapping is missing | Create or remove the tailnet HTTPS mapping on `:8444` |
 
 The menu bar and the permission wizard also start local processes (`open`, `launchctl`, a
 `--permission-check` re-run of the app). These make no network connections.
@@ -282,22 +286,51 @@ your user can.
 - It opens no UDP socket and no Unix domain socket.
 - It does not bind a non-loopback address unless you pass `--host`.
 - It serves no TLS. Tailscale terminates TLS in front of it.
-- It does not run `tailscale serve`, `funnel`, `up`, `set` or `cert`. The installers run `serve`.
+- It never runs `tailscale funnel`, `up`, `set` or `cert`. It runs `tailscale serve` (and
+  `serve … off`) only for port 8444, and only after you turn tailnet access on or off (plus the
+  one launch re-apply of a choice you already made).
+- Nothing in the menu's Network section probes a port or changes a setting. The rows are read from
+  the app's own state.
 - On the switchboard path it dials out and opens no extra listener.
 
 ### Exposing it
 
-The tailnet mapping belongs to `tailscaled`, not to the app. Removing it
-(`tailscale serve --https=8444 off`) closes the tailnet path and leaves the loopback listener.
+The tailnet mapping belongs to `tailscaled`. The installer creates it, or the app does when you turn
+tailnet access on. Removing it (`tailscale serve --https=8444 off`, or "Turn Off Tailnet Access" in
+the menu) closes the tailnet path and leaves the loopback listener.
 
 A caller must pass every configured check. The installer always sets both, so a tailnet caller needs
 an allow-listed Tailscale login **and** the bearer token. A no-flag launch falls back to the token
 alone if it cannot find your login, and so does a manual launch without `--allow-login`. The `:8443`
 Playwright mapping has no auth: remove it with `tailscale serve --https=8443 off`. Browser tools
 still work, because the agent reaches Playwright over loopback. The app does not
-guard `--host`: a non-loopback value binds silently, in plain HTTP, with no warning. The app
+guard `--host`: a non-loopback value binds in plain HTTP. The menu's Local MCP row then says
+"reachable from other devices", but the app does not block it. The app
 trusts a `Tailscale-User-Login` header from any peer, so on a non-loopback bind only the bearer
 token stops a forged header. Keep the default, and always set a token.
+
+### What the menu shows
+
+The menu bar item has a **Network** section with one row for each of the items above. The rows come
+from the app's own state (its `--host`, `--port` and `--upstream` options, its tailnet record and its
+attach manager), not from a port scan. The menu connects to nothing to fill them in. When it cannot
+tell, it says so: "Tailnet: unknown (Tailscale status unreadable)" rather than "Off". Example:
+
+```
+Network
+Local MCP: http://127.0.0.1:8795/mcp (this Mac only)
+Tailnet: On, https://<host>.<tailnet>.ts.net:8444/mcp (your tailnet only)
+Browser tools: 127.0.0.1:8794 (separate process, this Mac only)
+Switchboard: not configured
+Reverse attach: 0 live grants
+```
+
+Clicking the Local MCP row or the Tailnet URL copies it. Tailnet can also read "Off", "On (existing
+mapping, not managed by this app), <url>" or "opted in, not applied (see the log)". Browser tools
+appears only when an `--upstream` named `browser` is configured, and says "(remote)" for a
+non-loopback host. Reverse attach reads "off" with `--no-attach`. The tailnet actions (Allow, Turn
+Off, Manage with this app) and the Switchboard actions (Configure, Reconnect, Disconnect & forget)
+stay in the menu next to their rows.
 
 ### macOS app and Linux node
 
