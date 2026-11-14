@@ -44,7 +44,8 @@ of the existing 32, so profile fixtures and the Linux conformance tests stay val
 4. **The wizard's Playwright install step is pre-checked with an opt-out.** A normal install
    therefore downloads a few hundred MB and needs network. The wizard still completes offline
    or on any failure, with Playwright not installed and a retry from the menu.
-5. **Managed Playwright runs over stdio as a child of the app.** It opens no listening socket.
+5. **Managed Playwright runs over stdio as a child of the app.** It is designed to open no listening socket, which is a release blocker
+   checked by V12 in the requirements.
    Port 8794 stays loopback-only and is used only by an external Playwright (operator
    `--upstream browser=`, the PoC, the Linux hands node).
 6. **The download pins live in a manifest embedded in the signed app.** The app never fetches
@@ -52,7 +53,8 @@ of the existing 32, so profile fixtures and the Linux conformance tests stay val
 7. **The app never adds or strips `com.apple.quarantine`.** It verifies digests and Node's
    signature and stops with a clear error if macOS refuses to run a file.
 8. **Sites are signed in once, in the Playwright headed window.** The persistent profile keeps
-   the session. There is no cookie import from Chrome or Safari.
+   the session. There is no cookie import from Chrome or Safari. Some sites
+   block automated browsers, so a sign-in there may fail or be challenged.
 
 ### Router behaviour
 
@@ -113,9 +115,9 @@ Rejected:
 
 #### Q3. Which Chromium does the Playwright install use?
 
-**Chosen: the pinned Playwright Chromium**, downloaded, hash-pinned and separate from the
+**Chosen: the pinned Playwright Chromium**, downloaded, digest-pinned and separate from the
 user's Chrome. If macOS refuses to run it, the user's installed Chrome is offered as a fallback
-only when present (Q5).
+only when present (Q5). That fallback is not version-pinned or digest-checked.
 
 Rationale: the engine matches the pinned `playwright-core` revision and its version is ours to
 pin, so tool behaviour is reproducible.
@@ -145,7 +147,7 @@ Rejected:
 
 **Chosen: never strip and never add the attribute.** Verify digests (and Node's signature). If
 macOS refuses to run a file, stop with a clear error, and offer the user's installed Chrome if
-present.
+present (not version-pinned or digest-checked).
 
 Rationale: stripping quarantine to make unsigned binaries run overrides a macOS protection on
 the strength of our own check. Adding it deliberately would only make the unnotarized Chromium
@@ -302,7 +304,7 @@ Assets: the user's signed-in sessions and cookies, page content, values typed th
 | A local process or web page reaching Playwright | Managed: stdio, nothing to reach, release blocked on any listener (V12). External: loopback is reachable by every local process, so it is used only on an explicit flag or consent and the app does not call it private. For an external 8794, whether Playwright refuses a cross-origin request and whether Chrome's Private Network Access blocks it is not verified (V8b). |
 | Impersonating the external upstream | Never trusted by self-identification. Used only after explicit trust and while the listener owner's uid equals ours (Q12). A same-uid impostor is outside this control, because same-uid code can already act as the user. |
 | An upstream error or redirect that leaks data or moves a request | The external adapter follows no redirects and returns fixed error classes with no upstream text. Managed stderr is kept only in a bounded in-memory buffer, never persisted or returned. |
-| A pre-checked download most users accept unread | The text names sources, size and verification and never calls the result safe. Every artifact is checked against the embedded manifest before use. Unchecking and **Continue without** are always available. |
+| A pre-checked download most users accept unread | The text names sources, size and verification and never calls the result safe. Every artifact is checked against the embedded manifest before use. Unchecking is always available, and **Continue without** appears after a failure. |
 | Archive extraction escaping the staging directory | The app validates the whole archive before writing anything, then extracts relative to a directory descriptor without following links. |
 | Secrets in the Playwright profile | The profile is a 0700 directory under the user's account, never copied or logged, excluded from backup, and deleted by **Remove Playwright…**. There is no encryption beyond Chromium's own. |
 | Environment leakage into children | `osascript` and Playwright get an allow-list environment; the bearer token and cloud or `GH_*` style variables are not passed. |
@@ -316,7 +318,7 @@ process, and it is `owner` only like `exec`.
 
 For Chrome, "Allow JavaScript from Apple Events" is a per-profile switch. Once it is on, every
 app already allowed to control Chrome gains script access to all signed-in pages, and removing
-browser tools from this app does not turn it off. The wizard and `docs/tool-profiles.md` say so.
+browser tools from this app does not turn it off. The wizard says so; `docs/tool-profiles.md` is to be updated to say so (see the requirements, R9).
 
 ## Consequences
 
@@ -324,7 +326,7 @@ browser tools from this app does not turn it off. The wizard and `docs/tool-prof
 
 - A working browser path without a Node and Chromium install, via Tier A on Chrome or Safari.
 - The full 32-tool surface through Tier P, installed with one pre-checked step.
-- No listening socket for managed Playwright, so no unauthenticated local code-execution path.
+- No listening socket for managed Playwright (release blocked unless V12 confirms it), so no unauthenticated local code-execution path.
 - Download integrity checked against values in the signed app, before extraction.
 - Existing profile fixtures, `observe` hiding and Linux conformance tests stay valid.
 

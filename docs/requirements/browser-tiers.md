@@ -36,8 +36,10 @@ constant. No new third-party Swift dependency.
 - R1.4 No new tool names. `BrowserToolCatalog.allNames` lists the 32 real names. The profile
   vector file also holds one synthetic fixture name that checks unknown `browser_*` names stay
   `owner` only. Counts in this document use the 32.
-- R1.5 A tool a future Playwright adds is filtered out until the catalog, the vector file and
-  the tests are updated together.
+- R1.5 On macOS, a tool a future Playwright adds is filtered out until the catalog, the vector
+  file and the tests are updated together. This differs from today's documented owner behaviour,
+  where unknown upstream browser tools pass through, and from Linux, which keeps passing
+  everything through; R9 and the Linux parity section record the change.
 - R1.6 Every result carries `structuredContent.backend`. `sys_info` reports the active backend,
   per-browser state and, for Tier P, whether it is managed or external (no URLs).
 - R1.7 `--upstream browser=URL` is handed to the Playwright backend as an external Playwright.
@@ -114,7 +116,7 @@ call gets the "not available with this tier" error.
 | `browser_handle_dialog` | No | Full | needs CDP; the Tier A timeout error points at `ui_snapshot` and `ui_action` |
 | `browser_emulate_media` | No | Full | needs CDP |
 | `browser_close` | Full | Full | closes the tab; never quits the user's browser |
-| `browser_drag` | No | Full | needs trusted pointer events (see Q8) |
+| `browser_drag` | No | Full | needs trusted pointer events (see [ADR Q8](../adr/browser-tiers.md#q8-does-tier-a-offer-the-viewport-coordinate-mouse-tools)) |
 | `browser_mouse_move_xy` | No | Full | error points at `screenshot` plus `mouse` with screen points |
 | `browser_mouse_click_xy` | No | Full | same |
 | `browser_mouse_drag_xy` | No | Full | same |
@@ -171,7 +173,7 @@ callers written for Playwright work unchanged. Unsupported options (for example
   `new-password`, `one-time-code`, `cc-*`) print as `<hidden>`, and `type=hidden` inputs are
   omitted. A preamble line marks page content as untrusted data.
 - R4.8 **Refs** are `e<N>`, the node's ordinal in traversal order. They are not stored in the DOM.
-  The host keeps, per tab, the latest snapshot table (role, name hash, tag, depth, text hash,
+  The host keeps, per tab, the latest snapshot table (role, name fingerprint, tag, depth, text fingerprint,
   plus the document `url` and `timeOrigin`). An action re-walks the document, takes node N and
   compares its fingerprint. A mismatch or a changed `url` or `timeOrigin` returns `stale_ref` and
   does nothing. A new snapshot of a tab makes that tab's older refs stale.
@@ -237,11 +239,12 @@ callers written for Playwright work unchanged. Unsupported options (for example
   a timer. At most one probe per browser per 2 s. At launch and in the menu, state comes from the
   last stored result, marked "last checked …". Nothing is probed there, because an undetermined
   Automation state would raise a system prompt with nobody present.
-- R5.6 **Footer.** The Playwright row is pre-checked. **Continue** is enabled when nothing is in
-  flight and the Playwright decision is settled: box checked and install finished, box unchecked,
-  or the install skipped after a failure. A Tier A probe is never required to leave the page.
-  Pressing Continue with the box checked starts the install on the page, with progress and
-  **Cancel**. After a failed install or a probe in any state other than `ready`, `needsAutomation`
+- R5.6 **Footer.** The Playwright row is pre-checked. **Continue** is enabled whenever nothing is in
+  flight. A Tier A probe is never required to leave the page. With the box checked and Playwright
+  not yet installed, pressing Continue starts the install on the page, with progress and
+  **Cancel**, and Continue is disabled until that install ends; when it succeeds the page
+  completes and the wizard advances. With the box unchecked, or after an install was skipped
+  following a failure, Continue completes the page at once. After a failed install or a probe in any state other than `ready`, `needsAutomation`
   or `notRunning`, the footer adds **Retry** and **Continue without**. **The wizard always
   completes**: offline, a failed download and a refused archive all end in Retry or Continue
   without, with Playwright simply not installed. If neither tier ends up ready, the router lists no
@@ -383,7 +386,7 @@ Each failure offers **Retry**, and **Skip** or **Continue without** only after t
 | Not enough disk | preflight | "Not enough free space: needs X, has Y." | numbers |
 | Archive rejected | stage 1 of the extractor | "An archive had unsafe contents. Nothing was installed." | artifact name |
 | Node signature check fails | after extract, before first run | "The downloaded Node.js failed its signature check." | event |
-| Gatekeeper or launch refusal | health-check exit status or stderr class | "macOS would not run the downloaded browser." Retry, or, only if Google Chrome is installed, **Use my installed Chrome**. The app launches it with its own profile directory. This Chrome is not version-pinned or hash-checked by the app, and the user is told so | event and class |
+| Gatekeeper or launch refusal | health-check exit status or stderr class | "macOS would not run the downloaded browser." Retry, or, only if Google Chrome is installed, **Use my installed Chrome**. The app launches it with its own profile directory. This Chrome is not version-pinned or digest-checked by the app, and the user is told so | event and class |
 | Lock held | `mkdir` fails 50 times | "Another install is running." | event |
 | Crash after install | supervisor | menu: "Playwright: failed, see log" | event and exit status |
 
@@ -392,7 +395,7 @@ Log lines use the `browser:` prefix and never contain URLs with tokens or respon
 #### R7.4 Running it
 
 The managed process is a child of the app, not a LaunchAgent. The app writes no plist. It starts
-when the active backend is `playwright`, with the staged `node`, the `@playwright/mcp` entry and
+when a connection's active backend is `playwright` (chosen by `auto` or pinned) and the install is complete. It runs with the staged `node`, the `@playwright/mcp` entry and
 `--user-data-dir <profile> --output-dir <output> --idle-timeout 1800000 --browser chromium
 --executable-path <our Chromium> --shared-browser-context --caps vision,pdf`. There is **no**
 `--port`, `--host` or `--allowed-hosts`: stdio is the default transport when `--port` is absent,
@@ -512,7 +515,9 @@ Stated limits:
 `docs/tool-profiles.md` and the README browser sections must state that Tier A acts as the user in
 their signed-in browser, that Tier P acts as the user on sites signed in to in the Playwright
 window, and the Chrome "Allow JavaScript from Apple Events" consequence from the ADR. Wizard
-consent text states the same.
+consent text states the same. `docs/tool-profiles.md` and the browser row of
+`docs/parity-checklist.md` also record that unknown upstream browser tools are filtered on macOS
+(R1.5) while Linux still passes them through.
 
 ## Verification checks
 
@@ -523,7 +528,7 @@ before the feature it concerns ships.
 |---|---|---|
 | V1 | Which identity does the Automation prompt name for an `osascript` child of the signed hardened-runtime app, with and without `NSAppleEventsUsageDescription` and the entitlement? Does a grant survive an update? | Switch to the in-process executor and update copy |
 | V2 | Exact Chrome error text and number when the switch is off; is it localized? | Use the fallback classification (R5.3) |
-| V3 | Exact AppleScript terms (`tab id … of window id …`), return types, error numbers for no window, `with timeout` behaviour, Safari `do JavaScript … in tab`, and whether stdin can replace the temporary file | Adjust templates and the golden hash |
+| V3 | Exact AppleScript terms (`tab id … of window id …`), return types, error numbers for no window, `with timeout` behaviour, Safari `do JavaScript … in tab`, and whether stdin can replace the temporary file | Adjust templates and the golden digest |
 | V4 | Does Chrome's isolated world keep `globalThis` between two calls? Are Promises awaited? | Synchronous-only `browser_evaluate` and no in-page text polling for `wait_for` |
 | V5 | Does Chrome scripting cover only the last-used profile? | Document it and show it in the wizard |
 | V6 | Safari's error text when the switch is off, and Develop menu wording in the current Safari | Update copy |
@@ -554,7 +559,7 @@ Also `Sources/oab-computer/BrowserPageView.swift`, `scripts/oab-computer.entitle
 `conformance/browser_tool_schemas.json`. Resources are Swift constants, not SwiftPM resource
 bundles, because `assemble-app.sh` copies only the binary and `install-prebuilt.sh`.
 
-**Change:** `MCPServer.swift`, `MCPHTTPEndpoint.swift` (pass the header), `ToolProfile.swift`
+**Change:** `MCPServer.swift`, `MCPHTTPEndpoint.swift` (forward the header), `ToolProfile.swift`
 (forward `browser` in `scoped(to:)` and `mappingTools(_:)`), `main.swift` (build the router, route
 `--upstream browser=`, loopback check), `SetupWizardModel.swift`,
 `PermissionSetupWindowController.swift`, `StatusItemController.swift`, `MenuModel.swift`,
@@ -576,7 +581,7 @@ setting. Live consent dialogs cannot be automated.
 
 1. Payload encoder hostile corpus through JavaScriptCore (quotes, backslashes, newlines, NUL,
    U+2028 and U+2029, `*/`, backticks, `${…}`, a `</script>` fragment): the decoded value is
-   byte-identical and nothing outside the literal changes. The static AppleScript golden hash.
+   byte-identical and nothing outside the literal changes. The static AppleScript golden digest.
    Argument pattern checks.
 2. Temporary file: mode 0600, directory 0700, `O_EXCL`, deletion on every path, startup sweep.
 3. Envelope parser and error classification with a fake executor: -1743, -1712, -1728, 9001,
@@ -684,8 +689,9 @@ node keeps exactly today's browser path: Playwright MCP on `127.0.0.1:8794` thro
 `conformance/profile_vectors.json`, so the Rust `profile_conformance` test is unaffected.
 
 Gaps that remain and are not claimed as closed: the verified on-demand download is macOS only, and
-the Linux installer still uses the distribution's Node and Playwright's own Chromium download
-without a pinned manifest; and the loopback check for the browser upstream is added to the Swift
+the Linux installer still uses the Node on `PATH` and either the distribution's Chromium or
+Playwright's own Chromium download, without a pinned manifest; the filtering of unknown upstream
+browser tools (R1.5) is macOS only; and the loopback check for the browser upstream is added to the Swift
 daemon only. The Linux installer is out of scope here and is tracked in
 [#119](https://github.com/openabdev/openab-computer/issues/119), to be designed later. The
 `docs/parity-checklist.md` entry is updated to say so.
