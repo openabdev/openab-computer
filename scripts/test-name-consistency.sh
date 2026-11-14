@@ -220,4 +220,11 @@ LEFT=$(cd "$ROOT" && grep -rnE --exclude-dir=target --exclude-dir=.build 'oab-in
   | grep -vE '^scripts/install-(prebuilt|linux)\.sh:.*([Ll]egacy|LEGACY|0\.11|oab-instance-mcp\.service|instance-mcp \(|0\.8|old)' || true)
 if [ -z "$LEFT" ]; then ok "old names appear only in the allowed places"; else echo "$LEFT" >&2; fail "old names left outside the allowed places (above)"; fi
 
+# The docs must not claim the Linux installer copies nothing while it copies the old token.
+if grep -q 'oab-instance-mcp/token' "$ROOT/scripts/install-linux.sh"; then
+  if grep -rniE 'copies nothing|generates a new token and copies' "$ROOT/README.md" "$ROOT/docs/releasing.md" "$ROOT/docs/linux-setup.md" 2>/dev/null; then
+    fail "docs say the Linux installer copies no token, but install-linux.sh copies the old one"
+  else ok "docs agree with the Linux installer's token copy"; fi
+fi
+
 if [ "$FAIL" = 0 ]; then echo "name-consistency: all checks passed"; else echo "name-consistency: FAILED" >&2; exit 1; fi
