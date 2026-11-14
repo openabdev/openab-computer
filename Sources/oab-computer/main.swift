@@ -27,6 +27,7 @@ struct Options {
     var persistGrants = true
     /// name=url pairs; each is a loopback MCP server whose tools are re-served.
     var upstreams: [(String, URL)] = []
+    var playwrightRoot: String?
     /// openab-sb `…/vm/attach` to dial, its secret file, and the profile served there.
     var switchboard: String? = nil
     var switchboardSecretFile: String? = nil
@@ -61,6 +62,11 @@ func usage() -> Never {
                       at browser=http://127.0.0.1:8794/mcp) under this daemon, subject to the
                       connection's tool profile. Repeatable. Tools appear with the upstream's
                       own names; owner sees every upstream tool, observe none.
+      --playwright-root <dir>
+                      Where the managed Playwright is installed (absolute path; default
+                      ~/Library/Application Support/oab-computer/playwright). The app runs it as
+                      a child process over stdio, with no listener. Without an install the browser
+                      tools stay unlisted and the menu says Playwright is not installed.
       --no-attach     Disable the reverse-attach plane (POST/GET /attach, DELETE /attach/{id}):
                       the human-credentialed endpoint through which Connect / Remote lends this
                       Mac to one openab-pty session (this Mac dials the pod; see the ADR).
@@ -140,11 +146,18 @@ while !args.isEmpty {
               u.host != nil else { fputs("--upstream wants name=http://host:port/path\n", stderr); usage() }
         // The upstream named `browser` is an external Playwright: literal loopback only (R7.5.2).
         if String(v[..<eq]) == "browser" {
-            do { try BrowserUpstreamURL.validate(u) } catch {
+            if opts.upstreams.contains(where: { $0.0 == "browser" }) {
+                fputs("--upstream browser= may be given only once\n", stderr); exit(64)
+            }
+            do { _ = try BrowserUpstreamURL.endpoint(u) } catch {
                 fputs("--upstream browser: \(error)\n", stderr); exit(64)
             }
         }
         opts.upstreams.append((String(v[..<eq]), u))
+    case "--playwright-root":
+        let v = next(a)
+        guard v.hasPrefix("/") else { fputs("--playwright-root wants an absolute path\n", stderr); exit(64) }
+        opts.playwrightRoot = v
     case "--version": print(version); exit(0)
     case "-h", "--help": usage()
     default: fputs("unknown flag \(a)\n", stderr); usage()
@@ -261,14 +274,22 @@ let log: @Sendable (String) -> Void = { msg in
 }
 
 // `--upstream browser=URL` is handed to the Playwright tier as an external Playwright, trusted
-// because the operator passed the flag (R1.7, R7.8). Other upstreams stay generic.
-let browserRouter: BrowserRouter? = opts.upstreams.first(where: { $0.0 == "browser" }).map { b in
-    let playwright = PlaywrightBackend(external: ExternalPlaywrightClient(url: b.1),
-                                       port: UInt16(b.1.port ?? 80), probe: LibprocPortOwnerProbe(),
-                                       trust: .operatorFlag, log: log)
-    return BrowserRouter(playwright: playwright,
-                         store: UserDefaultsBrowserPreferenceStore(log: log), log: log)
-}
+// because the operator passed the flag (R1.7, R7.8); the managed child is then not used. Without
+// the flag the managed tier serves, or reports that Playwright is not installed. Other upstreams
+// stay generic.
+let playwrightLocator = ManagedPlaywrightLocator(
+    root: opts.playwrightRoot.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? ManagedPlaywrightLocator.defaultRoot)
+let playwrightBackend: PlaywrightBackend = {
+    if let b = opts.upstreams.first(where: { $0.0 == "browser" }), let ep = try? BrowserUpstreamURL.endpoint(b.1) {
+        return PlaywrightBackend(external: ExternalPlaywrightClient(url: b.1), endpoint: ep,
+                                 probe: LibprocPortOwnerProbe(), trust: .operatorFlag, log: log)
+    }
+    return PlaywrightBackend(managed: playwrightLocator, log: log)
+}()
+let browserRouter = BrowserRouter(playwright: playwrightBackend,
+                                  store: UserDefaultsBrowserPreferenceStore(log: log), log: log)
+let browserServed: Bool = opts.upstreams.contains(where: { $0.0 == "browser" })
+    || { if case .success = playwrightLocator.locate() { return true }; return false }()
 let server = MCPServer(
     name: "oab-computer",
     version: version,
@@ -290,14 +311,14 @@ let server = MCPServer(
         back to `screenshot` for custom-drawn content. To act on a node, call `ui_action` with its \
         `snapshot_id`, `ref` and `action` (press, set_value, focus, …): no pointer movement, no focus \
         stealing; then take a new `ui_snapshot` to confirm. Use `mouse` for drags and custom-drawn \
-        content.\(opts.upstreams.isEmpty && browserRouter == nil ? "" : """
+        content.\(opts.upstreams.isEmpty && !browserServed ? "" : """
          A browser is available through the `browser_*` tools (Playwright, a real window on this Mac's \
         desktop): prefer `browser_navigate` + `browser_snapshot` (accessibility tree as text) to read a \
         page, and `browser_click` / `browser_type` / `browser_fill_form` to act — they are exact and need \
         no screenshots. Fall back to `screenshot` only for things outside the browser.
         """)
         """,
-    tools: ToolCatalog.local(agentVersion: version),
+    tools: ToolCatalog.local(agentVersion: version, browser: { await browserRouter.report() }),
     upstreams: opts.upstreams.filter { $0.0 != "browser" }.map { UpstreamMCP(name: $0.0, url: $0.1, log: log) },
     browser: browserRouter
 )
@@ -443,10 +464,11 @@ Task {
 }
 
 signal(SIGPIPE, SIG_IGN)
-let stop = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-signal(SIGTERM, SIG_IGN)
-stop.setEventHandler { log("SIGTERM, exiting"); exit(0) }
-stop.resume()
+// Menu Quit ends in exit(), which runs this: the managed browser child's process group is stopped.
+atexit { ManagedChildRegistry.shared.terminateAllSync() }
+let stopSources = ShutdownSignals.install { sig in
+    log("signal \(sig), exiting"); ManagedChildRegistry.shared.terminateAllSync(); exit(0)
+}
 
 if opts.menuBar {
     let app = NSApplication.shared
@@ -460,8 +482,9 @@ if opts.menuBar {
                              attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,
                              exposure: exposure, bindHost: opts.host, bindPort: Int(opts.port), path: opts.path,
                              upstreams: opts.upstreams.map { NetworkUpstream(name: $0.0, url: $0.1) },
-                             attachEnabled: opts.attach)
+                             attachEnabled: opts.attach, browserReport: { await browserRouter.report() })
     }
+    MainActor.assumeIsolated { statusItem?.refreshBrowserState() }
     // A stored opt-in is re-applied once per launch, off the main thread, and only when the mapping is missing.
     if let exposure {
         DispatchQueue.global(qos: .utility).async {

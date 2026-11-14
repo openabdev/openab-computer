@@ -513,6 +513,14 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   window on this Mac's desktop, so Connect's Screens pane shows what the agent is doing.
 - Upstream down → its tools are absent from `tools/list`; everything else works. The upstream's
   `Mcp-Session-Id` is re-established automatically. Local tool names win on collision.
+- **Managed Playwright (no listener).** Without `--upstream browser=…` the app can run an installed
+  Playwright MCP itself, as a child process over stdio: nothing listens on any port. It looks under
+  `~/Library/Application Support/oab-computer/playwright/` (`--playwright-root <dir>` changes it;
+  `install.json` there names the install). The child starts on first use, is restarted with a
+  backoff (1 s, 2 s, 4 s, up to 30 s) and is marked unavailable after 5 failures in 2 minutes. Its
+  stderr is kept in memory only and is never written to a log. With nothing installed, the browser
+  tools are not listed, a call says Playwright is not installed, and `sys_info` and the menu show
+  the same. This build has no installer for it yet.
 
 ## Download and install
 

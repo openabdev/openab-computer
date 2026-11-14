@@ -12,6 +12,7 @@ public struct BrowserConnection: Sendable, Equatable {
 /// Phase 1 fills only the Playwright slot; the Apple Events slot is left open.
 public actor BrowserRouter {
     public static let guardWindow: TimeInterval = 30 * 60
+    static let maxTracked = 1024
     public static let notSetUp = "Browser tools are not set up. Open OpenAB Computer, then Browser tools."
 
     private let appleEvents: (any BrowserBackend)?
@@ -40,26 +41,35 @@ public actor BrowserRouter {
         id == .appleEvents ? appleEvents : playwright
     }
 
+    /// Statuses are asked lazily, in the order the rules need them, because asking a managed
+    /// backend may start its child (R2, R2.1).
     func select(_ conn: BrowserConnection) async -> Selection {
         let pref = conn.override ?? store.load()
-        let aReady = await appleEvents?.status().isReady ?? false
-        let pReady = await playwright?.status().isReady ?? false
+        func ready(_ id: BrowserBackendID) async -> Bool { await backend(id)?.status().isReady ?? false }
         switch pref {
-        case .appleEvents: return aReady ? .active(appleEvents!) : .none
-        case .playwright: return pReady ? .active(playwright!) : .none
+        case .appleEvents: return await ready(.appleEvents) ? .active(appleEvents!) : .none
+        case .playwright: return await ready(.playwright) ? .active(playwright!) : .none
         case .auto:
             if let l = last[conn.key], clock().timeIntervalSince(l.at) < Self.guardWindow {
-                let lastReady = l.id == .appleEvents ? aReady : pReady
-                if lastReady, let b = backend(l.id) { return .active(b) }
+                if await ready(l.id), let b = backend(l.id) { return .active(b) }
                 let other: BrowserBackendID = l.id == .appleEvents ? .playwright : .appleEvents
-                if (other == .appleEvents ? aReady : pReady) { return .guarded(other: other) }
-                return .none
+                return await ready(other) ? .guarded(other: other) : .none
             }
-            if pReady { return .active(playwright!) }
-            if aReady { return .active(appleEvents!) }
+            if await ready(.playwright) { return .active(playwright!) }
+            if await ready(.appleEvents) { return .active(appleEvents!) }
             return .none
         }
     }
+
+    private func prune() {
+        let now = clock()
+        last = last.filter { now.timeIntervalSince($0.value.at) < Self.guardWindow }
+        if last.count > Self.maxTracked {
+            for (k, _) in last.sorted(by: { $0.value.at < $1.value.at }).prefix(last.count - Self.maxTracked) { last[k] = nil }
+        }
+    }
+
+    var trackedConnections: Int { last.count }
 
     /// The catalog names the active backend serves now. Empty with no ready backend.
     public func tools(_ conn: BrowserConnection) async -> [JSONValue] {
@@ -72,8 +82,14 @@ public actor BrowserRouter {
 
     public func call(_ name: String, arguments: JSONValue, _ conn: BrowserConnection) async -> JSONValue {
         let backend: any BrowserBackend
+        prune()
         switch await select(conn) {
-        case .none: return Self.errorResult(Self.notSetUp, backend: nil)
+        case .none:
+            var text = Self.notSetUp
+            if let p = playwright, case .needsSetup("playwright_not_installed")? = await p.peekStatus() {
+                text += " Playwright is not installed."
+            }
+            return Self.errorResult(text, backend: nil)
         case .guarded(let other):
             return Self.errorResult("The browser backend used earlier in this conversation is no longer "
                 + "ready. The \(other.rawValue) backend is ready but is not used automatically in the "
@@ -112,5 +128,78 @@ public actor BrowserRouter {
         sc["backend"] = .string(backend.rawValue)
         o["structuredContent"] = .object(sc)
         return .object(o)
+    }
+}
+
+// MARK: reporting (R1.6, R5.9)
+
+/// A non-sensitive snapshot of the browser tiers: states and fixed classes, never a URL, tab
+/// title or page text.
+public struct BrowserReport: Equatable, Sendable {
+    public struct Entry: Equatable, Sendable {
+        public let id: BrowserBackendID
+        public let state: String          // ready | needs_setup | unavailable
+        public let errorClass: String?
+        public let mode: String?          // managed | external
+        public let ownerSummary: String?
+    }
+    public let preference: BrowserPreference
+    public let active: BrowserBackendID?
+    public let backends: [Entry]
+
+    /// One line for `sys_info` text.
+    public var line: String {
+        let parts = backends.map { e -> String in
+            let name = e.id == .playwright ? "playwright" : "apple events"
+            let m = e.mode.map { " (\($0))" } ?? ""
+            switch e.state {
+            case "ready": return "\(name)\(m) ready"
+            case "needs_setup" where e.errorClass == "playwright_not_installed": return "\(name) not installed"
+            default: return "\(name)\(m) \(e.state.replacingOccurrences(of: "_", with: " "))\(e.errorClass.map { " (\($0))" } ?? "")"
+            }
+        }
+        return "browser tools: " + (parts.isEmpty ? "none" : parts.joined(separator: ", "))
+    }
+
+    public var json: JSONValue {
+        [
+            "preference": .string(preference.rawValue),
+            "active": active.map { .string($0.rawValue) } ?? .null,
+            "backends": .array(backends.map { e in
+                var o: [String: JSONValue] = ["id": .string(e.id.rawValue), "state": .string(e.state)]
+                if let c = e.errorClass { o["class"] = .string(c) }
+                if let m = e.mode { o["mode"] = .string(m) }
+                if let w = e.ownerSummary { o["owner"] = .string(w) }
+                return .object(o)
+            }),
+        ]
+    }
+}
+
+extension BrowserRouter {
+    /// Built from `peekStatus`, so reading it never starts a child or probes a listener. The
+    /// active backend is the one `auto` would pick from what is known.
+    public func report(_ conn: BrowserConnection? = nil) async -> BrowserReport {
+        let pref = conn?.override ?? store.load()
+        var entries: [BrowserReport.Entry] = []
+        var firstReady: BrowserBackendID?
+        for b in [playwright, appleEvents].compactMap({ $0 }) {
+            let st = await b.peekStatus() ?? .unavailable("not_checked")
+            let (state, cls): (String, String?)
+            switch st {
+            case .ready: (state, cls) = ("ready", nil); if firstReady == nil { firstReady = b.id }
+            case .needsSetup(let c): (state, cls) = ("needs_setup", c)
+            case .unavailable(let c): (state, cls) = ("unavailable", c)
+            }
+            entries.append(.init(id: b.id, state: state, errorClass: cls, mode: await b.mode, ownerSummary: await b.ownerSummary))
+        }
+        var active: BrowserBackendID?
+        switch pref {
+        case .auto: active = firstReady
+        case .appleEvents, .playwright:
+            let want: BrowserBackendID = pref == .appleEvents ? .appleEvents : .playwright
+            active = entries.first { $0.id == want && $0.state == "ready" }?.id
+        }
+        return BrowserReport(preference: pref, active: active, backends: entries)
     }
 }

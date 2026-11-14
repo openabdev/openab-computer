@@ -14,7 +14,12 @@ public struct SysInfoTool: Tool {
     public let inputSchema: JSONValue = ["type": "object", "properties": [:]]
 
     public let agentVersion: String
-    public init(agentVersion: String) { self.agentVersion = agentVersion }
+    /// Browser tier state (R1.6). Non-sensitive: states, fixed classes and a managed/external mode,
+    /// never a URL, tab title or page text, so `sys_info` can stay visible to `observe`.
+    public let browser: (@Sendable () async -> BrowserReport)?
+    public init(agentVersion: String, browser: (@Sendable () async -> BrowserReport)? = nil) {
+        self.agentVersion = agentVersion; self.browser = browser
+    }
 
     public func call(arguments: JSONValue) async throws -> ToolResult {
         let pi = ProcessInfo.processInfo
@@ -58,7 +63,8 @@ public struct SysInfoTool: Tool {
         let console = consoleUser()
         let tail = tailnetAddresses()
 
-        let structured: JSONValue = [
+        let browserReport = await browser?()
+        var structured: JSONValue = [
             "agent": ["name": "oab-computer", "version": .string(agentVersion), "pid": .number(Double(pi.processIdentifier))],
             "host": .string(host),
             "os": .string("macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"),
@@ -77,6 +83,11 @@ public struct SysInfoTool: Tool {
             "uptime_secs": .number(pi.systemUptime.rounded()),
         ]
 
+        if let browserReport, var o = structured.objectValue {
+            o["browser"] = browserReport.json
+            structured = .object(o)
+        }
+
         var lines: [String] = []
         lines.append("\(host) — macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion), \(hw["model"]?.stringValue ?? "?"), \(hw["chip"]?.stringValue ?? "?"), \(Int(hw["memory_gb"]?.doubleValue ?? 0)) GB")
         lines.append("user \(NSUserName()); console user \(console ?? "none")\(console == NSUserName() ? " (agent is in the GUI session)" : " (agent NOT in GUI session — screenshot/input will fail)")")
@@ -88,6 +99,7 @@ public struct SysInfoTool: Tool {
         if !screenRecording { lines.append("→ screenshot will fail until Screen Recording is granted to OpenAB Computer (oab-computer)") }
         if !accessibility { lines.append("→ mouse/key/ui_snapshot/ui_action will fail until Accessibility is granted to OpenAB Computer (oab-computer)") }
         if !fullDiskAccess { lines.append("→ protected Mail/Messages/Safari files will fail until Full Disk Access is granted to OpenAB Computer (oab-computer)") }
+        if let browserReport { lines.append(browserReport.line) }
         lines.append("agent \(agentVersion)")
         return ToolResult(content: [.text(lines.joined(separator: "\n"))], structured: structured)
     }

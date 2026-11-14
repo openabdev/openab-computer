@@ -122,6 +122,45 @@ final class BrowserRouterTests: XCTestCase {
     }
 }
 
+final class BrowserRouterLazinessTests: XCTestCase {
+    let conn = BrowserConnection(key: "c1")
+
+    func testPinnedPreferenceAsksOnlyThatBackend() async {
+        let a = FakeBrowserBackend(.appleEvents), p = FakeBrowserBackend(.playwright)
+        let r = BrowserRouter(appleEvents: a, playwright: p, store: MemoryPreferenceStore(.appleEvents))
+        _ = await r.call("browser_navigate", arguments: [:], conn)
+        XCTAssertEqual(p.statusCalls, 0)
+        XCTAssertGreaterThan(a.statusCalls, 0)
+    }
+
+    func testAutoAsksAppleEventsOnlyWhenPlaywrightIsNotReady() async {
+        let a = FakeBrowserBackend(.appleEvents), p = FakeBrowserBackend(.playwright)
+        let r = BrowserRouter(appleEvents: a, playwright: p, store: MemoryPreferenceStore())
+        _ = await r.call("browser_navigate", arguments: [:], conn)
+        XCTAssertEqual(a.statusCalls, 0)
+    }
+
+    func testLastMapShrinksAfterTheGuardWindow() async {
+        let clock = TestClock()
+        let r = BrowserRouter(playwright: FakeBrowserBackend(.playwright), store: MemoryPreferenceStore(), clock: { clock.date() })
+        for i in 0..<10 { _ = await r.call("browser_navigate", arguments: [:], BrowserConnection(key: "k\(i)")) }
+        let before = await r.trackedConnections
+        XCTAssertEqual(before, 10)
+        clock.advance(31 * 60)
+        _ = await r.call("browser_navigate", arguments: [:], BrowserConnection(key: "fresh"))
+        let after = await r.trackedConnections
+        XCTAssertEqual(after, 1)
+    }
+
+    func testReportNeverIncludesAURLAndNamesTheActiveBackend() async {
+        let r = BrowserRouter(appleEvents: FakeBrowserBackend(.appleEvents, status: .needsSetup("x")),
+                              playwright: FakeBrowserBackend(.playwright), store: MemoryPreferenceStore())
+        let rep = await r.report()
+        XCTAssertNil(rep.active, "fakes report no peek state, so nothing is claimed active")
+        XCTAssertFalse(String(decoding: jsonBody(rep.json), as: UTF8.self).contains("http"))
+    }
+}
+
 final class BrowserServerWiringTests: XCTestCase {
     func server(_ profile: ToolProfile, backend: FakeBrowserBackend) -> MCPServer {
         let router = BrowserRouter(playwright: backend, store: MemoryPreferenceStore())
