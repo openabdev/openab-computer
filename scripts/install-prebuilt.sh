@@ -78,13 +78,14 @@ done
 if [ "${#LEGACY_FOUND[@]}" -gt 0 ]; then
   {
     echo "installer: WARNING: the old LaunchAgent ${LEGACY_FOUND[*]} (0.11 or earlier) is still installed."
-    echo "It listens on port $PORT like the new agent and will fight it for that port;"
+    echo "The old main agent listens on port 8795 (the default; the new agent uses $PORT) and the old Playwright agent on 8794; they will fight the new agents for those ports;"
     echo "until it is removed, /healthz may be answered by the old agent, so a healthy check does not prove the new agent is bound."
     echo "This installer does not touch it. To stop and remove it, run:"
     for L in "${LEGACY_FOUND[@]}"; do
       echo "  launchctl bootout gui/$UID_/$L"
       echo "  rm \"$HOME_DIR/Library/LaunchAgents/$L.plist\""
     done
+    echo "Leftovers this installer also does not touch: the old payload under \"/Library/Application Support/OpenAB/instance-mcp\" and the old Keychain items (service dev.openab.instance-mcp.grant)."
   } >&2
 fi
 

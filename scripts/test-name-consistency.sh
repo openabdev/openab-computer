@@ -217,7 +217,9 @@ LEFT=$(cd "$ROOT" && grep -rnE --exclude-dir=target --exclude-dir=.build 'oab-in
   | grep -vE '^scripts/test-packaging\.sh:[0-9]+:mkdir -p .*oab-instance-mcp' \
   | grep -vE '^Tests/InstanceMCPCoreTests/FirstRunSetupTests\.swift:[0-9]+:.*contains\("instance-mcp"\)' \
   | grep -vE '^scripts/install-(prebuilt|linux)\.sh:[0-9]+:[[:space:]]*#' \
-  | grep -vE '^scripts/install-(prebuilt|linux)\.sh:.*([Ll]egacy|LEGACY|0\.11|oab-instance-mcp\.service|instance-mcp \(|0\.8|old)' || true)
+  | grep -vE '^poc/reverse-attach-linux/README\.md:[0-9]+:.*serverInfo\.name=instance-mcp-rpi' \
+  | grep -vE '^scripts/install-prebuilt\.sh:[0-9]+:.*Leftovers this installer also does not touch' \
+  | grep -vE '^scripts/install-(prebuilt|linux)\.sh:.*([Ll]egacy|LEGACY|0\.11|oab-instance-mcp\.service|oab-pw-mcp\.service|instance-mcp \(|0\.8)' || true)
 if [ -z "$LEFT" ]; then ok "old names appear only in the allowed places"; else echo "$LEFT" >&2; fail "old names left outside the allowed places (above)"; fi
 
 # The docs must not claim the Linux installer copies nothing while it copies the old token.

@@ -419,6 +419,6 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   Use `pkill -x <name>` — but `-x` matches at most 15 characters of the process name, so
   `pkill -x oab-computer` silently matches nothing.
 - **Chromium `No usable sandbox!` / `Trace/breakpoint trap`** on Ubuntu 24.04+: AppArmor
-  userns restriction; see [Headless server notes](#headless-server-notes-ubuntu-2404-on-the server).
+  userns restriction; see [Headless server notes](#headless-server-notes-ubuntu-2404).
 - **Headed browser "without having a XServer"** on a headless seat: Chromium picked X11; add
   `--ozone-platform=wayland` (the installer's `pw-config.json` does).

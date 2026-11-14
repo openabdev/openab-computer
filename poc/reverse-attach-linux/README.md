@@ -70,7 +70,7 @@ bash smoke.sh                  # RESULT: 55 passed, 0 failed
 | mint path | `ttl_secs=60` seen by the runtime's mint endpoint; `expires_in_secs=60` in the grant |
 | control contract | `POST /attach` 202 with every Connect-required grant field; `GET /attach` wrapper; `GET /attach/{id}`; `DELETE` 204 + removal; principal and dynamic expiry |
 | redial / stop | close `1000` → redialed after 1 s; close `4010` → `state=ended, ended=revoked`; wrong secret → `ended=handshake_rejected_401` with exactly one attempt; unreachable runtime → `ended=deadline` |
-| MCP | `serverInfo.name=oab-computer-rpi`; owner list = `sys_info,screenshot,exec`; `sys_info.hostname=<node>`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
+| MCP | `serverInfo.name=instance-mcp-rpi` (named oab-computer-rpi since the 0.12.0 rename); owner list = `sys_info,screenshot,exec`; `sys_info.hostname=<node>`; `exec` ran on the node; unknown tool / method → `-32601` at the time (since #78: unknown tool `-32602`, method `-32601`); notification silent; ping → pong (since #78: `{}`) |
 | desktop (removed in #59) | list = `sys_info,screenshot`; forced `exec` → error, not executed (2026-09-28 run). Since #59 `smoke.sh` checks that a `desktop` request runs as `observe` with `requested_profile` and a `warning`, and that a stored `desktop` grant resumes as `observe` |
 | close handshake | client echoes the Close frame (was a bare EOF before the `socket.flush()` fix in `dial_loop`) |
 
