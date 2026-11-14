@@ -362,9 +362,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                                           optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
                                           existingMapping: exposure?.existingMapping ?? false)
         let tailnetState = MenuModel.networkTailnetState(
-            offered: exposure?.offersExposure ?? false, publicURL: exposure?.publicURL ?? externalPublicURL,
+            publicURL: exposure?.publicURL ?? externalPublicURL,
             optedIn: (exposure?.optedIn ?? false) || (exposure?.unconfirmed ?? false),
-            existingMapping: exposure?.existingMapping ?? (externalPublicURL != nil), uncertain: exposure?.uncertain ?? false)
+            existingMapping: exposure?.existingMapping ?? (externalPublicURL != nil), uncertain: (exposure?.uncertain ?? false)
+                || (exposure.map { !$0.offersExposure && !$0.tokenOnly } ?? false))
         let section = MenuModel.networkSection(
             bindHost: bindHost, bindPort: bindPort, path: path, upstreams: upstreams, tailnet: tailnetState,
             switchboard: switchboardSupervisor == nil ? nil : switchboardRowInput(),

@@ -169,7 +169,7 @@ public struct NetworkSection: Equatable, Sendable {
 }
 
 extension MenuModel {
-    public static func networkTailnetState(offered: Bool, publicURL: String?, optedIn: Bool,
+    public static func networkTailnetState(publicURL: String?, optedIn: Bool,
                                            existingMapping: Bool, uncertain: Bool) -> NetworkTailnetState {
         if let publicURL {
             return existingMapping && !optedIn ? .onExisting(url: publicURL) : .on(url: publicURL)

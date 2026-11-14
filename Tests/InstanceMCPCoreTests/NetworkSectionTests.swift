@@ -59,7 +59,7 @@ final class NetworkSectionTests: XCTestCase {
 
     func testTailnetStateMapping() {
         func s(_ offered: Bool, _ url: String?, _ opted: Bool, _ existing: Bool, _ uncertain: Bool) -> NetworkTailnetState {
-            MenuModel.networkTailnetState(offered: offered, publicURL: url, optedIn: opted, existingMapping: existing, uncertain: uncertain)
+            MenuModel.networkTailnetState(publicURL: url, optedIn: opted, existingMapping: existing, uncertain: uncertain)
         }
         XCTAssertEqual(s(true, tailURL, false, false, false), .on(url: tailURL))
         XCTAssertEqual(s(true, tailURL, false, true, false), .onExisting(url: tailURL))
@@ -69,6 +69,13 @@ final class NetworkSectionTests: XCTestCase {
         XCTAssertEqual(s(true, nil, false, false, true), .unknown)
         XCTAssertEqual(s(true, nil, false, false, false), .off)
         XCTAssertEqual(s(false, nil, false, false, false), .off)
+    }
+
+    func testUnreadableLoginWithAllowListIsUnknown() {
+        // Controller rule: not offered and not token-only (installer launch, login unreadable) means unknown.
+        let notOffered = false, tokenOnly = false
+        let uncertain = !notOffered && !tokenOnly
+        XCTAssertEqual(MenuModel.networkTailnetState(publicURL: nil, optedIn: false, existingMapping: false, uncertain: uncertain), .unknown)
     }
 
     func testBrowserRow() {
