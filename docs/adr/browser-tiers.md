@@ -24,8 +24,7 @@ Constraints that shaped the answer:
 4. **A Playwright listener is not private.** Any process of any user on the Mac can reach a
    loopback port, and Playwright MCP 0.0.82 has no bearer check in anything this repository
    configures. The same server serves `browser_run_code_unsafe` (arbitrary Node code).
-5. `owner` is already shell-equivalent (see [`reverse-attach.md`](reverse-attach.md), decision
-   4), and `observe` sees no `browser_*` tool. That rule does not change.
+5. `owner` is already shell-equivalent (see [`docs/tool-profiles.md`](../tool-profiles.md)), and `observe` sees no `browser_*` tool. That rule does not change.
 
 ## Decision
 
@@ -44,8 +43,8 @@ of the existing 32, so profile fixtures and the Linux conformance tests stay val
 4. **The wizard's Playwright install step is pre-checked with an opt-out.** A normal install
    therefore downloads a few hundred MB and needs network. The wizard still completes offline
    or on any failure, with Playwright not installed and a retry from the menu.
-5. **Managed Playwright runs over stdio as a child of the app.** It is designed to open no listening socket, which is a release blocker
-   checked by V12 in the requirements.
+5. **Managed Playwright runs over stdio as a child of the app.** It is designed to open no listening socket. If V12 in the requirements
+   finds one, the release is blocked.
    Port 8794 stays loopback-only and is used only by an external Playwright (operator
    `--upstream browser=`, the PoC, the Linux hands node).
 6. **The download pins live in a manifest embedded in the signed app.** The app never fetches
@@ -150,15 +149,15 @@ macOS refuses to run a file, stop with a clear error, and offer the user's insta
 present (not version-pinned or digest-checked).
 
 Rationale: stripping quarantine to make unsigned binaries run overrides a macOS protection on
-the strength of our own check. Adding it deliberately would only make the unnotarized Chromium
-unusable.
+the strength of our own check. Adding it deliberately would only make a Chromium that is probably
+not notarized (V7) unusable.
 
 Rejected:
 
 - *Strip quarantine after our own digest check.* Defeats Gatekeeper for pinned but unsigned
   binaries.
 - *Add quarantine to everything we download.* Relies on Gatekeeper's assessment, which blocks
-  an unnotarized Chromium.
+  a Chromium that is probably not notarized.
 
 #### Q6. Which browsers does Tier A support in v1?
 

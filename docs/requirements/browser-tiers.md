@@ -53,7 +53,7 @@ overrides it for that connection only and stores nothing.
 
 | Preference | Tier A ready | Tier P ready | Active |
 |---|---|---|---|
-| auto | any | yes | P |
+| auto | any | yes | P, subject to the identity guard |
 | auto | yes | no | A, subject to the identity guard |
 | auto | no | no | none |
 | appleEvents | yes | any | A |
@@ -334,6 +334,10 @@ The downloader enforces HTTPS itself, because Info.plist sets `NSAllowsArbitrary
 Chromium host), redirects re-checked by the same rules, no cookies, no credentials, no certificate
 pinning.
 
+`npm ci` makes its own connections, outside the downloader's host allow-list, so the allow-list
+does not bound it. The release check therefore also fails the release if any `resolved` URL in the
+lockfile is not on `registry.npmjs.org`.
+
 #### R7.2 Install flow
 
 1. **Consent.** The wizard row (R5.8), or from the menu a sheet with the same content: what is
@@ -399,7 +403,8 @@ when a connection's active backend is `playwright` (chosen by `auto` or pinned) 
 `--user-data-dir <profile> --output-dir <output> --idle-timeout 1800000 --browser chromium
 --executable-path <our Chromium> --shared-browser-context --caps vision,pdf`. There is **no**
 `--port`, `--host` or `--allowed-hosts`: stdio is the default transport when `--port` is absent,
-confirmed on the pinned version by a live smoke call (V8, V12).
+to be confirmed on the pinned version by a live smoke call (V8) and a check that neither Playwright
+nor Chromium opens a listening socket (V12).
 
 - stdout is the protocol channel and is never logged.
 - The environment is an allow-list (`HOME`, `TMPDIR`, `LANG`, and a `PATH` of the staged `node`
@@ -573,8 +578,8 @@ and Linux code.
 
 ## Test plan
 
-Build and test run on the Mac build host and in CI on `macos-15`; the laptop does not compile
-Swift. No automated test calls `osascript` against a browser, runs `tailscale`, or changes a real
+Build and test run on the Mac build host and in CI on `macos-15`; a developer laptop is not
+required. No automated test calls `osascript` against a browser, runs `tailscale`, or changes a real
 setting. Live consent dialogs cannot be automated.
 
 ### Unit tests (`swift test`, no GUI) — runnable on the build host
