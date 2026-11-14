@@ -67,26 +67,95 @@ public final class ManagedChildRegistry: @unchecked Sendable {
     func remove(_ g: pid_t) { lock.withLock { _ = groups.remove(g) } }
     var count: Int { lock.withLock { groups.count } }
 
+    /// TERM, then KILL, for every registered child and every descendant of it, including the
+    /// ones Playwright starts detached (Chromium leaves the child's group and session). The tree
+    /// is snapshotted while the roots are alive, because a killed root re-parents its children.
     public func terminateAllSync() {
         let gs = lock.withLock { groups }
         guard !gs.isEmpty else { return }
+        var tree = ProcessTree.descendants(of: gs)
         for g in gs { killpg(g, SIGTERM) }
+        ProcessTree.signal(tree, SIGTERM)
+        func settled() -> Bool {
+            lock.withLock({ groups.isEmpty }) && !tree.contains(where: ProcessTree.isAlive)
+        }
         for _ in 0..<40 {
-            if lock.withLock({ groups.isEmpty }) { return }
+            if settled() { return }
+            tree.formUnion(ProcessTree.descendants(of: lock.withLock { groups }))
             usleep(50_000)
         }
-        for g in lock.withLock({ groups }) { killpg(g, SIGKILL) }
+        let live = lock.withLock { groups }
+        tree.formUnion(ProcessTree.descendants(of: live))
+        for g in live { killpg(g, SIGKILL) }
+        ProcessTree.signal(tree, SIGKILL)
         for _ in 0..<20 {
-            if lock.withLock({ groups.isEmpty }) { return }
+            if settled() { return }
             usleep(50_000)
         }
     }
 }
 
-/// A child process that speaks MCP over stdio. It leads its own process group, so Chromium and
-/// other helpers can be signalled together. Limitation: a helper that calls `setsid` leaves the
-/// group, and an orphan left by a crashed app is not killed because the app cannot prove it is
-/// ours (R7.4).
+/// Process-tree helpers over libproc. Detached children (own session, own group) are found by
+/// walking parent pids, because a process group cannot reach them.
+enum ProcessTree {
+    static func parentMap() -> [pid_t: pid_t] {
+        let n = proc_listallpids(nil, 0)
+        guard n > 0 else { return [:] }
+        var pids = [pid_t](repeating: 0, count: Int(n) + 64)
+        let got = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard got > 0 else { return [:] }
+        var map: [pid_t: pid_t] = [:]
+        for pid in pids.prefix(Int(got)) where pid > 0 {
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            if proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size { map[pid] = pid_t(info.pbi_ppid) }
+        }
+        return map
+    }
+
+    /// Every transitive child of `roots`, not the roots themselves.
+    static func descendants(of roots: Set<pid_t>) -> Set<pid_t> {
+        let parents = parentMap()
+        var children: [pid_t: [pid_t]] = [:]
+        for (pid, ppid) in parents { children[ppid, default: []].append(pid) }
+        var out = Set<pid_t>(), queue = Array(roots)
+        while let p = queue.popLast() {
+            for c in children[p] ?? [] where !out.contains(c) && !roots.contains(c) { out.insert(c); queue.append(c) }
+        }
+        return out
+    }
+
+    /// Alive and not a zombie.
+    static func isAlive(_ pid: pid_t) -> Bool {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return false }
+        return info.pbi_status != 5   // SZOMB
+    }
+
+    static func signal(_ pids: Set<pid_t>, _ sig: Int32) {
+        let me = getpid()
+        for p in pids where p > 1 && p != me { kill(p, sig) }
+    }
+
+    /// TERM the survivors, wait up to 1 s, then KILL.
+    static func sweep(_ pids: Set<pid_t>) async {
+        var live = pids.filter(isAlive)
+        guard !live.isEmpty else { return }
+        signal(live, SIGTERM)
+        for _ in 0..<50 {
+            live = live.filter(isAlive)
+            if live.isEmpty { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        signal(live.filter(isAlive), SIGKILL)
+    }
+}
+
+/// A child process that speaks MCP over stdio. It leads its own process group. Playwright starts
+/// Chromium detached (own session and group), so termination also walks the child's descendants
+/// by parent pid. An orphan left by a crashed app is not killed because the app cannot prove it
+/// is ours (R7.4).
 public final class ManagedProcess: StdioChannel, @unchecked Sendable {
     public let pid: pid_t
     public let stderrRing = StderrRing()
@@ -223,13 +292,22 @@ public final class ManagedProcess: StdioChannel, @unchecked Sendable {
         return true
     }
 
-    /// Close stdin and wait 1 s, then SIGTERM the group and wait 3 s, then SIGKILL.
+    /// Close stdin and wait 1 s, then SIGTERM the group and the descendants and wait 3 s, then
+    /// SIGKILL. Descendants that outlive the child (a detached Chromium) are swept afterwards.
     public func terminate() async {
+        var tree = ProcessTree.descendants(of: [pid])
         closeStdin()
-        if await waitExit(1) { return }
-        killpg(pid, SIGTERM)
-        if await waitExit(3) { return }
-        killpg(pid, SIGKILL)
-        _ = await waitExit(2)
+        var done = await waitExit(1)
+        if !done {
+            tree.formUnion(ProcessTree.descendants(of: [pid]))
+            killpg(pid, SIGTERM); ProcessTree.signal(tree, SIGTERM)
+            done = await waitExit(3)
+        }
+        if !done {
+            tree.formUnion(ProcessTree.descendants(of: [pid]))
+            killpg(pid, SIGKILL); ProcessTree.signal(tree, SIGKILL)
+            _ = await waitExit(2)
+        }
+        await ProcessTree.sweep(tree)
     }
 }

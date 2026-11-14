@@ -107,6 +107,8 @@ public actor ManagedPlaywrightTransport: PlaywrightTransport {
     private let clock: @Sendable () -> Date
     private let log: @Sendable (String) -> Void
     private let initTimeout: TimeInterval
+    private let healthTimeout: TimeInterval
+    private let callTimeout: TimeInterval
 
     private var child: (any ManagedChild)?
     private var client: StdioMCPClient?
@@ -118,9 +120,11 @@ public actor ManagedPlaywrightTransport: PlaywrightTransport {
 
     public init(spec: ManagedLaunchSpec, launcher: any ChildLauncher = ProcessChildLauncher(),
                 initializeTimeout: TimeInterval = StdioMCPClient.initializeTimeout,
+                healthTimeout: TimeInterval = StdioMCPClient.healthTimeout,
+                callTimeout: TimeInterval = StdioMCPClient.callTimeout,
                 clock: @escaping @Sendable () -> Date = { Date() }, log: @escaping @Sendable (String) -> Void = { _ in }) {
         self.spec = spec; self.launcher = launcher; self.clock = clock; self.log = log
-        self.initTimeout = initializeTimeout
+        self.initTimeout = initializeTimeout; self.healthTimeout = healthTimeout; self.callTimeout = callTimeout
     }
 
     /// The delay the next failure would impose; for tests.
@@ -144,20 +148,20 @@ public actor ManagedPlaywrightTransport: PlaywrightTransport {
         let fresh = child == nil
         try await ensureRunning()
         if fresh { resetBackoff(); return }
-        do { try await client!.ping(); resetBackoff() }
-        catch { await noteFailureIfDead(); throw error }
+        do { try await client!.ping(timeout: healthTimeout); resetBackoff() }
+        catch { await noteFailure(error); throw error }
     }
 
     public func listTools() async throws -> [JSONValue] {
         try await ensureRunning()
-        do { return try await client!.listTools() }
-        catch { await noteFailureIfDead(); throw error }
+        do { return try await client!.listTools(timeout: callTimeout) }
+        catch { await noteFailure(error); throw error }
     }
 
     public func callTool(_ name: String, arguments: JSONValue) async throws -> JSONValue {
         try await ensureRunning()
-        do { let r = try await client!.callTool(name, arguments: arguments); resetBackoff(); return r }
-        catch { await noteFailureIfDead(); throw error }
+        do { let r = try await client!.callTool(name, arguments: arguments, timeout: callTimeout); resetBackoff(); return r }
+        catch { await noteFailure(error); throw error }
     }
 
     // MARK: supervision
@@ -173,7 +177,7 @@ public actor ManagedPlaywrightTransport: PlaywrightTransport {
     }
 
     /// If the child is gone (or its channel closed), log one classified line, record the failure
-    /// and drop it. A live child that merely timed out is left alone.
+    /// and drop it. A live child that timed out is handled by `noteFailure`.
     private func noteFailureIfDead() async {
         guard let c = child else { return }
         let closed = await client?.isClosed ?? true
@@ -182,6 +186,22 @@ public actor ManagedPlaywrightTransport: PlaywrightTransport {
         log("browser: playwright_exit class=\(cls) \(c.exitInfo?.summary ?? "status=unknown")")
         child = nil; client = nil
         recordFailure()
+        await c.terminate()
+    }
+
+    /// After a failed request: a dead child is recorded as before. A live child that timed out is
+    /// asked once more for a ping; if that times out too it is hung, so it is terminated and
+    /// recorded as a failure, which puts it under the same backoff and latch as a crash.
+    private func noteFailure(_ error: Error) async {
+        await noteFailureIfDead()
+        guard let c = child, let cl = client,
+              (error as? PlaywrightTransportError)?.errorClass == "playwright_timeout" else { return }
+        do { try await cl.ping(timeout: healthTimeout); return } catch {}
+        guard child === c else { return }   // replaced while the confirming ping ran
+        log("browser: playwright_hung \(c.exitInfo?.summary ?? "status=running")")
+        child = nil; client = nil
+        recordFailure()
+        await cl.close()
         await c.terminate()
     }
 

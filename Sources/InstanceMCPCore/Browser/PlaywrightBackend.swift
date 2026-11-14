@@ -81,15 +81,23 @@ public actor PlaywrightBackend: BrowserBackend {
 
     // MARK: managed
 
-    private func managedTransportFor() -> Result<any PlaywrightTransport, PlaywrightTransportError> {
+    private func managedTransportFor() async -> Result<any PlaywrightTransport, PlaywrightTransportError> {
         guard let m = managed else { return .failure(.init(errorClass: "playwright_not_installed")) }
         switch m.locator.locate() {
         case .failure(let e):
-            if managedTransport != nil { Task { await self.shutdown() } }
             health = nil; toolCache = nil
+            await shutdown()
             return .failure(e)
         case .success(let spec):
             if let t = managedTransport, t.spec == spec { return .success(t.transport) }
+            // A changed install: the old child must be gone before the new transport exists, so
+            // two children never share one profile.
+            if let old = managedTransport {
+                health = nil; toolCache = nil
+                await old.transport.shutdown()
+                if let cur = managedTransport, cur.spec == spec { return .success(cur.transport) }   // a concurrent call got there first
+                managedTransport = nil
+            }
             let t = m.makeTransport(spec, log)
             managedTransport = (spec, t)
             return .success(t)
@@ -104,7 +112,7 @@ public actor PlaywrightBackend: BrowserBackend {
             if let bad = ownerCheck(e) { health = nil; return bad }
             transport = e.transport
         } else {
-            switch managedTransportFor() {
+            switch await managedTransportFor() {
             case .failure(let e): return .needsSetup(e.errorClass)
             case .success(let t): transport = t
             }
@@ -120,7 +128,7 @@ public actor PlaywrightBackend: BrowserBackend {
 
     public func peekStatus() async -> BrowserBackendStatus? {
         if external != nil { return health?.status }
-        switch managedTransportFor() {
+        switch await managedTransportFor() {
         case .failure(let e): return .needsSetup(e.errorClass)
         case .success(let t):
             if await t.isLatched { return .unavailable("playwright_unavailable") }
@@ -134,7 +142,7 @@ public actor PlaywrightBackend: BrowserBackend {
             guard ownerCheck(e) == nil else { return [] }   // every use, even with a cached list
             transport = e.transport
         } else {
-            guard case .success(let t) = managedTransportFor() else { return [] }
+            guard case .success(let t) = await managedTransportFor() else { return [] }
             transport = t
         }
         if let c = toolCache, clock().timeIntervalSince(c.at) < Self.toolsTTL { return c.list }
@@ -155,7 +163,7 @@ public actor PlaywrightBackend: BrowserBackend {
             }
             transport = e.transport
         } else {
-            switch managedTransportFor() {
+            switch await managedTransportFor() {
             case .failure(let e): throw BrowserBackendError(e.errorClass, setupLost: true)
             case .success(let t): transport = t
             }

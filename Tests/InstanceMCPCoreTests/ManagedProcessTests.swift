@@ -92,6 +92,45 @@ final class ManagedProcessTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH)
     }
 
+    private func grandchildPid(_ p: ManagedProcess) async throws -> pid_t {
+        var line = ""
+        for await c in p.incoming { line += String(decoding: c, as: UTF8.self); if line.contains("\n") { break } }
+        return try XCTUnwrap(Int32(line.split(separator: " ").last.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""))
+    }
+    private func waitGone(_ pid: pid_t, seconds: Double = 5) async -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            if !ProcessTree.isAlive(pid) { return true }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return false
+    }
+
+    /// Playwright starts Chromium detached: a new session and group, outside killpg and outside the
+    /// child's exit. `terminate()` must still end it.
+    func testDetachedGrandchildIsKilledByTerminate() async throws {
+        let p = try spawn("detached-grandchild")
+        let gc = try await grandchildPid(p)
+        XCTAssertTrue(ProcessTree.isAlive(gc))
+        XCTAssertNotEqual(getpgid(gc), p.pid, "the grandchild is outside the child's group")
+        XCTAssertTrue(ProcessTree.descendants(of: [p.pid]).contains(gc))
+        await p.terminate()
+        let gone = await waitGone(gc)
+        if !gone { kill(gc, SIGKILL) }
+        XCTAssertTrue(gone, "the detached grandchild survived terminate()")
+    }
+
+    func testDetachedGrandchildIsKilledByTheQuitTimeSweep() async throws {
+        let p = try spawn("detached-grandchild", ["hold"])
+        let gc = try await grandchildPid(p)
+        XCTAssertTrue(ProcessTree.isAlive(gc))
+        ManagedChildRegistry.shared.terminateAllSync()
+        XCTAssertTrue(p.hasExited)
+        let gone = await waitGone(gc)
+        if !gone { kill(gc, SIGKILL) }
+        XCTAssertTrue(gone, "the detached grandchild survived terminateAllSync()")
+    }
+
     func testRegistryTerminatesRegisteredChildren() async throws {
         let p = try spawn("ignore-term")
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -115,5 +154,32 @@ final class ManagedProcessTests: XCTestCase {
         XCTAssertEqual(p.exitInfo, .exited(3))
         let files = FileManager.default.enumerator(atPath: home.path)?.allObjects ?? []
         XCTAssertTrue(files.isEmpty, "nothing was written under HOME: \(files)")
+    }
+}
+
+final class ShutdownSignalsTests: XCTestCase {
+    func testDefaultsCoverTermIntHup() {
+        XCTAssertEqual(Set(ShutdownSignals.defaults), [SIGTERM, SIGINT, SIGHUP])
+    }
+
+    /// SIGUSR1 and SIGUSR2 stand in for the real ones, which would end the test process on a
+    /// failure. The handler must run on the given queue, not inside the signal handler.
+    func testHandlerRunsOnTheQueueForEachInstalledSignal() {
+        let q = DispatchQueue(label: "test.shutdown")
+        final class Seen: @unchecked Sendable { let lock = NSLock(); var sigs: [Int32] = []; var onQueue = true }
+        let box = Seen()
+        let both = expectation(description: "both signals handled")
+        both.expectedFulfillmentCount = 2
+        let sources = ShutdownSignals.install([SIGUSR1, SIGUSR2], queue: q) { sig in
+            box.lock.withLock { box.sigs.append(sig); box.onQueue = box.onQueue && !Thread.isMainThread }
+            both.fulfill()
+        }
+        kill(getpid(), SIGUSR1)
+        kill(getpid(), SIGUSR2)
+        wait(for: [both], timeout: 5)
+        XCTAssertEqual(Set(box.lock.withLock { box.sigs }), [SIGUSR1, SIGUSR2])
+        XCTAssertTrue(box.lock.withLock { box.onQueue })
+        sources.forEach { $0.cancel() }
+        signal(SIGUSR1, SIG_DFL); signal(SIGUSR2, SIG_DFL)
     }
 }

@@ -51,6 +51,17 @@ if mode == "grandchild" {
     posix_spawn(&gpid, "/bin/sleep", nil, nil, argv, environ)   // inherits our process group
     emit("grandchild \(gpid)")
 }
+if mode == "detached-grandchild" {
+    // A grandchild in its own session and group, like Chromium under Playwright: neither killpg
+    // on our group nor our exit reaches it.
+    var gpid: pid_t = 0
+    var attr: posix_spawnattr_t?; posix_spawnattr_init(&attr)
+    posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSID))
+    let argv: [UnsafeMutablePointer<CChar>?] = [strdup("sleep"), strdup("300"), nil]
+    posix_spawn(&gpid, "/bin/sleep", nil, &attr, argv, environ)
+    emit("grandchild \(gpid)")
+    if arg2 == "hold" { while true { sleep(60) } }   // stay alive, ignoring stdin EOF
+}
 if mode == "hang-init" { while true { sleep(60) } }
 
 var toolCalls = 0

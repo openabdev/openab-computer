@@ -466,10 +466,9 @@ Task {
 signal(SIGPIPE, SIG_IGN)
 // Menu Quit ends in exit(), which runs this: the managed browser child's process group is stopped.
 atexit { ManagedChildRegistry.shared.terminateAllSync() }
-let stop = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-signal(SIGTERM, SIG_IGN)
-stop.setEventHandler { log("SIGTERM, exiting"); ManagedChildRegistry.shared.terminateAllSync(); exit(0) }
-stop.resume()
+let stopSources = ShutdownSignals.install { sig in
+    log("signal \(sig), exiting"); ManagedChildRegistry.shared.terminateAllSync(); exit(0)
+}
 
 if opts.menuBar {
     let app = NSApplication.shared

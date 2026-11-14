@@ -134,6 +134,49 @@ final class ManagedPlaywrightSupervisionTests: XCTestCase {
         _ = await klass(t)
         XCTAssertTrue(lines.contains("browser: playwright_exit class=profile_locked status=1"), "\(lines)")
     }
+
+    func testHungChildIsTerminatedAndRestartedUnderBackoff() async throws {
+        let clock = TestClock()
+        let lock = NSLock(); var lines: [String] = []
+        let l = FakeLauncher(.healthy)
+        let t = ManagedPlaywrightTransport(spec: dummySpec, launcher: l, initializeTimeout: 2, healthTimeout: 0.15,
+                                           clock: { clock.date() }, log: { s in lock.withLock { lines.append(s) } })
+        try await t.healthCheck()
+        let hung = try XCTUnwrap(l.last)
+        hung.script.onSend = nil   // alive, but answers nothing
+        let k = await klass(t); XCTAssertEqual(k, "playwright_timeout")
+        XCTAssertTrue(hung.hasExited, "the hung child was terminated")
+        XCTAssertTrue(lock.withLock { lines }.contains { $0.hasPrefix("browser: playwright_hung") })
+        let gated = await klass(t); XCTAssertEqual(gated, "playwright_restarting")
+        XCTAssertEqual(l.launches, 1)
+        clock.advance(1.01)
+        let again = await klass(t); XCTAssertEqual(again, "ok")
+        XCTAssertEqual(l.launches, 2, "restarted after the backoff")
+        XCTAssertFalse(l.last === hung)
+        await t.shutdown()
+    }
+
+    func testHungCallIsTerminatedOnlyWhenTheConfirmingPingAlsoTimesOut() async throws {
+        let l = FakeLauncher(.healthy)
+        let t = ManagedPlaywrightTransport(spec: dummySpec, launcher: l, initializeTimeout: 2, healthTimeout: 0.15,
+                                           callTimeout: 0.15)
+        try await t.healthCheck()
+        let c = try XCTUnwrap(l.last)
+        // A slow call on a child that still answers pings is not a hang.
+        c.script.onSend = { [script = c.script] v in
+            guard let id = v["id"]?.intValue, v["method"]?.stringValue == "ping" else { return }
+            script.feed("{\"jsonrpc\":\"2.0\",\"id\":\(id),\"result\":{}}\n")
+        }
+        do { _ = try await t.callTool("browser_navigate", arguments: [:]); XCTFail("expected a timeout") }
+        catch let e as PlaywrightTransportError { XCTAssertEqual(e.errorClass, "playwright_timeout") }
+        XCTAssertFalse(c.hasExited)
+        // Now nothing is answered: the call and the confirming ping both time out.
+        c.script.onSend = nil
+        do { _ = try await t.callTool("browser_navigate", arguments: [:]); XCTFail("expected a timeout") }
+        catch let e as PlaywrightTransportError { XCTAssertEqual(e.errorClass, "playwright_timeout") }
+        XCTAssertTrue(c.hasExited)
+        await t.shutdown()
+    }
 }
 
 /// A temporary install tree whose `node` is a shell shim that runs the fake MCP server.
@@ -273,5 +316,45 @@ final class ManagedPlaywrightEndToEndTests: XCTestCase {
         let rep = await router.report()
         let all = String(decoding: jsonBody(r), as: UTF8.self) + String(decoding: jsonBody(rep.json), as: UTF8.self) + lines.joined()
         XCTAssertFalse(all.contains("CANARY"), all)
+    }
+}
+
+/// Records the order of transport creation and shutdown.
+final class RecordingTransport: PlaywrightTransport, @unchecked Sendable {
+    let name: String
+    let events: EventLog
+    init(_ name: String, _ events: EventLog) { self.name = name; self.events = events; events.add("create \(name)") }
+    func healthCheck() async throws {}
+    func listTools() async throws -> [JSONValue] { [] }
+    func callTool(_ name: String, arguments: JSONValue) async throws -> JSONValue { .object([:]) }
+    func shutdown() async { try? await Task.sleep(nanoseconds: 50_000_000); events.add("shutdown \(name)") }
+}
+final class EventLog: @unchecked Sendable {
+    private let lock = NSLock(); private var _e: [String] = []
+    func add(_ s: String) { lock.withLock { _e.append(s) } }
+    var all: [String] { lock.withLock { _e } }
+}
+
+final class ManagedInstallChangeTests: XCTestCase {
+    func testChangedInstallShutsDownTheOldChildBeforeCreatingTheNewTransport() async throws {
+        let t = try InstallTree()
+        let events = EventLog()
+        let n = NSLock(); var count = 0
+        let backend = PlaywrightBackend(managed: t.locator, makeTransport: { _, _ in
+            let i = n.withLock { count += 1; return count }
+            return RecordingTransport("t\(i)", events)
+        })
+        _ = await backend.status()
+        _ = await backend.status()
+        XCTAssertEqual(events.all, ["create t1"], "an unchanged install keeps its transport")
+        // A new version: copy 1.0 to 2.0 and repoint install.json.
+        let fm = FileManager.default
+        try fm.copyItem(at: t.root.appendingPathComponent("1.0"), to: t.root.appendingPathComponent("2.0"))
+        try "{\"version\":\"2.0\",\"chromiumExecutable\":\"chromium/chrome\"}"
+            .write(to: t.root.appendingPathComponent("install.json"), atomically: true, encoding: .utf8)
+        _ = await backend.status()
+        XCTAssertEqual(events.all, ["create t1", "shutdown t1", "create t2"])
+        await backend.shutdown()
+        XCTAssertEqual(events.all.last, "shutdown t2")
     }
 }
