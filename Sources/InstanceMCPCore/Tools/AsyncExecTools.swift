@@ -5,13 +5,14 @@ import Foundation
 /// the process group. Designed for builds and other work that outlives a single MCP
 /// request/response (which is otherwise capped by the client's read timeout).
 
-private func resolveJobEnv(_ arguments: JSONValue) -> [String: String] {
+func resolveJobEnv(_ arguments: JSONValue) -> [String: String] {
     var env = ProcessInfo.processInfo.environment
     env["TERM"] = env["TERM"] ?? "dumb"
     if let extra = arguments["env"]?.objectValue {
         for (k, v) in extra { if let s = v.stringValue { env[k] = s } }
     }
-    return env
+    // After the caller overrides, so a caller cannot put it back: an orphan of ours must not look like the launchd job.
+    return LaunchdJob.childEnvironment(env)
 }
 
 public struct ExecStartTool: Tool {

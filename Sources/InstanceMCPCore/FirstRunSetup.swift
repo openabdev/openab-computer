@@ -237,6 +237,15 @@ public enum FirstRunSetup {
         return login
     }
 
+    /// The machine's tailnet name from the same status JSON: Self.DNSName without its trailing dot. Nil when missing.
+    public static func tailscaleSelfDNSName(statusJSON: Data) -> String? {
+        guard let root = (try? JSONSerialization.jsonObject(with: statusJSON)) as? [String: Any],
+              let me = root["Self"] as? [String: Any],
+              let dns = me["DNSName"] as? String else { return nil }
+        let name = dns.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+        return name.isEmpty ? nil : name
+    }
+
     /// Why one run of the Tailscale CLI gave no login. Logged by name; none of these carries output or a login.
     public enum TailscaleFailure: Equatable, Sendable {
         case launchFailed
@@ -256,6 +265,8 @@ public enum FirstRunSetup {
     }
 
     public typealias TailscaleRunner = (_ cli: String, _ timeout: TimeInterval) -> TailscaleRun
+    /// Like `TailscaleRunner` for any argument list. `TailnetExposure` uses it for `serve` and the status reads.
+    public typealias TailscaleCommandRunner = (_ cli: String, _ arguments: [String], _ timeout: TimeInterval) -> TailscaleRun
 
     static let tailscaleStatusArguments = ["status", "--self", "--peers=false", "--json"]
 
@@ -271,21 +282,32 @@ public enum FirstRunSetup {
     /// The real runner: starts `cli` with the status arguments and `tailscaleEnvironment`, drains stdout while it
     /// waits (a full pipe cannot stall it), and kills it at the timeout.
     public static let systemTailscaleRunner: TailscaleRunner = { cli, timeout in
+        systemTailscaleCommandRunner(cli, tailscaleStatusArguments, timeout)
+    }
+
+    /// The same runner for any arguments (same environment, drain, timeout and kill). The only place that starts the CLI.
+    public static let systemTailscaleCommandRunner: TailscaleCommandRunner = { cli, arguments, timeout in
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cli)
-        process.arguments = tailscaleStatusArguments
+        process.arguments = arguments
         process.environment = tailscaleEnvironment(ProcessInfo.processInfo.environment)
         process.standardInput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
         let out = Pipe()
+        let err = Pipe()
         process.standardOutput = out
+        process.standardError = err
         let collected = NSMutableData()
+        let collectedErr = NSMutableData()
         let lock = NSLock()
         out.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
             lock.lock(); collected.append(chunk); lock.unlock()
         }
-        defer { out.fileHandleForReading.readabilityHandler = nil }
+        err.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            lock.lock(); collectedErr.append(chunk); lock.unlock()
+        }
+        defer { out.fileHandleForReading.readabilityHandler = nil; err.fileHandleForReading.readabilityHandler = nil }
         do { try process.run() } catch { return .launchFailed }
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline { usleep(20_000) }
@@ -300,7 +322,11 @@ public enum FirstRunSetup {
         process.waitUntilExit()
         usleep(20_000) // let the handler deliver the last chunk
         lock.lock(); defer { lock.unlock() }
-        return .finished(output: collected as Data, status: process.terminationStatus)
+        // Exit 0: stdout only (stderr can carry warnings that must not break JSON). A failing exit: stderr is appended
+        // so the caller can recognise a known "daemon unreachable" message. Output is never logged.
+        var result = collected as Data
+        if process.terminationStatus != 0 { result.append(collectedErr as Data) }
+        return .finished(output: result, status: process.terminationStatus)
     }
 
     /// Looks up the Tailscale login with up to `attempts` tries inside a total `budget`. Each try goes through

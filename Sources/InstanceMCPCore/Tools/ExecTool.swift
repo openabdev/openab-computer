@@ -44,6 +44,7 @@ public struct ExecTool: Tool {
         if let extra = arguments["env"]?.objectValue {
             for (k, v) in extra { if let s = v.stringValue { env[k] = s } }
         }
+        env = LaunchdJob.childEnvironment(env)   // an orphan of ours must not look like the launchd job
 
         let r = try await Self.run(command: command, cwd: cwd, env: env, timeout: timeout, cap: cap)
 

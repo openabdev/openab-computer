@@ -377,6 +377,7 @@ final class FirstRunSetupTests: XCTestCase {
                            "--no-attach", "--no-grant-persistence", "--quiet"]
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home
+        environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] = "1"
         child.environment = environment
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice
@@ -420,6 +421,8 @@ final class FirstRunSetupTests: XCTestCase {
         environment["HOME"] = home
         // Moves only the no-flag launch's port, for the free-port test. Unset means the default 8795.
         environment["OAB_INSTANCE_MCP_FIRST_RUN_PORT"] = port.map(String.init)
+        // Structural guard: the test-launched binary builds no TailnetExposure, so it can never run `tailscale serve`.
+        environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] = "1"
         let child = Process()
         child.executableURL = binary
         child.arguments = []

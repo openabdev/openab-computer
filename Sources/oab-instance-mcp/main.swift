@@ -162,6 +162,8 @@ func showFirstRunAlert(_ message: String) {
 }
 
 var firstRunNotice: String? = nil
+/// True when the no-flag launch found a Tailscale login. The tailnet access step is offered only then.
+var firstRunLoginDetected = false
 var firstRunLines: [String] = []
 /// The home directory a no-flag launch writes under; nil for flag launches, which keep their defaults.
 var firstRunHome: String? = nil
@@ -194,7 +196,7 @@ if firstRunLaunch {
     do {
         let plan = try FirstRunSetup.prepare(home: home)
         opts.tokenFile = plan.tokenPath
-        if let login = plan.allowLogin { opts.allowLogins.insert(login) }
+        if let login = plan.allowLogin { opts.allowLogins.insert(login); firstRunLoginDetected = true }
         firstRunNotice = plan.notice
         firstRunLines = plan.logLines
     } catch {
@@ -292,6 +294,60 @@ let attachManager: AttachManager? = opts.attach
                     audit: auditLog,
                     log: log)
     : nil
+// Tailnet exposure state and controls. A no-flag launch gets the opt-in page (off by default). A menu-bar launch
+// with flags and a login allow list (the installer's LaunchAgent) gets the same state line and Turn Off control, and
+// shows the installer's mapping as on; nothing here turns exposure on by itself in that mode either.
+// First run: the login was read from Tailscale just now. Flag launch: an allow list must be configured AND a login must
+// be read from Tailscale now; a configured allow list alone is not proof that a login exists at this launch.
+// (Skipped under the debug-only test switch below, so test-launched binaries never run the Tailscale CLI.)
+#if DEBUG
+let exposureProbeSkipped = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] != nil
+#else
+let exposureProbeSkipped = false
+#endif
+let exposureLoginDetected: Bool
+if firstRunLaunch {
+    exposureLoginDetected = firstRunLoginDetected
+} else if opts.allowLogins.isEmpty || exposureProbeSkipped || !opts.menuBar {
+    exposureLoginDetected = false
+} else {
+    exposureLoginDetected = FirstRunSetup.detectTailscaleLogin(note: { log("tailnet access: \($0)") }) != nil
+    if !exposureLoginDetected { log("tailnet access: an allow list is configured but no Tailscale login could be read now; tailnet access is not offered this launch") }
+}
+// An installer --public-url on a port other than 8444 means the installer owns a mapping this code does not manage: leave it alone.
+let installerOwnsOtherPort = !firstRunLaunch && TailnetExposure.installerOwnsOtherPort(publicURL: opts.publicURL)
+// Debug builds only: the process tests set an environment variable so a test-launched binary never touches Tailscale.
+// A release build has no such switch, so nothing in the environment can skip the no-login withdrawal below.
+#if DEBUG
+let tailnetExposureDisabledForTests = ProcessInfo.processInfo.environment["OAB_INSTANCE_MCP_NO_TAILNET_EXPOSURE"] != nil
+#else
+let tailnetExposureDisabledForTests = false
+#endif
+// Flag launches without an allow list also get the object (no login: it only withdraws a leftover mapping).
+let tailnetExposure: TailnetExposure? = (firstRunLaunch || ((opts.menuBar || opts.allowLogins.isEmpty) && !installerOwnsOtherPort))
+    && !tailnetExposureDisabledForTests
+    ? TailnetExposure(defaults: .standard, loginDetected: exposureLoginDetected, tokenOnly: opts.allowLogins.isEmpty, backendPort: opts.port,
+                      runner: FirstRunSetup.systemTailscaleCommandRunner, log: log)
+    : nil
+// Without a detected login this launch accepts the token alone. A leftover app-owned 8444 mapping would expose that
+// to the tailnet, so it is removed before the listener starts. If it is there and cannot be removed, fail closed.
+// Note: with a hung Tailscale daemon this check can delay startup by several seconds (bounded timeouts); it fails closed.
+// A token-only launch also removes a mapping on 8444 that is exactly this app's own (decision of record, see design.md).
+// The port-in-use check comes first, in every launch mode: a held port means another instance is serving, and the
+// 8444 mapping may be its. Nothing is withdrawn or run in that case.
+switch tailnetExposure?.withdrawAtLaunch(portHeld: { FirstRunSetup.isPortInUse(host: opts.host, port: opts.port) }) {
+case .portHeld?:
+    if firstRunLaunch {
+        showFirstRunAlert(FirstRunSetup.portInUseMessage(host: opts.host, port: opts.port)); exit(75)
+    }
+    fputs("failed to start listener: port \(opts.port) is already in use\n", stderr); exit(2)
+case .checked(.failed(let why)?)?:
+    let reason = "\(why) No Tailscale login was detected, so the token alone would guard it. Start Tailscale and open OpenAB Computer again, or remove the mapping with: tailscale serve --https=8444 off"
+    log("refusing to start: \(reason)")
+    showFirstRunAlert("OpenAB Computer will not start: \(reason)"); exit(3)
+default:
+    break
+}
 let endpoint = MCPHTTPEndpoint(path: opts.path, server: server, auth: auth, attach: attachManager, log: log)
 
 // Must be a global: a `let` inside `do {}` is released after the block and the
@@ -380,11 +436,19 @@ if opts.menuBar {
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)     // no Dock icon, no main menu; status item only
     let logPath = FirstRunSetup.logPath(home: firstRunHome ?? NSHomeDirectory())
-    let publicURL = opts.publicURL ?? "http://\(opts.host):\(opts.port)\(opts.path)"
+    let exposure = tailnetExposure
+    // With the exposure object the menu takes the tailnet URL from it (verified), so the base line is the local one.
+    let publicURL = (exposure == nil ? opts.publicURL : nil) ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     statusItem = MainActor.assumeIsolated {
         StatusItemController(version: version, url: publicURL, logPath: logPath, token: opts.token,
                              attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,
-                             relaunchesOnRestart: firstRunLaunch)
+                             exposure: exposure)
+    }
+    // A stored opt-in is re-applied once per launch, off the main thread, and only when the mapping is missing.
+    if let exposure {
+        DispatchQueue.global(qos: .utility).async {
+            if exposure.reapplyAtLaunch() == nil { exposure.adoptExistingMapping() }
+        }
     }
     Task {
         await switchboardSupervisor.setOnChange { s in

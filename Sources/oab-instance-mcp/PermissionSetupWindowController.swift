@@ -3,8 +3,9 @@ import ApplicationServices
 import CoreGraphics
 import InstanceMCPCore
 
-/// Permission setup wizard, two pages. Page 1 needs Screen Recording and Accessibility, and Continue stays
-/// disabled until both are granted. Page 2 is optional Full Disk Access with a Skip link.
+/// Permission setup wizard, two pages, or three when a Tailscale login was detected. Page 1 needs Screen Recording
+/// and Accessibility, and Continue stays disabled until both are granted. Page 2 is optional Full Disk Access with a
+/// Skip link. Page 3 is the opt-in "allow other devices on my tailnet" step (off unless the user turns it on).
 ///
 /// Allow calls the system request API for that permission, re-tests, and opens the matching System Settings
 /// pane when the permission is still not granted. The window never captures a screenshot. It re-tests on app
@@ -24,6 +25,16 @@ final class PermissionSetupWindowController: NSWindowController {
     private let store: SetupWizardStore
     private let relaunch: RelaunchCoordinator
     private let adHoc: Bool
+    /// Nil when there is no Tailscale login to rely on (no detected login, no allow list); the tailnet page is then never shown.
+    private let exposure: TailnetExposure?
+    private let tailnetPage = NSStackView()
+    private let tailnetFooterButton = NSButton(title: "Skip", target: nil, action: nil)
+    private var tailnetRow: PermissionRowView?
+    private let tailnetNoticeLabel = NSTextField(wrappingLabelWithString: "")
+    private var pagerLabels: [WizardPage: NSTextField] = [:]
+    private var tailnetBusy = false
+    /// The last failure or conflict message from turning access on or off. Cleared by the next attempt.
+    private var tailnetMessage: String?
     private let corePage = NSStackView()
     private let optionalPage = NSStackView()
     private let revocationLabel = NSTextField(wrappingLabelWithString: "")
@@ -59,9 +70,10 @@ final class PermissionSetupWindowController: NSWindowController {
     private(set) var snapshot = PermissionSnapshot(screenRecording: .denied, accessibility: .denied,
                                                   fullDiskAccess: .unknown)
 
-    init(store: SetupWizardStore, relaunch: RelaunchCoordinator) {
+    init(store: SetupWizardStore, relaunch: RelaunchCoordinator, exposure: TailnetExposure? = nil) {
         self.store = store
         self.relaunch = relaunch
+        self.exposure = exposure
         let signing = SigningIdentity.lookup()
         if case let .failed(status) = signing {
             log("permission setup: could not read the code signature (OSStatus \(status)); ad-hoc banner hidden")
@@ -96,11 +108,14 @@ final class PermissionSetupWindowController: NSWindowController {
 
     var isWindowVisible: Bool { window?.isVisible ?? false }
 
+    private var tailnetOffered: Bool { exposure?.offersExposure ?? false }
+
     /// Opens on the core page while a core permission is missing, and on the optional page otherwise. After a
     /// relaunch, `resume` is the page the previous instance was on.
     func show(resume: WizardPage? = nil) {
         let shown = SharedPermissionStatus.resolve(process: PermissionProbe.current(), child: childForStatus).shown
-        page = resume ?? (SetupGate.evaluate(snapshot: shown).blocksCore ? .core : .optional)
+        page = WizardModel.available(resume ?? (SetupGate.evaluate(snapshot: shown).blocksCore ? .core : .optional),
+                                     tailnetOffered: tailnetOffered)
         refresh()
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
@@ -137,14 +152,18 @@ final class PermissionSetupWindowController: NSWindowController {
 
         // A missing core permission always returns the window to page 1.
         if SetupGate.evaluate(snapshot: current).blocksCore { page = .core }
+        page = WizardModel.available(page, tailnetOffered: tailnetOffered)
 
         for kind in PermissionKind.allCases { applyRow(kind, state: current[kind]) }
         applyFooters(current)
+        applyTailnetRow()
         setLabel(coreNoticeLabel, paneNotice)
         setLabel(optionalNoticeLabel, paneNotice)
 
         corePage.isHidden = page != .core
         optionalPage.isHidden = page != .optional
+        tailnetPage.isHidden = page != .tailnet
+        updatePagers()
         updateChildCheckTimer()
         // A stale process may be waiting on the shared probe (for example right after a relaunch): ask for a fresh
         // one off the main thread, and redraw when it answers.
@@ -254,10 +273,74 @@ final class PermissionSetupWindowController: NSWindowController {
         if case let .continueToOptional(enabled) = WizardModel.footerAction(page: .core, snapshot: current) {
             continueButton.isEnabled = enabled
         }
-        switch WizardModel.footerAction(page: .optional, snapshot: current) {
+        switch WizardModel.footerAction(page: .optional, snapshot: current, tailnetPage: tailnetOffered) {
         case .done: optionalFooterButton.title = "Done"
-        case .skip, .continueToOptional: optionalFooterButton.title = "Skip"
+        case .continueToTailnet: optionalFooterButton.title = "Continue"
+        case .skip, .skipToTailnet, .continueToOptional: optionalFooterButton.title = "Skip"
         }
+        tailnetFooterButton.title = tailnetOn ? "Done" : "Skip"
+        // While enable() runs, Skip would close the wizard as skipped and the mapping could still appear afterwards.
+        tailnetFooterButton.isEnabled = !tailnetBusy
+    }
+
+    private var tailnetOn: Bool { exposure?.publicURL != nil }
+
+    private func updatePagers() {
+        let pages = WizardModel.pages(tailnetOffered: tailnetOffered)
+        for (kind, label) in pagerLabels {
+            label.stringValue = pages.map { $0 == kind ? "●" : "○" }.joined(separator: "  ")
+        }
+    }
+
+    private func applyTailnetRow() {
+        guard let row = tailnetRow else { return }
+        let url = exposure?.publicURL
+        let name = url.flatMap { URL(string: $0)?.host }
+        let status: String
+        let color: NSColor
+        if tailnetBusy {
+            status = "Working…"; color = .secondaryLabelColor
+        } else if let message = tailnetMessage {
+            status = message; color = .systemRed
+        } else if url != nil {
+            status = "✓ On"; color = .systemGreen
+        } else {
+            status = "Off"; color = .secondaryLabelColor
+        }
+        row.update(detail: WizardCopy.tailnetDetail(name: name), status: status, statusColor: color,
+                   showCheckAgain: false, buttonTitle: url != nil ? "Turn Off" : "Allow",
+                   buttonVisible: true, buttonEnabled: !tailnetBusy, wideButton: false)
+        setLabel(tailnetNoticeLabel, nil)
+    }
+
+    /// Allow or Turn Off. The CLI runs off the main thread; the row shows "Working…" meanwhile.
+    @objc private func tailnetTapped() {
+        guard let exposure, !tailnetBusy else { return }
+        let turningOff = exposure.publicURL != nil
+        tailnetBusy = true
+        tailnetMessage = nil
+        applyTailnetRow()
+        applyFooters(snapshot)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = turningOff ? exposure.disable() : exposure.enable()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.tailnetBusy = false
+                    self.applyFooters(self.snapshot)
+                    switch outcome {
+                    case .on, .off: self.tailnetMessage = nil
+                    default: self.tailnetMessage = outcome.message
+                    }
+                    self.refresh()
+                }
+            }
+        }
+    }
+
+    @objc private func tailnetFooterTapped() {
+        guard !tailnetBusy else { return }
+        finish(tailnetOn ? .done : .skip)
     }
 
     private func markReturned() {
@@ -344,10 +427,12 @@ final class PermissionSetupWindowController: NSWindowController {
     }
 
     @objc private func optionalFooterTapped() {
-        if case .done = WizardModel.footerAction(page: .optional, snapshot: snapshot) {
-            finish(.done)
-        } else {
-            finish(.skip)
+        switch WizardModel.footerAction(page: .optional, snapshot: snapshot, tailnetPage: tailnetOffered) {
+        case .continueToTailnet, .skipToTailnet:
+            page = .tailnet
+            refresh()
+        case .done: finish(.done)
+        default: finish(.skip)
         }
     }
 
@@ -359,7 +444,7 @@ final class PermissionSetupWindowController: NSWindowController {
 
     private func buildUI(in window: NSWindow) {
         guard let content = window.contentView else { return }
-        for pageStack in [corePage, optionalPage] {
+        for pageStack in [corePage, optionalPage, tailnetPage] {
             pageStack.orientation = .vertical
             pageStack.alignment = .leading
             pageStack.spacing = 14
@@ -392,7 +477,7 @@ final class PermissionSetupWindowController: NSWindowController {
         continueButton.target = self
         continueButton.action = #selector(continueTapped)
         continueButton.keyEquivalent = "\r"
-        corePage.addArrangedSubview(footer(buttons: [continueButton], pager: "●  ○"))
+        corePage.addArrangedSubview(footer(buttons: [continueButton], pager: "●  ○", page: .core))
 
         // Page 2: optional Full Disk Access.
         adHocOptionalLabel.font = .systemFont(ofSize: 12)
@@ -408,9 +493,25 @@ final class PermissionSetupWindowController: NSWindowController {
 
         optionalFooterButton.target = self
         optionalFooterButton.action = #selector(optionalFooterTapped)
-        optionalPage.addArrangedSubview(footer(buttons: [optionalFooterButton], pager: "○  ●"))
+        optionalPage.addArrangedSubview(footer(buttons: [optionalFooterButton], pager: "○  ●", page: .optional))
+
+        // Page 3: opt-in tailnet access. Built always, shown only when a login was detected.
+        tailnetPage.addArrangedSubview(headline(WizardCopy.tailnetPageTitle, subtitle: WizardCopy.tailnetPageSubtitle))
+        let tailnet = PermissionRowView(title: WizardCopy.tailnetRowTitle, detail: WizardCopy.tailnetDetail(name: nil),
+                                        symbolName: "network", tag: PermissionKind.allCases.count,
+                                        target: self, actionSelector: #selector(tailnetTapped),
+                                        checkAgainSelector: nil, checkAgainTitle: WizardCopy.checkAgain)
+        tailnetRow = tailnet
+        tailnetPage.addArrangedSubview(tailnet)
+        configureNotice(tailnetNoticeLabel)
+        tailnetPage.addArrangedSubview(tailnetNoticeLabel)
+        tailnetPage.addArrangedSubview(note(WizardCopy.tailnetPageNote))
+        tailnetFooterButton.target = self
+        tailnetFooterButton.action = #selector(tailnetFooterTapped)
+        tailnetPage.addArrangedSubview(footer(buttons: [tailnetFooterButton], pager: "○  ○  ●", page: .tailnet))
 
         optionalPage.isHidden = true
+        tailnetPage.isHidden = true
     }
 
     private func headline(_ title: String, subtitle: String) -> NSStackView {
@@ -443,8 +544,9 @@ final class PermissionSetupWindowController: NSWindowController {
         return label
     }
 
-    private func footer(buttons: [NSButton], pager: String) -> NSStackView {
+    private func footer(buttons: [NSButton], pager: String, page: WizardPage) -> NSStackView {
         let pagerLabel = NSTextField(labelWithString: pager)
+        pagerLabels[page] = pagerLabel
         pagerLabel.font = .systemFont(ofSize: 11)
         pagerLabel.textColor = .secondaryLabelColor
         let spacer = NSView()

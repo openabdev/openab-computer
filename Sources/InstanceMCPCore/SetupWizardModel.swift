@@ -7,6 +7,8 @@ import Foundation
 public enum WizardPage: String, Equatable, Sendable {
     case core
     case optional
+    /// Opt-in: let other devices on the tailnet reach this Mac. Shown only when a Tailscale login was detected.
+    case tailnet
 }
 
 public enum RowState: Equatable, Sendable {
@@ -33,6 +35,10 @@ public enum FooterAction: Equatable, Sendable {
     case continueToOptional(enabled: Bool)
     case skip
     case done
+    /// The Full Disk Access page when a tailnet page follows: moves on instead of finishing. "Skip" until the
+    /// permission is granted, "Continue" after.
+    case skipToTailnet
+    case continueToTailnet
 }
 
 public enum WizardEvent: Equatable, Sendable {
@@ -67,13 +73,29 @@ public enum WizardModel {
 
     /// Core page: Continue, enabled only when both core permissions are granted. Optional page: Skip, or Done once
     /// Full Disk Access is granted. Skip never appears on the core page.
-    public static func footerAction(page: WizardPage, snapshot: PermissionSnapshot) -> FooterAction {
+    /// With a tailnet page, the Full Disk Access page moves on to it, and the tailnet page finishes: Skip while access
+    /// is off, Done once it is on.
+    public static func footerAction(page: WizardPage, snapshot: PermissionSnapshot,
+                                    tailnetPage: Bool = false, tailnetOn: Bool = false) -> FooterAction {
         switch page {
         case .core:
             return .continueToOptional(enabled: !SetupGate.evaluate(snapshot: snapshot).blocksCore)
         case .optional:
+            if tailnetPage { return snapshot.fullDiskAccess.isGranted ? .continueToTailnet : .skipToTailnet }
             return snapshot.fullDiskAccess.isGranted ? .done : .skip
+        case .tailnet:
+            return tailnetOn ? .done : .skip
         }
+    }
+
+    /// The pages in order for this launch. The tailnet page exists only when a Tailscale login was detected.
+    public static func pages(tailnetOffered: Bool) -> [WizardPage] {
+        tailnetOffered ? [.core, .optional, .tailnet] : [.core, .optional]
+    }
+
+    /// A page that is not in this launch's list falls back to the Full Disk Access page.
+    public static func available(_ page: WizardPage, tailnetOffered: Bool) -> WizardPage {
+        pages(tailnetOffered: tailnetOffered).contains(page) ? page : .optional
     }
 
     /// Completion is recorded for Skip, Done, and an observed complete state. Closing the window is not completion.
@@ -221,6 +243,15 @@ public enum WizardCopy {
     public static let optionalPageTitle = "Allow OpenAB Computer to access your files and local apps?"
     public static let optionalPageSubtitle = "Needed only for protected app data and for folders on external drives. Screenshots, mouse, keyboard, and browser tools do not need it."
     public static let optionalPageNote = "Optional. You can turn Full Disk Access on or off in System Settings → Privacy & Security at any time."
+
+    public static let tailnetPageTitle = "Allow other devices on your tailnet to reach this Mac?"
+    public static let tailnetPageSubtitle = "Off by default. Turn it on only if you want to use this Mac from another device signed in to your Tailscale account."
+    public static let tailnetRowTitle = "Allow other devices on my tailnet"
+    /// `name` is this Mac's tailnet name once known; before that the placeholder reads as in the design.
+    public static func tailnetDetail(name: String?) -> String {
+        "Other devices signed in to your Tailscale account can reach this Mac's screenshot, mouse, keyboard, and shell tools at https://\(name ?? "<this Mac's tailnet name>"):\(TailnetExposure.httpsPort)/mcp. They still need the token."
+    }
+    public static let tailnetPageNote = "Access needs both your Tailscale login, which was detected, and the bearer token. This runs tailscale serve for port 8444 only and leaves your other Serve mappings alone. Skip leaves it off. You can turn it off here or from the menu bar at any time."
 
     public static let screenRecordingDetail = "Lets agents take screenshots of this Mac."
     public static let accessibilityDetail = "Lets agents click, type, and read the controls in app windows."
