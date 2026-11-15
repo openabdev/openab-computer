@@ -267,22 +267,30 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertFalse(children().contains(".install.lock"))
     }
 
-    func testALockWhoseOwnerIsGoneIsReclaimed() async throws {
+    /// Holds the installer's lock the way another process would: an open descriptor with flock(2).
+    func holdLock() throws -> Int32 {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fd = open(root.appendingPathComponent(".install.lock").path, O_RDWR | O_CREAT, 0o600)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+        return fd
+    }
+
+    func testALeftoverLockFileWithNoHolderIsJustTaken() async throws {
         let fx = try FakeInstallFixture()
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".install.lock"), withIntermediateDirectories: true)
-        // A pid that is certainly not running: fork and reap a child.
-        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/true"); try p.run(); p.waitUntilExit()
-        try "\(p.processIdentifier)\n".write(to: root.appendingPathComponent(".install.lock/pid"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try "999999 1\n".write(to: root.appendingPathComponent(".install.lock"), atomically: true, encoding: .utf8)
         let r2 = await installOK(fx.installer(root: root, lockTries: 3))
         XCTAssertNotNil(r2)
     }
 
-    func testALockWithARecycledPidIsReclaimed() async throws {
+    func testAnOwnerThatExitedReleasesTheLockWithoutAnyReclaim() async throws {
         let fx = try FakeInstallFixture()
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".install.lock"), withIntermediateDirectories: true)
-        // A live pid (this process) with a start time that is not its own: the original owner died.
-        try "\(getpid()) 1\n".write(to: root.appendingPathComponent(".install.lock/pid"), atomically: true, encoding: .utf8)
-        let r = await installOK(fx.installer(root: root, lockTries: 3))
+        let fd = try holdLock()
+        let f = await installFailure(fx.installer(root: root, lockTries: 2))
+        XCTAssertEqual(f, .lockHeld)
+        close(fd)   // what the kernel does when the owner exits
+        let r = await installOK(fx.installer(root: root, lockTries: 2))
         XCTAssertNotNil(r)
     }
 
@@ -290,11 +298,10 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         let fx = try FakeInstallFixture()
         let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".install.lock"), withIntermediateDirectories: true)
-        try "\(getppid())\n".write(to: root.appendingPathComponent(".install.lock/pid"), atomically: true, encoding: .utf8)
+        let fd = try holdLock()
         fx.installer(root: root).sweepStaging()
         XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path), "a live holder keeps its staging")
-        try FileManager.default.removeItem(at: root.appendingPathComponent(".install.lock"))
+        close(fd)
         fx.installer(root: root).sweepStaging()
         XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
         XCTAssertFalse(children().contains(".install.lock"))
@@ -409,7 +416,7 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         try rec.write(to: root.appendingPathComponent("install.json"))
         let fx = try FakeInstallFixture()
         let f = await installFailure(fx.installer(root: root))
-        XCTAssertEqual(f, .other("foreign_install"))
+        XCTAssertEqual(f, .other("foreign_data"))   // the user's profile stops the install before anything else
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("install.json")), rec)
         let rr = await fx.installer(root: root).remove()
         XCTAssertEqual(describe(rr), "ok")
@@ -417,6 +424,16 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("output/keep")), "mine")
         XCTAssertTrue(FileManager.default.fileExists(atPath: hand.path))
+    }
+
+    func testAHandMadeInstallJsonWithNoProfileIsRefusedAsForeignInstall() async throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let rec = Data("{\"version\":\"handmade\",\"chromiumExecutable\":\"x\"}".utf8)
+        try rec.write(to: root.appendingPathComponent("install.json"))
+        let fx = try FakeInstallFixture()
+        let f = await installFailure(fx.installer(root: root))
+        XCTAssertEqual(f, .other("foreign_install"))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("install.json")), rec)
     }
 
     func testAHandMadeInstallIsNeverOverwritten() async throws {
@@ -431,7 +448,7 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         try rec.write(to: root.appendingPathComponent("install.json"))
         let fx = try FakeInstallFixture()
         let f = await installFailure(fx.installer(root: root))
-        XCTAssertEqual(f, .other("foreign_install"))
+        XCTAssertEqual(f, .other("foreign_data"))
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("install.json")), rec)
         XCTAssertEqual(try String(contentsOf: hand.appendingPathComponent("my-notes.txt")), "mine")
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
@@ -444,19 +461,29 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
     }
 
-    func testPreExistingProfileAndOutputAreUsedButNeverClaimedByRemove() async throws {
+    func testPreExistingUnmarkedProfileOrOutputStopsTheInstallAndStaysUntouched() async throws {
         for d in ["profile", "output"] {
+            try? FileManager.default.removeItem(at: root)
             try FileManager.default.createDirectory(at: root.appendingPathComponent(d), withIntermediateDirectories: true)
             try Data("mine".utf8).write(to: root.appendingPathComponent(d).appendingPathComponent("keep"))
+            let fx = try FakeInstallFixture()
+            let f = await installFailure(fx.installer(root: root))
+            XCTAssertEqual(f, .other("foreign_data"))
+            XCTAssertEqual(Set(children()), [d], "nothing downloaded, nothing added")
+            XCTAssertEqual(Set((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent(d).path)) ?? []), ["keep"])
+            XCTAssertEqual(try String(contentsOf: root.appendingPathComponent(d + "/keep")), "mine")
         }
+    }
+
+    func testAProfileThisInstallerMarkedIsReusedAndRemoved() async throws {
         let fx = try FakeInstallFixture()
         let i = fx.installer(root: root)
         _ = await installOK(i)
+        let again = await installOK(fx.installer(root: root))
+        XCTAssertNotNil(again)
         let rr = await i.remove()
         XCTAssertEqual(describe(rr), "ok")
-        XCTAssertEqual(Set(children()), ["profile", "output"])
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("output/keep")), "mine")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
     }
 
     func testASymlinkedProfileIsRefusedAndNothingBehindItIsTouched() async throws {
@@ -479,15 +506,13 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         assertNothingInstalled()
     }
 
-    func testALiveLockIsNotReclaimed() async throws {
+    func testALiveLockIsNotTaken() async throws {
         let fx = try FakeInstallFixture()
-        let lock = root.appendingPathComponent(".install.lock")
-        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
-        // A live owner (this process) keeps its lock.
-        try "\(getpid())\n".write(to: lock.appendingPathComponent("pid"), atomically: true, encoding: .utf8)
+        let fd = try holdLock()
+        defer { close(fd) }
         let f = await installFailure(fx.installer(root: root, lockTries: 2))
         XCTAssertEqual(f, .lockHeld)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: lock.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(".install.lock").path))
     }
 
     func testFirstInstallThatDoesNotServeLeavesNothing() async throws {
@@ -530,9 +555,7 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         // A hand-made directory with a matching name but no marker must survive.
         try FileManager.default.createDirectory(at: root.appendingPathComponent("mcp-handmade/node"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".staging-\(UUID().uuidString)/pkg"), withIntermediateDirectories: true)
-        let lock = root.appendingPathComponent(".install.lock")
-        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
-        try "999999\n".write(to: lock.appendingPathComponent("pid"), atomically: true, encoding: .utf8)
+        try "999999 1\n".write(to: root.appendingPathComponent(".install.lock"), atomically: true, encoding: .utf8)
         try Data("keep".utf8).write(to: root.appendingPathComponent("notes.txt"))
         let logs = MutableBox<[String]>([])
         let i = v1.installer(root: root, logs: logs)
@@ -606,11 +629,51 @@ final class PlaywrightInstallerTests: InstallerTestCase {
 
     func testRemoveRefusesWhileAnInstallLockIsLive() async throws {
         let fx = try FakeInstallFixture()
-        let lock = root.appendingPathComponent(".install.lock")
-        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
-        try "\(getpid())\n".write(to: lock.appendingPathComponent("pid"), atomically: true, encoding: .utf8)
+        let fd = try holdLock()
+        defer { close(fd) }
         let r8 = await fx.installer(root: root).remove()
         XCTAssertEqual(describe(r8), "lock_held")
+    }
+
+    func testASymlinkedRootIsRefusedByInstallRemoveAndSweep() async throws {
+        let elsewhere = work.url.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try Data("mine".utf8).write(to: elsewhere.appendingPathComponent("keep"))
+        let stale = elsewhere.appendingPathComponent(".staging-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root, withDestinationURL: elsewhere)
+        let fx = try FakeInstallFixture()
+        let f = await installFailure(fx.installer(root: root))
+        XCTAssertEqual(f, .other("root_not_directory"))
+        let r = await fx.installer(root: root).remove()
+        XCTAssertEqual(describe(r), "root_not_directory")
+        fx.installer(root: root).sweepStaging()
+        XCTAssertEqual(Set((try? FileManager.default.contentsOfDirectory(atPath: elsewhere.path)) ?? []), ["keep", stale.lastPathComponent])
+    }
+
+    func testCompareAndSwapKeepsAFileThatIsNotWhatWasExpected() throws {
+        let fx = try FakeInstallFixture()
+        let i = fx.installer(root: root)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let url = root.appendingPathComponent("install.json")
+        try Data("theirs".utf8).write(to: url)
+        // Expected bytes differ: the file is put back untouched and the write refused.
+        XCTAssertThrowsError(try i.writeAtomically(Data("ours".utf8), to: url, replacing: Data("other".utf8))) {
+            XCTAssertEqual($0 as? PlaywrightInstallFailure, .other("foreign_install"))
+        }
+        XCTAssertEqual(try Data(contentsOf: url), Data("theirs".utf8))
+        // Nothing to replace but a file is there: refused, untouched.
+        XCTAssertThrowsError(try i.writeAtomically(Data("ours".utf8), to: url, replacing: nil))
+        XCTAssertEqual(try Data(contentsOf: url), Data("theirs".utf8))
+        // The file vanished while a replacement was expected: refused, nothing created.
+        try FileManager.default.removeItem(at: url)
+        XCTAssertThrowsError(try i.writeAtomically(Data("ours".utf8), to: url, replacing: Data("theirs".utf8)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        // Matching bytes: replaced, and no temp or grab files remain.
+        try Data("theirs".utf8).write(to: url)
+        try i.writeAtomically(Data("ours".utf8), to: url, replacing: Data("theirs".utf8))
+        XCTAssertEqual(try Data(contentsOf: url), Data("ours".utf8))
+        XCTAssertEqual(children(), ["install.json"])
     }
 
     // MARK: quarantine and logs

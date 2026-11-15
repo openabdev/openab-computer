@@ -125,8 +125,13 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     /// Deletes what the installer created under the root, including the browser profile. Idempotent.
     public func remove() async -> Result<Void, PlaywrightInstallFailure> {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: root.path) else { onRemoved(); emit(.removed); return .success(()) }
-        do { try await acquireLock() }
+        switch rootIsPlainDirectory() {
+        case .none: onRemoved(); emit(.removed); return .success(())
+        case .some(false): emit(.installFailed("root_not_directory")); return .failure(.other("root_not_directory"))
+        case .some(true): break
+        }
+        let lockFD: Int32
+        do { lockFD = try await acquireLock() }
         catch let f as PlaywrightInstallFailure { return .failure(f) }
         catch { return .failure(.other("lock")) }
         // Only what this installer wrote: a record it wrote (`manifestId`) owns install.json, profile
@@ -140,9 +145,9 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         let names = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
         for n in names where n != ".install.lock" && isOurs(n, ownsRoot: ownsRoot) {
             do { try fm.removeItem(at: root.appendingPathComponent(n)) }
-            catch { releaseLock(); emit(.installFailed("remove_failed")); return .failure(.other("remove_failed")) }
+            catch { releaseLock(lockFD); emit(.installFailed("remove_failed")); return .failure(.other("remove_failed")) }
         }
-        releaseLock()
+        releaseLock(lockFD)
         // Only an empty directory is removed: anything the installer did not create stays.
         rmdir(root.path)
         onRemoved()
@@ -154,14 +159,10 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     /// and a stale lock. Does nothing while another install holds the lock.
     public func sweepStaging() {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: root.path) else { return }
+        guard rootIsPlainDirectory() == true else { return }
         // One non-waiting attempt at the same lock an install holds: a live holder means no sweep.
-        var got = mkdir(lockURL.path, 0o700) == 0
-        if !got, errno == EEXIST, reclaimStaleLock() { got = mkdir(lockURL.path, 0o700) == 0 }
-        guard got else { return }
-        let start = Self.processStart(getpid()).map { " \($0)" } ?? ""
-        try? "\(getpid())\(start)\n".write(to: lockURL.appendingPathComponent("pid"), atomically: false, encoding: .utf8)
-        defer { releaseLock() }
+        guard let lockFD = try? tryLock() else { return }
+        defer { releaseLock(lockFD) }
         let keep = readRecord()?.version
         var n = 0
         for name in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] {
@@ -188,6 +189,16 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         let dir = root.appendingPathComponent(name)
         guard lstat(dir.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { return false }
         return lstat(dir.appendingPathComponent(Self.dataMarker).path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
+    }
+
+    /// A `profile` or `output` that exists must be a real directory this installer created (it carries the
+    /// data marker). Anything else is the user's: the install stops and leaves it untouched, because the
+    /// browser would write into it.
+    func checkDataDir(_ name: String) throws {
+        var st = stat()
+        guard lstat(root.appendingPathComponent(name).path, &st) == 0 else { return }
+        guard (st.st_mode & S_IFMT) == S_IFDIR else { throw PlaywrightInstallFailure.other("commit_collision") }
+        guard hasDataMarker(name) else { throw PlaywrightInstallFailure.other("foreign_data") }
     }
 
     static func hasUUIDSuffix(_ name: String, prefix: String) -> Bool {
@@ -241,7 +252,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
     /// Writes `data` to a temp file and renames it over `url`, but only if `url` still holds `replacing`
     /// (nil: it must not exist). A file changed by someone else meanwhile is never overwritten.
-    private func writeAtomically(_ data: Data, to url: URL, replacing: Data?) throws {
+    func writeAtomically(_ data: Data, to url: URL, replacing: Data?) throws {
         let tmp = url.deletingLastPathComponent().appendingPathComponent("install.json.tmp-\(UUID().uuidString)")
         let fd = open(tmp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw PlaywrightInstallFailure.other("write_install_json") }
@@ -288,83 +299,57 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
     // MARK: lock
 
-    private var lockURL: URL { root.appendingPathComponent(".install.lock", isDirectory: true) }
+    private var lockURL: URL { root.appendingPathComponent(".install.lock") }
 
-    /// The pid file holds "<pid> <start seconds>", so a recycled pid does not keep a dead owner's lock alive.
-    private func lockOwner() -> (pid: pid_t, start: Int64?)? {
-        guard let s = try? String(contentsOf: lockURL.appendingPathComponent("pid"), encoding: .utf8) else { return nil }
-        let parts = s.split(whereSeparator: { $0 == " " || $0 == "\n" })
-        guard let first = parts.first, let p = pid_t(first) else { return nil }
-        return (p, parts.count > 1 ? Int64(parts[1]) : nil)
-    }
-
-    private func lockOwner(from s: String) -> (pid: pid_t, start: Int64?)? {
-        let parts = s.split(whereSeparator: { $0 == " " || $0 == "\n" })
-        guard let first = parts.first, let p = pid_t(first) else { return nil }
-        return (p, parts.count > 1 ? Int64(parts[1]) : nil)
-    }
-
-    private static func processStart(_ p: pid_t) -> Int64? {
-        var info = proc_bsdinfo()
-        let n = proc_pidinfo(p, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
-        return n == Int32(MemoryLayout<proc_bsdinfo>.size) ? Int64(info.pbi_start_tvsec) : nil
-    }
-
-    private func pidAlive(_ o: (pid: pid_t, start: Int64?)) -> Bool {
-        guard kill(o.pid, 0) == 0 || errno == EPERM else { return false }
-        if let s = o.start, let now = Self.processStart(o.pid) { return s == now }
-        return true
-    }
-
-    /// A lock whose recorded process is gone is reclaimed; one with no pid file yet is given a few
-    /// seconds, because its owner may be between `mkdir` and the pid write.
-    private func reclaimStaleLock() -> Bool {
+    /// `nil` when the root does not exist, `true` for a real directory, `false` for a symlink or any
+    /// other kind of file: a root that is not a plain directory is never used, created in or cleaned.
+    func rootIsPlainDirectory() -> Bool? {
         var st = stat()
-        guard lstat(lockURL.path, &st) == 0 else { return false }
-        if let o = lockOwner() {
-            guard !pidAlive(o) else { return false }
-        } else if Date().timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) < 5 {
-            return false
-        }
-        // Rename first, so two reclaimers cannot delete a lock the other just took: only one rename wins,
-        // and a lock that turns out live is put back.
-        let judged = lockOwner()
-        let gone = root.appendingPathComponent(".install.lock.stale-\(UUID().uuidString)", isDirectory: true)
-        guard rename(lockURL.path, gone.path) == 0 else { return false }
-        let moved = (try? String(contentsOf: gone.appendingPathComponent("pid"), encoding: .utf8)) ?? ""
-        // Compare parsed owners, not text: pid 12 is not a prefix-match for pid 123.
-        let movedOwner = lockOwner(from: moved)
-        if let o = judged, movedOwner?.pid != o.pid || movedOwner?.start != o.start || pidAlive(o) {
-            if rename(gone.path, lockURL.path) != 0 { try? FileManager.default.removeItem(at: gone) }
-            return false
-        }
-        try? FileManager.default.removeItem(at: gone)
-        return true
+        if lstat(root.path, &st) != 0 { return errno == ENOENT ? nil : false }
+        return (st.st_mode & S_IFMT) == S_IFDIR
     }
 
-    private func lockIsLive() -> Bool {
-        var st = stat()
-        guard lstat(lockURL.path, &st) == 0 else { return false }
-        if let o = lockOwner() { return pidAlive(o) }
-        return Date().timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) < 5
+    /// One non-waiting attempt at the kernel lock: `flock(2)` on a regular file, held through the open
+    /// descriptor. The kernel drops it when the process exits, so there is no stale owner to judge.
+    /// Returns the descriptor, or nil if another holder has it.
+    private func tryLock() throws -> Int32? {
+        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw PlaywrightInstallFailure.other("lock") }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            let busy = errno == EWOULDBLOCK
+            close(fd)
+            if busy { return nil }
+            throw PlaywrightInstallFailure.other("lock")
+        }
+        // The previous holder unlinks the file on release: a lock taken on an unlinked inode is no lock.
+        var a = stat(), b = stat()
+        guard fstat(fd, &a) == 0, lstat(lockURL.path, &b) == 0, a.st_ino == b.st_ino, a.st_dev == b.st_dev,
+              (b.st_mode & S_IFMT) == S_IFREG else {
+            close(fd)
+            return nil
+        }
+        return fd
     }
 
-    private func acquireLock() async throws {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    private func acquireLock() async throws -> Int32 {
+        switch rootIsPlainDirectory() {
+        case .some(false): throw PlaywrightInstallFailure.other("root_not_directory")
+        case .none:
+            do { try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
+            catch { throw PlaywrightInstallFailure.other("lock") }
+            guard rootIsPlainDirectory() == true else { throw PlaywrightInstallFailure.other("root_not_directory") }
+        case .some(true): break
+        }
         for _ in 0..<lockTries {
-            if mkdir(lockURL.path, 0o700) == 0 {
-                let start = Self.processStart(getpid()).map { " \($0)" } ?? ""
-                try? "\(getpid())\(start)\n".write(to: lockURL.appendingPathComponent("pid"), atomically: false, encoding: .utf8)
-                return
-            }
-            guard errno == EEXIST else { throw PlaywrightInstallFailure.other("lock") }
-            if reclaimStaleLock() { continue }
+            if let fd = try tryLock() { return fd }
             do { try await Task.sleep(nanoseconds: lockInterval) } catch { throw PlaywrightInstallFailure.cancelled }
         }
         throw PlaywrightInstallFailure.lockHeld
     }
 
-    private func releaseLock() { try? FileManager.default.removeItem(at: lockURL) }
+    /// Unlinks while still holding the lock, then closes: a waiter that opened the old file sees the
+    /// mismatch in `tryLock` and starts over.
+    private func releaseLock(_ fd: Int32) { unlink(lockURL.path); close(fd) }
 
     // MARK: the flow
 
@@ -409,8 +394,10 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         guard let nodeArt = manifest.nodeArtifact(arch), let crArt = manifest.chromiumArtifact(arch),
               let crExec = crArt.executable else { throw PlaywrightInstallFailure.other("manifest_invalid") }
         try step(.preflight, nil, progress)
-        try await acquireLock()
-        defer { releaseLock() }
+        let lockFD = try await acquireLock()
+        defer { releaseLock(lockFD) }
+        // Before any download: foreign profile/output data stops the install now.
+        for d in ["profile", "output"] { try checkDataDir(d) }
 
         // An install.json this installer did not write (no `manifestId`, or unreadable) is the user's
         // configuration: it is never replaced, and nothing it points at is touched.
@@ -513,9 +500,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
             let u = root.appendingPathComponent(d)
             var dst = stat()
             if lstat(u.path, &dst) == 0 {
-                // Something is already there: it must be a real directory (never a link). It is used as is
-                // and is NOT claimed, so `remove` keeps it unless it carries our marker from an earlier install.
-                guard (dst.st_mode & S_IFMT) == S_IFDIR else { throw PlaywrightInstallFailure.other("commit_collision") }
+                try checkDataDir(d)
                 continue
             }
             createdDirs.append(d)
