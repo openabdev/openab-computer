@@ -244,14 +244,34 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         fsync(fd)
         Darwin.close(fd)
         guard ok else { unlink(tmp.path); throw PlaywrightInstallFailure.other("write_install_json") }
-        let current = try? Data(contentsOf: url)
-        guard current == replacing else { unlink(tmp.path); throw PlaywrightInstallFailure.other("foreign_install") }
-        // With nothing to replace the rename must not clobber a file that appears now.
-        let renamed = replacing == nil ? renamex_np(tmp.path, url.path, UInt32(RENAME_EXCL)) : rename(tmp.path, url.path)
-        guard renamed == 0 else {
-            unlink(tmp.path)
-            throw PlaywrightInstallFailure.other(replacing == nil && errno == EEXIST ? "foreign_install" : "write_install_json")
+        guard let expected = replacing else {
+            // Nothing to replace: the rename must not clobber a file that appears now.
+            guard renamex_np(tmp.path, url.path, UInt32(RENAME_EXCL)) == 0 else {
+                let exists = errno == EEXIST
+                unlink(tmp.path)
+                throw PlaywrightInstallFailure.other(exists ? "foreign_install" : "write_install_json")
+            }
+            return
         }
+        // Compare and swap without a window: take the current file by renaming it away (atomic), check what
+        // was taken, then install ours only if nothing has appeared at the name since.
+        let grab = url.deletingLastPathComponent().appendingPathComponent("install.json.grab-\(UUID().uuidString)")
+        guard rename(url.path, grab.path) == 0 else { unlink(tmp.path); throw PlaywrightInstallFailure.other("foreign_install") }
+        guard (try? Data(contentsOf: grab)) == expected else {
+            // Not what this installer expected: put it back untouched (if the name is taken, the newer file
+            // wins and the taken one stays under its grab name; nothing is deleted).
+            _ = renamex_np(grab.path, url.path, UInt32(RENAME_EXCL))
+            unlink(tmp.path)
+            throw PlaywrightInstallFailure.other("foreign_install")
+        }
+        guard renamex_np(tmp.path, url.path, UInt32(RENAME_EXCL)) == 0 else {
+            // Someone created the config in the gap: theirs stays, ours is dropped.
+            let exists = errno == EEXIST
+            unlink(tmp.path)
+            unlink(grab.path)
+            throw PlaywrightInstallFailure.other(exists ? "foreign_install" : "write_install_json")
+        }
+        unlink(grab.path)
     }
 
     // MARK: lock

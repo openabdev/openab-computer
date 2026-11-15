@@ -170,7 +170,8 @@ public struct PlaywrightInstallPlan: Equatable, Sendable {
 
     public init(manifest m: PlaywrightManifest, arch: Arch, root: URL) {
         downloadBytes = m.downloadBytes(arch)
-        diskBytes = m.diskBytes(arch)
+        // The free space install() requires (same formula), not just what the install uses.
+        diskBytes = max(Int64(m.freeDiskFactor) * m.downloadBytes(arch), m.diskBytes(arch))
         hosts = ["nodejs.org", "registry.npmjs.org", m.chromium.host]
         installPath = root.path
         nodeVersion = m.node.version
