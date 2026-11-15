@@ -570,7 +570,7 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   the browser profile and its cookies when the app's own readable `install.json` confirms it created that profile. A hand-made, unreadable or invalid
   `install.json` and what it points to stay, and the app then says it removed only part; Chrome,
   Safari and `~/.local/oab-computer/` are never touched), and **Open Playwright
-  window to sign in…**. With `--upstream browser=…` the page and the menu items are still offered,
+  window to sign in…**. With `--upstream browser=…` the page and the menu items (except sign-in) are still offered,
   with a note that the external provider is used first in Automatic mode. A launch with every
   permission granted opens the Browser tools page until it has been completed once. Opening the
   menu reads `install.json` and checks the installed files, and starts nothing. The installer
