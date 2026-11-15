@@ -261,7 +261,7 @@ read-only.
 |---|---|---|---|---|---|
 | `127.0.0.1:8795` (`--host`, `--port`; `--path` for the `/mcp` route) | TCP, plain HTTP/1.1 | Processes on this Mac only | `/mcp` (POST, DELETE), `/attach` (reverse attach; off with `--no-attach`), `/healthz`. Anything else is 404 | Always, on IPv4 loopback by default. No-flag launch from Finder, the installer's LaunchAgent, or a manual launch. A no-flag launch also briefly binds the port to test it is free, without listening | `/mcp` and `/attach`: [Auth](#auth). `/healthz`: none |
 | `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. The app runs the same command only after you turn tailnet access on, from the wizard's tailnet page or the menu's "Allow tailnet access…", and removes it with "Turn Off Tailnet Access". A launch with no stored opt-in does not create it. A launch with a stored opt-in re-applies it when it is missing. A mapping that already exists is shown as "On (existing mapping, not managed by this app)" and left alone until you choose "Manage with this app" | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
-| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac only. Other machines reach the browser tools only through the app's `--upstream` | Playwright MCP, a **separate process** the app only connects to (`--upstream`). It has no `:8443` or other tailnet access path | Its own LaunchAgent (`poc/pw-mcp/install.sh`), which binds `--host 127.0.0.1` and creates no `tailscale serve` mapping. The app never starts it | None in Playwright. The app's [Auth](#auth) applies to callers before it relays browser tools |
+| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac only. Other machines reach the browser tools only through the app's `--upstream` | Playwright MCP, a **separate process** the app only connects to (`--upstream`). It has no `:8443` or other tailnet access path | Its own LaunchAgent (`poc/pw-mcp/install.sh`), which binds `--host 127.0.0.1` and creates no `tailscale serve` mapping. The app never starts this one. The *managed* Playwright (see [Browser tools](#browser-tools-for-lent-sessions---upstream)) is a different thing: a child over stdio that listens on nothing | None in Playwright. The app's [Auth](#auth) applies to callers before it relays browser tools |
 
 The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The `:8444`
 mapping is made by the installer, by the app after you turn tailnet access on, or by the app's launch
@@ -282,6 +282,7 @@ installer runs the read-only `serve status` at the end and prints a warning if i
 
 | What | To where | When | What it is for |
 |---|---|---|---|
+| On-demand Playwright install, HTTPS | `nodejs.org`, `registry.npmjs.org` and `storage.googleapis.com`, nowhere else. Redirects to any other host are refused | Only when you choose to install or update Playwright (the install step is offered, pre-checked, and you can uncheck it). Never at launch, never in the background | Download Node, the pinned `@playwright/mcp` and the pinned Chromium. See [What the app downloads](#what-the-app-downloads) |
 | Upstream MCP, HTTP(S) | The URL given to `--upstream`. The installer uses `http://127.0.0.1:8794/mcp`. The app does not require loopback | Only with `--upstream`. The installer adds it when the Playwright agent is loaded | Browser tools |
 | Switchboard, WebSocket | `wss://<switchboard-host>.<tailnet>.ts.net/vm/attach`. `ws://` only to loopback | Only with `--switchboard` or a saved switchboard config. Redials for the life of the process | [Serving a switchboard](#serving-a-switchboard---switchboard) |
 | Reverse attach, WebSocket | `ws(s)://<runtime>/tools/attach/<session>`. The runtime and port come from the grant | Only after a `POST /attach`. Saved grants are redialled at launch | [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) |
@@ -292,6 +293,37 @@ installer runs the read-only `serve status` at the end and prints a warning if i
 
 The menu bar and the permission wizard also start local processes (`open`, `launchctl`, a
 `--permission-check` re-run of the app). These make no network connections.
+
+### What the app downloads
+
+Nothing is bundled in the app and nothing is fetched until you ask. The on-demand Playwright install
+downloads three things into `~/Library/Application Support/oab-computer/playwright/` (never inside
+the app bundle), for the architecture of this Mac:
+
+| What | From | Version |
+|---|---|---|
+| Node.js (includes `npm`) | `https://nodejs.org/dist/v24.22.3/` | 24.22.3 |
+| `@playwright/mcp` and its dependencies (3 npm packages) | `https://registry.npmjs.org/`, fetched by the downloaded Node's `npm ci --ignore-scripts` | 0.0.82 (with `playwright-core` 1.64.0-alpha-1789764292000) |
+| Chromium (Chrome for Testing) | `https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.0/` | 154.0.8037.0 |
+
+Download: about 249 MB (Apple silicon) or 260 MB (Intel). On disk once installed: about 593 MB (Apple silicon) or 606 MB (Intel). The install needs free space of at least three times
+the download while it runs and an internet connection.
+
+- Every file is checked against sizes and SHA-256 digests built into the signed app, **before** it is
+  extracted. The npm packages are checked against a lockfile built into the app (`sha512` integrity
+  for each package, all from `registry.npmjs.org`). The downloaded Node must also pass a code-signature
+  check against the Node.js release team. A mismatch installs nothing.
+- Archives are checked before anything is written (no absolute paths, `..`, links that leave the
+  folder, devices, or oversize entries) and are extracted by the app itself, not by `tar` or `unzip`.
+- `npm` makes its own connections to `registry.npmjs.org`; the app's host list does not bound `npm`,
+  which is why the lockfile allows no other host.
+- The app never adds or removes `com.apple.quarantine`. If macOS refuses to run the downloaded
+  browser, the install stops with that message.
+- The Chromium it installs is a browser: the connections it makes while running (the pages it opens, and any background service Chrome for Testing contacts) are Chromium's, not the installer's, and the app does not bound them. On the pinned build it opened no listening TCP or UDP socket, and it exits when its stdin closes.
+- The install adds no LaunchAgent and no listener. An update is only ever offered, never applied
+  silently. Removing Playwright deletes that whole folder, including the browser profile and its cookies.
+- The numbers above come from the manifest in `release/playwright-pins/`; the release check
+  (`scripts/playwright-pins.py`, run in CI) fails if they drift.
 
 ### What the app never does
 
@@ -309,6 +341,8 @@ your user can.
 - Nothing in the menu's Network section probes a port or changes a setting, except the explicit tailnet actions the menu offers. The rows are read from
   the app's own state.
 - On the switchboard path it dials out and opens no extra listener.
+- It downloads nothing at launch and nothing in the background. The only download is the on-demand Playwright install, which runs when you ask for it and is listed under [What the app downloads](#what-the-app-downloads).
+- It never adds or removes `com.apple.quarantine` on anything it downloads.
 
 ### Exposing it
 
@@ -520,7 +554,7 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   backoff (1 s, 2 s, 4 s, up to 30 s) and is marked unavailable after 5 failures in 2 minutes. Its
   stderr is kept in memory only and is never written to a log. With nothing installed, the browser
   tools are not listed, a call says Playwright is not installed, and `sys_info` and the menu show
-  the same. This build has no installer for it yet.
+  the same. The installer is part of this build ([What the app downloads](#what-the-app-downloads)); the wizard page and the menu entries that start it arrive in a separate change, so until then nothing triggers a download.
 
 ## Download and install
 

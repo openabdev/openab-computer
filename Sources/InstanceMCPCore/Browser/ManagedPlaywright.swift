@@ -54,17 +54,26 @@ public struct ManagedPlaywrightLocator: Sendable {
             do { try fm.createDirectory(atPath: d, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
             catch { return .failure(.init(errorClass: "playwright_install_invalid")) }
         }
+        return .success(Self.launchSpec(node: node, cli: cli, chromium: chromium, profile: profile, output: output,
+                                        workingDirectory: root.path))
+    }
+
+    /// The one place the launch vector is built (R7.4): no `--port`, `--host` or `--allowed-hosts`,
+    /// an allow-list environment, stdio only. The installer's health check uses it too, with
+    /// `headless` so no window opens.
+    public static func launchSpec(node: String, cli: String, chromium: String, profile: String, output: String,
+                                  workingDirectory: String, headless: Bool = false) -> ManagedLaunchSpec {
         let nodeDir = (node as NSString).deletingLastPathComponent
         let env: [String: String] = [
             "HOME": NSHomeDirectory(), "TMPDIR": NSTemporaryDirectory(),
             "LANG": ProcessInfo.processInfo.environment["LANG"] ?? "en_US.UTF-8",
             "PATH": "\(nodeDir):/usr/bin:/bin",
         ]
-        let args = [cli, "--user-data-dir", profile, "--output-dir", output, "--idle-timeout", "1800000",
+        var args = [cli, "--user-data-dir", profile, "--output-dir", output, "--idle-timeout", "1800000",
                     "--browser", "chromium", "--executable-path", chromium, "--shared-browser-context",
                     "--caps", "vision,pdf"]
-        return .success(ManagedLaunchSpec(executable: node, arguments: args, environment: env,
-                                          workingDirectory: root.path))
+        if headless { args.append("--headless") }
+        return ManagedLaunchSpec(executable: node, arguments: args, environment: env, workingDirectory: workingDirectory)
     }
 }
 

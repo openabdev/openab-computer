@@ -77,7 +77,11 @@ while let line = readLine(strippingNewline: true) {
     switch method {
     case "initialize": reply("{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"fake\",\"version\":\"0\"}}")
     case "ping": reply("{}")
-    case "tools/list": reply("{\"tools\":[{\"name\":\"browser_navigate\"},{\"name\":\"browser_snapshot\"}]}")
+    case "tools/list":
+        if mode == "playwright-fake" {
+            // arg2 is a comma-separated list of tool names (the 32 real ones, or fewer for a failure test).
+            reply("{\"tools\":[" + arg2.split(separator: ",").map { "{\"name\":\"\($0)\"}" }.joined(separator: ",") + "]}")
+        } else { reply("{\"tools\":[{\"name\":\"browser_navigate\"},{\"name\":\"browser_snapshot\"}]}") }
     case "tools/call":
         toolCalls += 1
         let name = ((obj["params"] as? [String: Any])?["name"] as? String) ?? "?"

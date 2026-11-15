@@ -45,8 +45,8 @@ They are named after the one boundary that is real: shell-equivalent or not.
 | `observe` | **no** | 2 | 2 | Look, never act: system info and screenshots. The default |
 
 The counts include the 32 browser tools (`browser_*`), which exist only when the computer is
-configured with the Playwright upstream (`--upstream browser=…` on macOS, `MCP_UPSTREAM` on
-Linux). Without it, `owner` has 12 tools on macOS and 9 on Linux, and `observe` is unchanged.
+configured with a Playwright (an installed managed Playwright or `--upstream browser=…` on macOS,
+`MCP_UPSTREAM` on Linux). Without it, `owner` has 12 tools on macOS and 9 on Linux, and `observe` is unchanged.
 
 ## 2. Complete tool lists per profile
 
@@ -75,14 +75,19 @@ Linux has no `osascript`, and no `ui_snapshot` or `ui_action` yet (AT-SPI versio
 the same names and contract on both (#32 item 4).
 
 On macOS, `owner` gets the 32 `browser_*` tools in `BrowserToolCatalog`, served by the browser
-router (`--upstream browser=URL` is its external Playwright; the URL host must be the literal
+router. Its Playwright is either the managed one (an installed `@playwright/mcp` run as a child over
+stdio, no listener; the app downloads it only when you ask, see the README's "What the app
+downloads") or an external one (`--upstream browser=URL`; the URL host must be the literal
 `127.0.0.1` or `::1`, redirects are refused, and the listener's owner uid must equal the daemon's).
 A tool Playwright adds later is filtered out until the catalog, `profile_vectors.json` and the
 tests are updated together (R1.5). Linux still passes every upstream tool through. Other
 `--upstream name=URL` upstreams keep the old rule: `owner` gets every tool they offer. The browser runs with the computer's **persistent profile**, including
 cookies for sites it is logged in to, and it reaches whatever network the computer reaches,
 localhost and the tailnet included. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary
-JavaScript in that profile.
+JavaScript in that profile. In the managed Playwright the user signs in to sites once in its own
+window, and an agent acts as the user on those sites; some sites may refuse an automated browser.
+Profile and cookies live in `~/Library/Application Support/oab-computer/playwright/profile/`
+and are deleted with the install.
 
 ### `observe`
 

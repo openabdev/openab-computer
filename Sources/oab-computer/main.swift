@@ -286,6 +286,14 @@ let playwrightBackend: PlaywrightBackend = {
     }
     return PlaywrightBackend(managed: playwrightLocator, log: log)
 }()
+// The installer writes the same root the locator reads, so an install, an update or a removal takes
+// effect on the next `browser_*` call with no restart. It is unused in external mode.
+let playwrightInstaller = PlaywrightInstaller.standard(
+    root: playwrightLocator.root,
+    stopManaged: { await playwrightBackend.shutdown() },
+    verifyServing: { await playwrightBackend.status().isReady },
+    onRemoved: { UserDefaultsBrowserPreferenceStore(log: log).resetIfPlaywright() },
+    log: log)
 let browserRouter = BrowserRouter(playwright: playwrightBackend,
                                   store: UserDefaultsBrowserPreferenceStore(log: log), log: log)
 let browserServed: Bool = opts.upstreams.contains(where: { $0.0 == "browser" })
@@ -403,6 +411,11 @@ log("oab-computer \(version) starting on http://\(opts.host):\(opts.port)\(opts.
     "accessibility=\(startupPermissions.accessibility.isGranted) " +
     "full_disk_access=\(startupPermissions.fullDiskAccess.isGranted)")
 for line in firstRunLines { log(line) }
+if !opts.upstreams.contains(where: { $0.0 == "browser" }) {
+    // Leftovers of an install that was killed halfway: staging directories, an orphaned version
+    // directory, a dead lock. Touches nothing else.
+    playwrightInstaller.sweepStaging()
+}
 http.start()
 if let attachManager {
     Task {

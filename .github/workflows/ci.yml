@@ -38,6 +38,20 @@ jobs:
           bash scripts/check-no-private-identifiers.sh
           bash scripts/test-check-no-private-identifiers.sh
 
+  playwright-pins-offline:
+    name: Playwright pins (offline check, #118 Q4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Script compiles and its unit tests pass (local server, no real network)
+        run: |
+          python3 -m py_compile scripts/playwright-pins.py scripts/test-playwright-pins.py
+          python3 scripts/test-playwright-pins.py
+      - name: Tracked pins, lockfile and the generated Swift constant agree
+        # Fails if the manifest embedded in the app differs from release/playwright-pins/, if a
+        # lockfile package is not on registry.npmjs.org or lacks sha512, or a pin is malformed.
+        run: python3 scripts/playwright-pins.py verify --offline
+
   pw-mcp-loopback:
     name: Playwright MCP stays on loopback (#115)
     runs-on: ubuntu-latest
