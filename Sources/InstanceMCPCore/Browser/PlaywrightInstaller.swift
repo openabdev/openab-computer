@@ -131,10 +131,9 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         catch { return .failure(.other("lock")) }
         // Only what this installer wrote: a record it wrote (`manifestId`) owns install.json, profile
         // and output; a version directory must carry the ownership marker.
-        // With no readable record, a root that holds one of our marked version directories is ours too.
-        let rec = readRecord()
-        let names0 = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
-        let ownsRoot = rec != nil ? rec?.manifestId != nil : names0.contains { hasOwnershipMarker($0) }
+        // An unreadable install.json proves nothing about ownership, so it, the profile and the output
+        // stay; marked version directories are still removed.
+        let ownsRoot = readRecord()?.manifestId != nil
         // install.json goes first so a browser_* call cannot respawn the child from a directory being deleted.
         if ownsRoot { try? fm.removeItem(at: root.appendingPathComponent("install.json")) }
         await stopManaged()
@@ -221,7 +220,9 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         return try? JSONDecoder().decode(Record.self, from: d)
     }
 
-    private func writeAtomically(_ data: Data, to url: URL) throws {
+    /// Writes `data` to a temp file and renames it over `url`, but only if `url` still holds `replacing`
+    /// (nil: it must not exist). A file changed by someone else meanwhile is never overwritten.
+    private func writeAtomically(_ data: Data, to url: URL, replacing: Data?) throws {
         let tmp = url.deletingLastPathComponent().appendingPathComponent("install.json.tmp-\(UUID().uuidString)")
         let fd = open(tmp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw PlaywrightInstallFailure.other("write_install_json") }
@@ -235,7 +236,15 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         }
         fsync(fd)
         Darwin.close(fd)
-        guard ok, rename(tmp.path, url.path) == 0 else { unlink(tmp.path); throw PlaywrightInstallFailure.other("write_install_json") }
+        guard ok else { unlink(tmp.path); throw PlaywrightInstallFailure.other("write_install_json") }
+        let current = try? Data(contentsOf: url)
+        guard current == replacing else { unlink(tmp.path); throw PlaywrightInstallFailure.other("foreign_install") }
+        // With nothing to replace the rename must not clobber a file that appears now.
+        let renamed = replacing == nil ? renamex_np(tmp.path, url.path, UInt32(RENAME_EXCL)) : rename(tmp.path, url.path)
+        guard renamed == 0 else {
+            unlink(tmp.path)
+            throw PlaywrightInstallFailure.other(replacing == nil && errno == EEXIST ? "foreign_install" : "write_install_json")
+        }
     }
 
     // MARK: lock
@@ -272,7 +281,19 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         } else if Date().timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) < 5 {
             return false
         }
-        return (try? FileManager.default.removeItem(at: lockURL)) != nil
+        // Rename first, so two reclaimers cannot delete a lock the other just took: only one rename wins,
+        // and a lock that turns out live is put back.
+        let judged = lockOwner()
+        let gone = root.appendingPathComponent(".install.lock.stale-\(UUID().uuidString)", isDirectory: true)
+        guard rename(lockURL.path, gone.path) == 0 else { return false }
+        let moved = (try? String(contentsOf: gone.appendingPathComponent("pid"), encoding: .utf8)) ?? ""
+        let judgedText = judged.map { "\($0.pid)" } ?? ""
+        if let o = judged, !moved.hasPrefix(judgedText) || pidAlive(o) {
+            if rename(gone.path, lockURL.path) != 0 { try? FileManager.default.removeItem(at: gone) }
+            return false
+        }
+        try? FileManager.default.removeItem(at: gone)
+        return true
     }
 
     private func lockIsLive() -> Bool {
@@ -351,6 +372,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
            readRecord()?.manifestId == nil {
             throw PlaywrightInstallFailure.other("foreign_install")
         }
+        // The install.json as it was when the install began: the commit replaces exactly this, or nothing.
+        let initialBytes = try? Data(contentsOf: root.appendingPathComponent("install.json"))
         let before = state()
         if case .installed(let id, _, _) = before, id == manifest.id { return before }
 
@@ -452,7 +475,10 @@ public final class PlaywrightInstaller: @unchecked Sendable {
             guard hasOwnershipMarker(manifest.id) else { throw PlaywrightInstallFailure.other("commit_collision") }
             try? fm.removeItem(at: target)   // an invalid leftover of ours
         }
-        let oldBytes = try? Data(contentsOf: root.appendingPathComponent("install.json"))
+        let oldBytes = initialBytes
+        guard (try? Data(contentsOf: root.appendingPathComponent("install.json"))) == initialBytes else {
+            throw PlaywrightInstallFailure.other("foreign_install")
+        }
         let old = readRecord()
         let hadInstall = old != nil
         do { try Data("oab-computer playwright install\n".utf8).write(to: staging.appendingPathComponent(Self.ownershipMarker)) }
@@ -471,7 +497,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         // Switch: the old process stops first, so two children never share one profile.
         try step(.switchOver, nil, progress)
         if hadInstall { await stopManaged() }
-        do { try writeAtomically(recData, to: root.appendingPathComponent("install.json")) }
+        do { try writeAtomically(recData, to: root.appendingPathComponent("install.json"), replacing: oldBytes) }
         catch {
             try? fm.removeItem(at: target)
             if !hadInstall { for d in createdDirs { try? fm.removeItem(at: root.appendingPathComponent(d)) } }
@@ -481,8 +507,11 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         guard serving else {
             // Roll back: the old install.json (or none), the old child, no new directory.
             await stopManaged()
-            if let oldBytes { try? writeAtomically(oldBytes, to: root.appendingPathComponent("install.json")) }
-            else { try? fm.removeItem(at: root.appendingPathComponent("install.json")) }
+            let ij = root.appendingPathComponent("install.json")
+            if (try? Data(contentsOf: ij)) == recData {   // only our own record is rolled back
+                if let oldBytes { try? writeAtomically(oldBytes, to: ij, replacing: recData) }
+                else { try? fm.removeItem(at: ij) }
+            }
             try? fm.removeItem(at: target)
             if hadInstall { _ = await verifyServing() }   // bring the old version's child back
             else { for d in createdDirs { try? fm.removeItem(at: root.appendingPathComponent(d)) } }

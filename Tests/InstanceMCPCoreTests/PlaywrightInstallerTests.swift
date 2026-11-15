@@ -441,7 +441,7 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertEqual(try String(contentsOf: theirs.appendingPathComponent("notes.txt")), "mine")
     }
 
-    func testRemoveWithoutAReadableRecordStillDeletesTheProfile() async throws {
+    func testRemoveWithoutAReadableRecordKeepsProfileAndOutputButDeletesTheVersionDirectory() async throws {
         let fx = try FakeInstallFixture()
         let i = fx.installer(root: root)
         _ = await installOK(i)
@@ -449,7 +449,8 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         try FileManager.default.removeItem(at: root.appendingPathComponent("install.json"))
         let rr = await i.remove()
         XCTAssertEqual(describe(rr), "ok")
-        XCTAssertEqual(children(), [])
+        XCTAssertEqual(children(), ["output", "profile"])
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/Cookies")), "cookie")
     }
 
     func testCrashBetweenRenameAndInstallJsonLeavesTheOldSelectedAndSweepCleans() async throws {
