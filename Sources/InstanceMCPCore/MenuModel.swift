@@ -324,7 +324,8 @@ extension MenuModel {
     /// menu touches no network and starts no process, and never shows a URL, tab title or page text.
     /// `installing` carries the progress of an install that is running now (nil while idle).
     public static func playwrightMenu(state: PlaywrightInstallState, plan: PlaywrightInstallPlan,
-                                      installing: PlaywrightInstallProgress??, lastFailed: Bool) -> [PlaywrightMenuItem] {
+                                      installing: PlaywrightInstallProgress??, lastFailed: Bool,
+                                      externalProvider: Bool = false) -> [PlaywrightMenuItem] {
         var items = [PlaywrightMenuItem(.setUp, WizardCopy.browserSetUpMenu)]
         if let progress = installing {
             let pct = progress?.fraction.map { " \(Int(min(max($0, 0), 1) * 100))%" } ?? ""
@@ -342,8 +343,11 @@ extension MenuModel {
             items.append(PlaywrightMenuItem(.install, WizardCopy.browserInstallMenu))
             items.append(PlaywrightMenuItem(.remove, WizardCopy.browserRemoveMenu))
         case .installed(let id, let updateAvailable, let stale):
-            items.append(PlaywrightMenuItem(.signIn, WizardCopy.browserSignInMenu,
-                                            tip: "Opens the managed browser window on its own profile."))
+            // With `--upstream browser=` the sign-in call would reach the external browser, not the managed one.
+            if !externalProvider {
+                items.append(PlaywrightMenuItem(.signIn, WizardCopy.browserSignInMenu,
+                                                tip: "Opens the managed browser window on its own profile."))
+            }
             if updateAvailable {
                 items.append(PlaywrightMenuItem(.update, WizardCopy.updateMenuTitle(installed: id, plan: plan),
                                                 tip: "Asks before downloading anything. The installed version keeps working if the update fails."))

@@ -39,6 +39,20 @@ final class BrowserWizardReviewFixTests: XCTestCase {
         XCTAssertTrue(note.contains("Apple Events"))
     }
 
+    func testSignInIsHiddenWhileAnExternalProviderIsConfigured() {
+        let installed = PlaywrightInstallState.installed(id: "a", updateAvailable: false, stale: false)
+        XCTAssertTrue(BrowserPageModel(installState: installed).footer.showsSignIn)
+        XCTAssertFalse(BrowserPageModel(installState: installed, externalProvider: true).footer.showsSignIn)
+        let plan = PlaywrightInstallPlan(manifest: .embedded, arch: .arm64, root: URL(fileURLWithPath: "/Users/someone/Library/Application Support/oab-computer/playwright"))
+        func kinds(_ ext: Bool) -> [PlaywrightMenuItem.Kind] {
+            MenuModel.playwrightMenu(state: installed, plan: plan, installing: nil, lastFailed: false,
+                                     externalProvider: ext).map(\.kind)
+        }
+        XCTAssertTrue(kinds(false).contains(.signIn))
+        XCTAssertFalse(kinds(true).contains(.signIn))
+        XCTAssertTrue(kinds(true).contains(.remove))
+    }
+
     func testTheBrowserPageIsOfferedWhenPermissionsAreAlreadyGrantedUntilCompleted() {
         let f = BrowserWizardPolicy.showsBrowserPageOnAutoSetup
         XCTAssertTrue(f(true, true, false))

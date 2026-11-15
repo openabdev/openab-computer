@@ -77,7 +77,7 @@ public struct BrowserPageModel: Equatable, Sendable {
                           showsContinueWithout: true, checkboxEnabled: true, showsCheckbox: true, showsSignIn: false)
         case .installed:
             return Footer(continueEnabled: true, showsContinue: true, showsCancel: false, showsRetry: false,
-                          showsContinueWithout: false, checkboxEnabled: false, showsCheckbox: false, showsSignIn: true)
+                          showsContinueWithout: false, checkboxEnabled: false, showsCheckbox: false, showsSignIn: !externalProvider)
         }
     }
 

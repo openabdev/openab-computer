@@ -453,7 +453,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             return .some(nil)
         }()
         let items = MenuModel.playwrightMenu(state: browserTools.installState, plan: browserTools.plan,
-                                             installing: installing, lastFailed: browserTools.lastFailed)
+                                             installing: installing, lastFailed: browserTools.lastFailed,
+                                             externalProvider: browserTools.model.externalProvider)
         for entry in items {
             let action: Selector?
             switch entry.kind {
