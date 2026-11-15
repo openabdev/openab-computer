@@ -1,0 +1,33 @@
+name: Playwright pins (online)
+
+# Re-downloads every pinned artifact and compares size and SHA-256 with release/playwright-pins/,
+# checks npm integrity against the registry, and that the pinned @playwright/mcp lists all 32 tools.
+# Runs when pins change, weekly (upstream can withdraw or replace an artifact), and on demand.
+# The offline check on every PR is in ci.yml; this one needs the network.
+
+on:
+  pull_request:
+    paths:
+      - "release/playwright-pins/**"
+      - "scripts/playwright-pins.py"
+      - "Sources/InstanceMCPCore/Browser/PlaywrightPins.generated.swift"
+      - ".github/workflows/playwright-pins-online.yml"
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-online:
+    name: Pins match upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Verify online, with a smoke start of the pinned MCP
+        run: python3 scripts/playwright-pins.py verify --online --smoke

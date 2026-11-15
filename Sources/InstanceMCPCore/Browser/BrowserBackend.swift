@@ -79,4 +79,9 @@ public struct UserDefaultsBrowserPreferenceStore: BrowserPreferenceStore, @unche
     }
 
     public func save(_ p: BrowserPreference) { defaults.set(p.rawValue, forKey: Self.key) }
+
+    /// After Playwright is removed (R7.7): a stored `playwright` preference goes back to `auto`.
+    public func resetIfPlaywright() {
+        if defaults.string(forKey: Self.key) == BrowserPreference.playwright.rawValue { defaults.removeObject(forKey: Self.key) }
+    }
 }

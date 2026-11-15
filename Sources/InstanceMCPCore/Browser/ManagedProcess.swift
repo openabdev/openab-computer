@@ -44,6 +44,12 @@ public final class StderrRing: @unchecked Sendable {
         return best?.1
     }
 
+    /// Whether any of the (lower-case) needles occurs. A yes/no only: the text stays in the ring.
+    func contains(anyOf needles: [String]) -> Bool {
+        let text = lock.withLock { String(decoding: data, as: UTF8.self) }.lowercased()
+        return needles.contains { text.contains($0) }
+    }
+
     var byteCount: Int { lock.withLock { data.count } }
     func snapshotForTests() -> String { lock.withLock { String(decoding: data, as: UTF8.self) } }
 }

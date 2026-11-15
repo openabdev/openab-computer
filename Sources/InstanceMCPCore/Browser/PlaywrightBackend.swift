@@ -63,7 +63,10 @@ public actor PlaywrightBackend: BrowserBackend {
     public var ownerSummary: String? { lastOwner.map { "\($0.name) (uid \($0.uid))" } }
 
     /// Stops the managed child, if one was started. Call on app quit.
-    public func shutdown() async { await managedTransport?.transport.shutdown(); managedTransport = nil }
+    public func shutdown() async {
+        health = nil; toolCache = nil   // a restarted child is judged afresh, never by the old one's cached status
+        await managedTransport?.transport.shutdown(); managedTransport = nil
+    }
 
     // MARK: external
 

@@ -65,6 +65,15 @@ jobs:
       - name: Test
         run: swift test --skip OsascriptToolTests
 
+      - name: Playwright pins match upstream
+        # The manifest inside the signed app (ADR browser-tiers Q4): the offline check, then every
+        # pinned artifact re-hashed against its upstream. No release ships pins that differ.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/playwright-pins.py verify --offline
+          python3 scripts/playwright-pins.py verify --online
+
       - name: Build universal release binary
         shell: bash
         run: |
