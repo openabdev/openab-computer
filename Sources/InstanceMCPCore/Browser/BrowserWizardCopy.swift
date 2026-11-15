@@ -79,12 +79,12 @@ extension WizardCopy {
     /// `PlaywrightInstaller.remove()`: only items that carry the installer's marker, or that an `install.json`
     /// written by the installer owns. A foreign or unreadable `install.json`, and the profile, stay.
     public static func removalConfirmation(path: String, home: String = NSHomeDirectory()) -> String {
-        "This removes what this app installed in \(displayPath(path, home: home)): Node.js, the Playwright MCP server, the downloaded Chromium, and the browser profile with its cookies and sign-ins, when this app created that profile. Anything there that this app did not create stays, for example an install.json made by hand and the profile it points to. It does not touch Chrome, Safari or ~/.local/oab-computer/. Agents lose the browser tools until you install it again."
+        "This removes what this app installed in \(displayPath(path, home: home)): Node.js, the Playwright MCP server, the downloaded Chromium, and the browser profile with its cookies and sign-ins, but only the items this app can confirm it created, which needs a readable install.json written by this app. Anything it cannot confirm stays, for example an install.json made by hand, an install.json that is unreadable or invalid, and the profile and output folder it points to. It does not touch Chrome, Safari or ~/.local/oab-computer/. Agents lose the browser tools until you install it again."
     }
 
     public static let removalDone = "Playwright was removed."
     public static func removalPartial(path: String, home: String = NSHomeDirectory()) -> String {
-        "Playwright was only partly removed. Some items in \(displayPath(path, home: home)) were not created by this app, so they were left in place. Delete them by hand if you want them gone."
+        "Playwright was only partly removed. Some items in \(displayPath(path, home: home)) could not be confirmed as created by this app (for example an install.json that is unreadable, invalid or made by hand, and the profile it points to), so they were left in place. Delete them by hand if you want them gone."
     }
     public static let installReady = "Playwright is ready."
     public static let removalFailed = "Playwright could not be removed completely. Quit any open Playwright browser window and try again."
