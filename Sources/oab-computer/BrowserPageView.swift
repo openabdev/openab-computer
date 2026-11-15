@@ -5,6 +5,7 @@ import InstanceMCPCore
 /// `BrowserPageModel` allows. It holds no state of its own; `render` redraws it from the model.
 @MainActor
 final class BrowserPageView: NSStackView {
+    let externalNote = NSTextField(wrappingLabelWithString: WizardCopy.browserExternalProviderNote)
     let checkbox = NSButton(checkboxWithTitle: WizardCopy.browserRowTitle, target: nil, action: nil)
     private let detail = NSTextField(wrappingLabelWithString: "")
     private let status = NSTextField(wrappingLabelWithString: "")
@@ -60,6 +61,12 @@ final class BrowserPageView: NSStackView {
         bar.translatesAutoresizingMaskIntoConstraints = false
         bar.widthAnchor.constraint(equalToConstant: 560).isActive = true
 
+        externalNote.font = .systemFont(ofSize: 12, weight: .medium)
+        externalNote.maximumNumberOfLines = 0
+        externalNote.preferredMaxLayoutWidth = 594
+        externalNote.isHidden = true
+        addArrangedSubview(externalNote)
+
         let card = NSStackView(views: [checkbox, detail, status, bar, progressLabel, failure, signInButton])
         card.orientation = .vertical
         card.alignment = .leading
@@ -99,6 +106,8 @@ final class BrowserPageView: NSStackView {
         let f = model.footer
         checkbox.state = model.checked ? .on : .off
         checkbox.isEnabled = f.checkboxEnabled
+        checkbox.isHidden = !f.showsCheckbox
+        externalNote.isHidden = !model.externalProvider
         switch model.phase {
         case .installed(let update):
             detail.stringValue = WizardCopy.browserSignInNote

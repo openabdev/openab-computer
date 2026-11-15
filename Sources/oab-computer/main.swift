@@ -291,7 +291,9 @@ let playwrightBackend: PlaywrightBackend = {
 let playwrightInstaller = PlaywrightInstaller.standard(
     root: playwrightLocator.root,
     stopManaged: { await playwrightBackend.shutdown() },
-    verifyServing: { await playwrightBackend.status().isReady },
+    // With an external provider the router serves that one, so the managed copy cannot be "serving" yet; its own
+    // health check already ran before this point.
+    verifyServing: { opts.upstreams.contains(where: { $0.0 == "browser" }) ? true : await playwrightBackend.status().isReady },
     onRemoved: { UserDefaultsBrowserPreferenceStore(log: log).resetIfPlaywright() },
     log: log)
 let browserRouter = BrowserRouter(playwright: playwrightBackend,
@@ -489,14 +491,13 @@ if opts.menuBar {
     let logPath = FirstRunSetup.logPath(home: firstRunHome ?? NSHomeDirectory())
     let exposure = tailnetExposure
     // The managed Playwright's install, update, removal and sign-in. With an operator-supplied external Playwright the
-    // installer manages nothing, so the wizard page and the menu items are left out.
-    let browserTools: BrowserToolsController? = opts.upstreams.contains(where: { $0.0 == "browser" })
-        ? nil
-        : MainActor.assumeIsolated {
-            BrowserToolsController(installer: playwrightInstaller, store: BrowserToolsStore(log: log),
-                                   signIn: { name, args in try await playwrightBackend.call(name, arguments: args) },
-                                   log: log)
-        }
+    // installer still manages its own folder; the page shows a note that the external provider is used first (R5.1).
+    let browserTools: BrowserToolsController? = MainActor.assumeIsolated {
+        BrowserToolsController(installer: playwrightInstaller, store: BrowserToolsStore(log: log),
+                               signIn: { name, args in try await playwrightBackend.call(name, arguments: args) },
+                               externalProvider: opts.upstreams.contains(where: { $0.0 == "browser" }),
+                               log: log)
+    }
     // With the exposure object the menu takes the tailnet URL from it (verified), so the base line is the local one.
     let publicURL = (exposure == nil ? opts.publicURL : nil) ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     statusItem = MainActor.assumeIsolated {

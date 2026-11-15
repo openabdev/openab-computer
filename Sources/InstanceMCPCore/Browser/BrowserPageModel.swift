@@ -38,7 +38,12 @@ public struct BrowserPageModel: Equatable, Sendable {
     /// The Playwright box. Pre-checked unless Playwright is already installed (R5.8).
     public private(set) var checked: Bool
 
-    public init(installState: PlaywrightInstallState) {
+    /// An operator-supplied external browser provider (`--upstream browser=`) is configured. The page is still
+    /// offered (R5.1); the view shows `WizardCopy.browserExternalProviderNote`.
+    public let externalProvider: Bool
+
+    public init(installState: PlaywrightInstallState, externalProvider: Bool = false) {
+        self.externalProvider = externalProvider
         switch installState {
         case .installed(_, let update, _): phase = .installed(updateAvailable: update); checked = false
         case .notInstalled, .invalid: phase = .idle; checked = true
@@ -54,6 +59,8 @@ public struct BrowserPageModel: Equatable, Sendable {
         public let showsRetry: Bool
         public let showsContinueWithout: Bool
         public let checkboxEnabled: Bool
+        /// Hidden once Playwright is installed: the "Installed" status replaces the box.
+        public let showsCheckbox: Bool
         public let showsSignIn: Bool
     }
 
@@ -61,16 +68,16 @@ public struct BrowserPageModel: Equatable, Sendable {
         switch phase {
         case .idle:
             return Footer(continueEnabled: true, showsContinue: true, showsCancel: false, showsRetry: false,
-                          showsContinueWithout: false, checkboxEnabled: true, showsSignIn: false)
+                          showsContinueWithout: false, checkboxEnabled: true, showsCheckbox: true, showsSignIn: false)
         case .installing:
             return Footer(continueEnabled: false, showsContinue: true, showsCancel: true, showsRetry: false,
-                          showsContinueWithout: false, checkboxEnabled: false, showsSignIn: false)
+                          showsContinueWithout: false, checkboxEnabled: false, showsCheckbox: true, showsSignIn: false)
         case .failed:
             return Footer(continueEnabled: false, showsContinue: false, showsCancel: false, showsRetry: true,
-                          showsContinueWithout: true, checkboxEnabled: true, showsSignIn: false)
+                          showsContinueWithout: true, checkboxEnabled: true, showsCheckbox: true, showsSignIn: false)
         case .installed:
             return Footer(continueEnabled: true, showsContinue: true, showsCancel: false, showsRetry: false,
-                          showsContinueWithout: false, checkboxEnabled: false, showsSignIn: true)
+                          showsContinueWithout: false, checkboxEnabled: false, showsCheckbox: false, showsSignIn: true)
         }
     }
 

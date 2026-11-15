@@ -324,6 +324,9 @@ final class BrowserCopyAndMenuTests: XCTestCase {
         let t = WizardCopy.removalConfirmation(path: "/Users/someone/x/playwright", home: "/Users/someone")
         XCTAssertTrue(t.contains("browser profile")); XCTAssertTrue(t.contains("cookies"))
         XCTAssertTrue(t.contains("does not touch Chrome, Safari or ~/.local/oab-computer/"))
+        XCTAssertFalse(t.contains("deletes"), "remove() leaves items it does not own")
+        XCTAssertTrue(t.contains("did not create stays"))
+        XCTAssertTrue(t.contains("install.json made by hand"))
         XCTAssertTrue(t.contains("~/x/playwright"))
     }
 

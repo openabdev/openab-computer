@@ -75,14 +75,31 @@ extension WizardCopy {
 
     public static let staleLine = "Playwright's Chromium is older than this app expects. Update to refresh it."
 
-    /// What Remove deletes (R7.7). It names the profile and says what it does not touch.
+    /// What Remove deletes (R7.7). It names what the installer removes and what it leaves, in the terms of
+    /// `PlaywrightInstaller.remove()`: only items that carry the installer's marker, or that an `install.json`
+    /// written by the installer owns. A foreign or unreadable `install.json`, and the profile, stay.
     public static func removalConfirmation(path: String, home: String = NSHomeDirectory()) -> String {
-        "This deletes \(displayPath(path, home: home)): Node.js, the Playwright MCP server, the downloaded Chromium, and the browser profile, including cookies and the sites you signed in to. It does not touch Chrome, Safari or ~/.local/oab-computer/. Agents lose the browser tools until you install it again."
+        "This removes what this app installed in \(displayPath(path, home: home)): Node.js, the Playwright MCP server, the downloaded Chromium, and the browser profile with its cookies and sign-ins, when this app created that profile. Anything there that this app did not create stays, for example an install.json made by hand and the profile it points to. It does not touch Chrome, Safari or ~/.local/oab-computer/. Agents lose the browser tools until you install it again."
     }
 
     public static let removalDone = "Playwright was removed."
+    public static func removalPartial(path: String, home: String = NSHomeDirectory()) -> String {
+        "Playwright was only partly removed. Some items in \(displayPath(path, home: home)) were not created by this app, so they were left in place. Delete them by hand if you want them gone."
+    }
     public static let installReady = "Playwright is ready."
     public static let removalFailed = "Playwright could not be removed completely. Quit any open Playwright browser window and try again."
+
+    /// The truthful message for what a Remove left behind.
+    public static func removalMessage(_ outcome: PlaywrightRemovalOutcome, path: String, home: String = NSHomeDirectory()) -> String {
+        switch outcome {
+        case .removed: return removalDone
+        case .partial: return removalPartial(path: path, home: home)
+        case .failed: return removalFailed
+        }
+    }
+
+    /// Shown on the Browser tools page when `--upstream browser=` is set (R5.1: the page is always offered).
+    public static let browserExternalProviderNote = "An external browser provider is configured for this app (--upstream browser=). In Automatic mode agents use it first, ahead of Chrome or Safari through Apple Events. Installing Playwright here does not change that while the option is set; it only prepares the managed copy for when the option is removed."
 
     public static func signInFailed(_ errorClass: String) -> String {
         "The Playwright window could not be opened (\(errorClass)). Check that Playwright is installed, then try again."

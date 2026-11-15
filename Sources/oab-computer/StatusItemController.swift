@@ -152,6 +152,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         clearSpentIfGranted(snapshot)
         if snapshot.allGranted {
             store.hasShown = true
+            // Permissions are done, but the Browser tools page is offered until it has been completed once (R5.1).
+            let offerBrowser = BrowserWizardPolicy.showsBrowserPageOnAutoSetup(
+                allGranted: true, browserOffered: browserTools != nil,
+                pageCompleted: browserTools?.pageIsCompleted ?? true)
+            if offerBrowser { openPermissionSetup(page: .browser) }
             return
         }
         if PermissionSetupPolicy.shouldAutoShow(hasShown: store.hasShown, snapshot: snapshot) {
@@ -512,10 +517,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertSecondButtonReturn else { return }
         Task { @MainActor [weak self] in
-            switch await browserTools.remove() {
-            case .success: self?.showAlert("Playwright", WizardCopy.removalDone)
-            case .failure: self?.showAlert("Playwright", WizardCopy.removalFailed)
-            }
+            let outcome = await browserTools.remove()
+            self?.showAlert("Playwright", WizardCopy.removalMessage(outcome, path: browserTools.plan.installPath))
         }
     }
 

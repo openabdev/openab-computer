@@ -17,12 +17,13 @@ final class BrowserToolsController {
 
     init(installer: PlaywrightInstaller, store: BrowserToolsStore,
          signIn: @escaping @Sendable (String, JSONValue) async throws -> JSONValue,
+         externalProvider: Bool = false,
          log: @escaping @Sendable (String) -> Void) {
         self.installer = installer
         self.store = store
         self.signInCall = signIn
         self.log = log
-        self.model = BrowserPageModel(installState: installer.state())
+        self.model = BrowserPageModel(installState: installer.state(), externalProvider: externalProvider)
     }
 
     var plan: PlaywrightInstallPlan { installer.plan() }
@@ -49,7 +50,7 @@ final class BrowserToolsController {
     /// is already running. The caller has already shown the consent text (wizard row or menu sheet).
     @discardableResult
     func startInstall(finished: @escaping (Result<PlaywrightInstallState, PlaywrightInstallFailure>, BrowserPageStep) -> Void) -> Bool {
-        if !model.isInstalling, !model.beginInstall() { return false }
+        guard model.beginInstall() else { return false }
         runInstall(finished: finished)
         return true
     }
@@ -95,6 +96,9 @@ final class BrowserToolsController {
 
     // MARK: page completion
 
+    /// The page has been completed once (install, decline or continue without).
+    var pageIsCompleted: Bool { store.pageCompleted }
+
     /// Records how the Browser tools page ended.
     func pageCompleted(_ completion: BrowserPageCompletion) {
         store.record(BrowserPageModel.offer(after: completion))
@@ -103,13 +107,17 @@ final class BrowserToolsController {
 
     // MARK: removal and sign-in
 
-    func remove() async -> Result<Void, PlaywrightInstallFailure> {
-        if model.isInstalling { return .failure(.lockHeld) }
+    /// Removes what the installer owns, then re-reads the state and the folder: `remove()` succeeds while it
+    /// leaves a foreign or unreadable `install.json` and the profile, so the outcome says what is really left.
+    func remove() async -> PlaywrightRemovalOutcome {
+        if model.isInstalling { return .failed }
         let r = await installer.remove()
         if case .success = r { lastFailed = false }
         model.sync(installer.state())
         notify()
-        return r
+        return PlaywrightRemovalOutcome.classify(
+            result: r, state: installer.state(),
+            folderRemains: FileManager.default.fileExists(atPath: installer.plan().installPath))
     }
 
     func signIn() async -> PlaywrightSignIn.Outcome {

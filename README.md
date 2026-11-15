@@ -566,9 +566,14 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   the menu bar: **Set up browser tools…**, **Install Playwright…** (asks first, with the same text),
   **Update Playwright… (x → y)** (shown only when this app carries a newer pinned version; it asks
   before downloading, and a failed update leaves the installed version running), **Remove
-  Playwright…** (asks first; deletes the Playwright folder including the browser profile and its
-  cookies, and leaves Chrome, Safari and `~/.local/oab-computer/` alone), and **Open Playwright
-  window to sign in…**. Opening the menu reads one local file and starts nothing. The installer
+  Playwright…** (asks first; removes what the installer created in the Playwright folder, including
+  the browser profile and its cookies when the installer created that profile. A hand-made
+  `install.json` and what it points to stay, and the app then says it removed only part; Chrome,
+  Safari and `~/.local/oab-computer/` are never touched), and **Open Playwright
+  window to sign in…**. With `--upstream browser=…` the page and the menu items are still offered,
+  with a note that the external provider is used first in Automatic mode. A launch with every
+  permission granted opens the Browser tools page until it has been completed once. Opening the
+  menu reads `install.json` and checks the installed files, and starts nothing. The installer
   and what it fetches are described under [What the app downloads](#what-the-app-downloads); an
   install, update or removal takes effect on the next `browser_*` call with no restart.
 - **Signing in once.** **Open Playwright window to sign in…** starts the managed browser if needed and
