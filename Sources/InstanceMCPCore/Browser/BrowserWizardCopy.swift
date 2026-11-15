@@ -25,7 +25,7 @@ extension WizardCopy {
     public static let browserCancelInstallMenu = "Cancel Playwright Install"
 
     /// Shown before the sign-in window opens, and on the page next to its button.
-    public static let browserSignInNote = "A separate browser window opens with its own profile. Sign in to the sites you want agents to use. The login stays in that profile until you remove Playwright. Some sites may refuse an automated browser."
+    public static let browserSignInNote = "A separate browser window opens with its own profile. Sign in to the sites you want agents to use. The login stays in that profile. Removing Playwright deletes the profile only when this app created it and its install record is readable. Some sites may refuse an automated browser."
 
     /// "about N MB", decimal megabytes rounded up so the figure is never lower than the download.
     public static func megabytes(_ bytes: Int64) -> String {

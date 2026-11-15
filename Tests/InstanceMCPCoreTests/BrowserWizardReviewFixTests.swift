@@ -84,4 +84,9 @@ final class BrowserWizardReviewFixTests: XCTestCase {
         _ = f.finished(.failure(.offline))
         XCTAssertTrue(f.footer.showsCheckbox)
     }
+
+    func testSignInNoteDoesNotPromiseRemovalDeletesProfile() {
+        XCTAssertFalse(WizardCopy.browserSignInNote.contains("until you remove"))
+        XCTAssertTrue(WizardCopy.browserSignInNote.contains("only when this app created it"))
+    }
 }

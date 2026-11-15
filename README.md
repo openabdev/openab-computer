@@ -321,7 +321,7 @@ the download (and never less than the on-disk size) while it runs and an interne
   browser, the install stops with that message.
 - The Chromium it installs is a browser: the connections it makes while running (the pages it opens, and any background service Chrome for Testing contacts) are Chromium's, not the installer's, and the app does not bound them. On the pinned build it opened no listening TCP or UDP socket, and it exits when its stdin closes.
 - The install adds no LaunchAgent and no listener. An update is only ever offered, never applied
-  silently. Removing Playwright deletes the version folders that carry the installer's marker (even when `install.json` is unreadable, invalid or hand-made), and also the browser profile and its cookies when the installer's own, readable `install.json` confirms it created that profile (a profile or output folder that already existed is never used: install stops and leaves it alone). A hand-made `install.json` is never replaced or removed: install refuses and remove leaves it, and what it points at, alone. An `install.json` that is unreadable or invalid proves nothing, so remove leaves it and the profile and output folder too, even if this app created them.
+  silently. Removing Playwright deletes the version folders that carry the installer's marker (even when `install.json` is unreadable, invalid or hand-made), and also the browser profile and its cookies when the installer's own, readable `install.json` confirms it created that profile (a profile or output folder that already existed is never used: install stops and leaves it alone). A hand-made `install.json` is never replaced or removed: install refuses and remove leaves it alone (a version folder carrying the installer's marker is still removed). An `install.json` that is unreadable or invalid proves nothing, so remove leaves it and the profile and output folder too, even if this app created them.
 - The numbers above come from the manifest in `release/playwright-pins/`; the release check
   (`scripts/playwright-pins.py`, run in CI) fails if they drift.
 
@@ -579,7 +579,8 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
 - **Signing in once.** **Open Playwright window to sign in…** starts the managed browser if needed and
   opens a headed Chromium window on the managed browser's own persistent profile (not your Chrome or
   Safari). Sign in to the sites you want agents to use; the session stays in that profile, including
-  after the app or the browser restarts, until you remove Playwright. The profile holds cookies, so
+  after the app or the browser restarts. Removing Playwright deletes the profile only when this app
+  created it and its install record is readable; otherwise the profile stays. The profile holds cookies, so
   browser tools are owner-level (see above). Some sites may refuse an automated browser, and the app
   cannot change that.
 

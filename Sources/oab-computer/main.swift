@@ -287,7 +287,7 @@ let playwrightBackend: PlaywrightBackend = {
     return PlaywrightBackend(managed: playwrightLocator, log: log)
 }()
 // The installer writes the same root the locator reads, so an install, an update or a removal takes
-// effect on the next `browser_*` call with no restart. It is unused in external mode.
+// effect on the next `browser_*` call with no restart. In external mode the serving check is skipped.
 let playwrightInstaller = PlaywrightInstaller.standard(
     root: playwrightLocator.root,
     stopManaged: { await playwrightBackend.shutdown() },
