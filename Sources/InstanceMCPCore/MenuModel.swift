@@ -303,3 +303,58 @@ extension MenuModel {
         return NetworkSection(header: "Network", rows: rows)
     }
 }
+
+// MARK: Playwright items
+
+public struct PlaywrightMenuItem: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        /// A disabled text line.
+        case line
+        case setUp, install, update, remove, signIn, cancelInstall
+    }
+    public let kind: Kind
+    public let title: String
+    public let tip: String?
+    public init(_ kind: Kind, _ title: String, tip: String? = nil) { self.kind = kind; self.title = title; self.tip = tip }
+    public var isAction: Bool { kind != .line }
+}
+
+extension MenuModel {
+    /// The Playwright items of the menu bar (R5.9, R7.7). They come from `install.json` state alone, so opening the
+    /// menu touches no network and starts no process, and never shows a URL, tab title or page text.
+    /// `installing` carries the progress of an install that is running now (nil while idle).
+    public static func playwrightMenu(state: PlaywrightInstallState, plan: PlaywrightInstallPlan,
+                                      installing: PlaywrightInstallProgress??, lastFailed: Bool,
+                                      externalProvider: Bool = false) -> [PlaywrightMenuItem] {
+        var items = [PlaywrightMenuItem(.setUp, WizardCopy.browserSetUpMenu)]
+        if let progress = installing {
+            let pct = progress?.fraction.map { " \(Int(min(max($0, 0), 1) * 100))%" } ?? ""
+            items.append(PlaywrightMenuItem(.line, "Playwright: installing…\(pct)"))
+            items.append(PlaywrightMenuItem(.cancelInstall, WizardCopy.browserCancelInstallMenu))
+            return items
+        }
+        switch state {
+        case .notInstalled:
+            if lastFailed { items.append(PlaywrightMenuItem(.line, "Playwright: the last install did not finish")) }
+            items.append(PlaywrightMenuItem(.install, WizardCopy.browserInstallMenu,
+                                            tip: "Downloads Node.js, the Playwright MCP server and Chromium after you confirm."))
+        case .invalid:
+            items.append(PlaywrightMenuItem(.line, "Playwright: install not usable"))
+            items.append(PlaywrightMenuItem(.install, WizardCopy.browserInstallMenu))
+            items.append(PlaywrightMenuItem(.remove, WizardCopy.browserRemoveMenu))
+        case .installed(let id, let updateAvailable, let stale):
+            // With `--upstream browser=` the sign-in call would reach the external browser, not the managed one.
+            if !externalProvider {
+                items.append(PlaywrightMenuItem(.signIn, WizardCopy.browserSignInMenu,
+                                                tip: "Opens the managed browser window on its own profile."))
+            }
+            if updateAvailable {
+                items.append(PlaywrightMenuItem(.update, WizardCopy.updateMenuTitle(installed: id, plan: plan),
+                                                tip: "Asks before downloading anything. The installed version keeps working if the update fails."))
+            }
+            if stale { items.append(PlaywrightMenuItem(.line, WizardCopy.staleLine)) }
+            items.append(PlaywrightMenuItem(.remove, WizardCopy.browserRemoveMenu))
+        }
+        return items
+    }
+}

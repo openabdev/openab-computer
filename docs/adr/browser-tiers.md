@@ -305,7 +305,7 @@ Assets: the user's signed-in sessions and cookies, page content, values typed th
 | An upstream error or redirect that leaks data or moves a request | The external adapter follows no redirects and returns fixed error classes with no upstream text. Managed stderr is kept only in a bounded in-memory buffer, never persisted or returned. |
 | A pre-checked download most users accept unread | The text names sources, size and verification and never calls the result safe. Every artifact is checked against the embedded manifest before use. Unchecking is always available, and **Continue without** appears after a failure. |
 | Archive extraction escaping the staging directory | The app validates the whole archive before writing anything, then extracts relative to a directory descriptor without following links. |
-| Secrets in the Playwright profile | The profile is a 0700 directory under the user's account, never copied or logged, excluded from backup, and deleted by **Remove Playwright…**. There is no encryption beyond Chromium's own. |
+| Secrets in the Playwright profile | The profile is a 0700 directory under the user's account, never copied or logged, excluded from backup, and deleted by **Remove Playwright…** when the installer's own `install.json` is readable and valid; with a foreign, unreadable or invalid `install.json` Remove leaves the profile and its cookies in place. There is no encryption beyond Chromium's own. |
 | Environment leakage into children | `osascript` and Playwright get an allow-list environment; the bearer token and cloud or `GH_*` style variables are not passed. |
 
 Residual trust in the download, stated plainly: this is integrity against a pinned manifest,

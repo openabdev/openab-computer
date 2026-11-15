@@ -321,7 +321,7 @@ the download (and never less than the on-disk size) while it runs and an interne
   browser, the install stops with that message.
 - The Chromium it installs is a browser: the connections it makes while running (the pages it opens, and any background service Chrome for Testing contacts) are Chromium's, not the installer's, and the app does not bound them. On the pinned build it opened no listening TCP or UDP socket, and it exits when its stdin closes.
 - The install adds no LaunchAgent and no listener. An update is only ever offered, never applied
-  silently. Removing Playwright deletes what the installer created in that folder, including the browser profile and its cookies when the installer created that profile (a profile or output folder that already existed is never used: install stops and leaves it alone). A hand-made `install.json` is never replaced or removed: install refuses and remove leaves it, and what it points at, alone.
+  silently. Removing Playwright deletes the version folders that carry the installer's marker (even when `install.json` is unreadable, invalid or hand-made), and also the browser profile and its cookies when the installer's own, readable `install.json` confirms it created that profile (a profile or output folder that already existed is never used: install stops and leaves it alone). A hand-made `install.json` is never replaced or removed: install refuses and remove leaves it alone (a version folder carrying the installer's marker is still removed). An `install.json` that is unreadable or invalid proves nothing, so remove leaves it and the profile and output folder too, even if this app created them.
 - The numbers above come from the manifest in `release/playwright-pins/`; the release check
   (`scripts/playwright-pins.py`, run in CI) fails if they drift.
 
@@ -554,7 +554,35 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   backoff (1 s, 2 s, 4 s, up to 30 s) and is marked unavailable after 5 failures in 2 minutes. Its
   stderr is kept in memory only and is never written to a log. With nothing installed, the browser
   tools are not listed, a call says Playwright is not installed, and `sys_info` and the menu show
-  the same. The installer is part of this build ([What the app downloads](#what-the-app-downloads)); the wizard page and the menu entries that start it arrive in a separate change, so until then nothing triggers a download.
+  the same.
+- **Installing, updating and removing the managed Playwright.** The setup wizard has a **Browser
+  tools** page after Full Disk Access and before the optional tailnet page. Its Playwright box is
+  **pre-checked**; the text shows the download size, the three hosts, the install folder and the free
+  disk needed, all taken from the manifest built into the app, and says to **uncheck it to skip**.
+  Nothing is downloaded until you press **Continue** with the box checked; with the box unchecked,
+  Continue goes on and downloads nothing. The wizard always finishes: offline, or after a failed
+  download or check, the page shows what went wrong with **Retry** and **Continue without**, and
+  Playwright simply stays not installed. Closing the window is not completion. The same steps are in
+  the menu bar: **Set up browser tools…**, **Install Playwright…** (asks first, with the same text),
+  **Update Playwright… (x → y)** (shown only when this app carries a newer pinned version; it asks
+  before downloading, and a failed update leaves the installed version running), **Remove
+  Playwright…** (asks first; removes the marker-carrying version folders even when `install.json` is bad, and
+  the browser profile and its cookies when the app's own readable `install.json` confirms it created that profile. A hand-made, unreadable or invalid
+  `install.json` and what it points to stay, and the app then says it removed only part; Chrome,
+  Safari and `~/.local/oab-computer/` are never touched), and **Open Playwright
+  window to sign in…**. With `--upstream browser=…` the page and the menu items (except sign-in) are still offered,
+  with a note that the external provider is used first in Automatic mode. A launch with every
+  permission granted opens the Browser tools page until it has been completed once. Opening the
+  menu reads `install.json` and checks the installed files, and starts nothing. The installer
+  and what it fetches are described under [What the app downloads](#what-the-app-downloads); an
+  install, update or removal takes effect on the next `browser_*` call with no restart.
+- **Signing in once.** **Open Playwright window to sign in…** starts the managed browser if needed and
+  opens a headed Chromium window on the managed browser's own persistent profile (not your Chrome or
+  Safari). Sign in to the sites you want agents to use; the session stays in that profile, including
+  after the app or the browser restarts. Removing Playwright deletes the profile only when this app
+  created it and its install record is readable; otherwise the profile stays. The profile holds cookies, so
+  browser tools are owner-level (see above). Some sites may refuse an automated browser, and the app
+  cannot change that.
 
 ## Download and install
 
@@ -567,12 +595,15 @@ Tagged releases publish a universal, Developer-ID-signed and Apple-notarized ins
    bearer token, installs the LaunchAgent, detects the Playwright upstream, and configures
    `tailscale serve :8444`.
 4. On first launch, the **Set Up Mac Permissions** window opens if a required permission is missing. It
-   has two pages. Page 1 asks for Screen Recording and Accessibility, and you cannot finish it until
+   has three pages. Page 1 asks for Screen Recording and Accessibility, and you cannot finish it until
    both are on. Click Allow on each row, turn the switch on in System Settings, and return to the
    wizard, which re-tests on its own. Use Check Again if the row does not update. Page 2 is optional
-   Full Disk Access, which has a Skip link. Browser tools work without any of them. Future releases
+   Full Disk Access, which has a Skip link. Page 3 offers to install Playwright (pre-checked; uncheck it
+   to skip; see [Browser tools](#browser-tools-for-lent-sessions---upstream)), and the wizard completes
+   with or without it. A fourth page, tailnet access, appears only when a Tailscale login is detected.
+   Browser tools work without Full Disk Access. Future releases
    keep the same Developer ID + bundle id, so grants survive (the 0.12 rename changed the bundle id once; see [Upgrading from 0.11 or earlier](#upgrading-from-011-or-earlier)).
-5. The same wizard remains available from the menu bar as **Set Up Permissions…**; use the menu
+5. The same wizard remains available from the menu bar as **Set Up Permissions…** (and **Set up browser tools…**, which opens it on the Browser tools page); use the menu
    item to copy the MCP URL and bearer token into OpenAB Connect/Remote.
 
 Linux hands nodes: see [Quick start](#quick-start) and [`docs/linux-setup.md`](docs/linux-setup.md).
@@ -701,7 +732,7 @@ With `--menu-bar` (deploy.sh sets it) the agent shows a status item: the name "O
 (click to copy), a masked bearer token line (click to copy the full token), live ✓/✗/? rows for
 Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window, which opens on launch when a permission is missing and
 reopens while Screen Recording or Accessibility is still off), session / call counters with the
-last tool call, Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
+last tool call, the Playwright items (install, update, remove, sign in; see [Browser tools](#browser-tools-for-lent-sessions---upstream)), Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
 for each permission. Its Allow button calls the system permission request and re-tests, and it
 opens the pane only if the permission is still off. The window re-tests when the app becomes
 active or the user clicks Check Again. The menu bar checks Screen Recording and Accessibility every

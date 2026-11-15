@@ -77,7 +77,7 @@ the same names and contract on both (#32 item 4).
 On macOS, `owner` gets the 32 `browser_*` tools in `BrowserToolCatalog`, served by the browser
 router. Its Playwright is either the managed one (an installed `@playwright/mcp` run as a child over
 stdio, no listener; the app downloads it only when you ask, see the README's "What the app
-downloads") or an external one (`--upstream browser=URL`; the URL host must be the literal
+downloads"; the wizard's Browser tools page and the menu bar install, update and remove it, and **Open Playwright window to sign in…** opens its headed window once to sign in) or an external one (`--upstream browser=URL`; the URL host must be the literal
 `127.0.0.1` or `::1`, redirects are refused, and the listener's owner uid must equal the daemon's).
 A tool Playwright adds later is filtered out until the catalog, `profile_vectors.json` and the
 tests are updated together (R1.5). Linux still passes every upstream tool through. Other

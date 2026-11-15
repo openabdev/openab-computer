@@ -275,11 +275,15 @@ callers written for Playwright work unchanged. Unsupported options (for example
 
   Consent is the user pressing **Continue** with the box checked. Nothing is downloaded before
   that, and the copy never calls the result safe. When the install finishes, the row shows
-  **Open Playwright browser to sign in…**.
+  **Open Playwright window to sign in…**.
+  When the install was started from the wizard's Continue, the page completes and the wizard
+  advances at once (R5.6), so the sign-in button is seen when the page is reopened from
+  **Set up browser tools…** and in the menu. This implementation offers only the Playwright row;
+  the Apple Events rows arrive with their tier.
 - R5.9 **Menu bar.** The browser row reads, for example,
   `Browser tools: Playwright ready · Apple Events (Chrome ready)` or `Playwright not installed`.
   Items: **Set up browser tools…**, **Install Playwright…** (when not installed or failed),
-  **Open Playwright browser to sign in…**, **Remove Playwright…**,
+  **Open Playwright window to sign in…**, **Remove Playwright…**,
   **Prefer: Auto / Apple Events / Playwright**, and the target-browser choice. No URL, tab title
   or page text is ever shown there.
 - R5.10 **Persisted values** (`UserDefaults`, prefix `browserTools.`): `backend.v1`,
@@ -467,12 +471,17 @@ nor Chromium opens a listening socket (V12).
   successful health check. A failed update leaves the old version running. There is no silent
   update. The menu warns when the installed Chromium revision is older than the manifest's by more
   than the manifest's `staleAfterDays`.
-- **Removal.** **Remove Playwright…** confirms what is deleted (`playwright/`, including the
-  browser profile and its cookies), stops the process, deletes
-  `~/Library/Application Support/oab-computer/playwright/`, and clears the stored backend
-  preference if it was `playwright`. It touches nothing under `~/.local/oab-computer/`, Chrome or
-  Safari, and does not turn off a browser's JavaScript-from-Apple-Events switch (the confirmation
-  says so). It is safe to repeat.
+- **Removal.** **Remove Playwright…** confirms what is deleted, stops the process, and deletes only
+  what the installer can prove it created. Version folders under
+  `~/Library/Application Support/oab-computer/playwright/` that carry the installer's marker are
+  deleted even when `install.json` is unreadable, invalid or foreign. `install.json`, the browser
+  profile (with its cookies) and the output folder are deleted only when a readable `install.json`
+  written by the installer confirms ownership, and the profile and output folder also need the
+  installer's data marker. Anything else stays in place. The app re-reads the install state
+  afterwards and says so when something was left, instead of reporting a full removal. It clears
+  the stored backend preference if it was `playwright`. It touches nothing under
+  `~/.local/oab-computer/`, Chrome or Safari, and does not turn off a browser's
+  JavaScript-from-Apple-Events switch (the confirmation says so). It is safe to repeat.
 - Uninstalling the app does not remove this directory; **Remove Playwright…** is the way.
 
 #### R7.8 Existing listener on 8794
@@ -487,7 +496,7 @@ ignored; the managed child uses stdio, so a busy 8794 does not affect it.
 
 The user signs in once in the Playwright headed window and the persistent profile
 (`playwright/profile/`, 0700, shared across versions) keeps the session. There is no cookie import
-from Chrome or Safari. Entry points: **Open Playwright browser to sign in…** on the wizard page and
+from Chrome or Safari. Entry points: **Open Playwright window to sign in…** on the wizard page and
 in the menu. It starts the managed child if needed and makes one internal `browser_navigate` to
 `about:blank`, which opens the headed Chromium window; the user types the site into its address
 bar. That call is not logged with any URL.
@@ -497,7 +506,9 @@ Stated limits:
 - Some sites block or challenge automated browsers. This is not verified for any site; the wizard
   text says "some sites may refuse an automated browser".
 - The profile holds the user's cookies for those sites, protected by the 0700 directory and
-  Chromium's own storage, with no further encryption. **Remove Playwright…** deletes it.
+  Chromium's own storage, with no further encryption. **Remove Playwright…** deletes it
+  only when a readable `install.json` written by the installer confirms ownership (R7.7); otherwise
+  the profile is left and the app says so.
 - The user should not use the same window while an agent is acting. The managed child owns the
   profile lock, so a second Chromium on the profile fails with `profile_locked`.
 - `--idle-timeout` (30 minutes) closes the browser when idle; the session survives in the profile.
