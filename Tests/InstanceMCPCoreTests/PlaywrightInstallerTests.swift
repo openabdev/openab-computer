@@ -398,6 +398,27 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertTrue(logs.value.contains("browser: playwright_update_rolled_back"))
     }
 
+    func testAHandWrittenRecordWithAForgedManifestIdIsNeverOverwrittenOrRemoved() async throws {
+        let hand = root.appendingPathComponent("handmade")
+        try FileManager.default.createDirectory(at: hand.appendingPathComponent("node/bin"), withIntermediateDirectories: true)
+        for d in ["profile", "output"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(d), withIntermediateDirectories: true)
+            try Data("mine".utf8).write(to: root.appendingPathComponent(d).appendingPathComponent("keep"))
+        }
+        let rec = Data("{\"version\":\"handmade\",\"chromiumExecutable\":\"x\",\"manifestId\":\"handmade\"}".utf8)
+        try rec.write(to: root.appendingPathComponent("install.json"))
+        let fx = try FakeInstallFixture()
+        let f = await installFailure(fx.installer(root: root))
+        XCTAssertEqual(f, .other("foreign_install"))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("install.json")), rec)
+        let rr = await fx.installer(root: root).remove()
+        XCTAssertEqual(describe(rr), "ok")
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("install.json")), rec)
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("output/keep")), "mine")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: hand.path))
+    }
+
     func testAHandMadeInstallIsNeverOverwritten() async throws {
         let hand = root.appendingPathComponent("handmade")
         try FileManager.default.createDirectory(at: hand.appendingPathComponent("node/bin"), withIntermediateDirectories: true)

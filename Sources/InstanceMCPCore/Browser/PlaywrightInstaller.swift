@@ -133,7 +133,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         // and output; a version directory must carry the ownership marker.
         // An unreadable install.json proves nothing about ownership, so it, the profile and the output
         // stay; marked version directories are still removed.
-        let ownsRoot = readRecord()?.manifestId != nil
+        let ownsRoot = recordIsOurs(readRecord())
         // install.json goes first so a browser_* call cannot respawn the child from a directory being deleted.
         if ownsRoot { try? fm.removeItem(at: root.appendingPathComponent("install.json")) }
         await stopManaged()
@@ -213,6 +213,13 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         var installedAt: String?
         var previous: String?
         var digests: Digests?
+    }
+
+    /// A record is the installer's own only if `manifestId` names its version AND that version directory
+    /// carries the ownership marker the installer wrote. Hand-written JSON cannot fake the marker check.
+    func recordIsOurs(_ r: Record?) -> Bool {
+        guard let r, let id = r.manifestId, id == r.version, Self.safeVersion(r.version) else { return false }
+        return hasOwnershipMarker(r.version)
     }
 
     func readRecord() -> Record? {
@@ -369,7 +376,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         // An install.json this installer did not write (no `manifestId`, or unreadable) is the user's
         // configuration: it is never replaced, and nothing it points at is touched.
         if FileManager.default.fileExists(atPath: root.appendingPathComponent("install.json").path),
-           readRecord()?.manifestId == nil {
+           !recordIsOurs(readRecord()) {
             throw PlaywrightInstallFailure.other("foreign_install")
         }
         // The install.json as it was when the install began: the commit replaces exactly this, or nothing.
@@ -522,7 +529,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         for n in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] where n != manifest.id && hasOwnershipMarker(n) {
             try? fm.removeItem(at: root.appendingPathComponent(n))
         }
-        if let o = old, o.manifestId != nil, o.version != manifest.id, Self.safeVersion(o.version), hasOwnershipMarker(o.version) {
+        if let o = old, recordIsOurs(o), o.version != manifest.id, Self.safeVersion(o.version), hasOwnershipMarker(o.version) {
             let prev = o.version
             try? fm.removeItem(at: root.appendingPathComponent(prev))
         }
