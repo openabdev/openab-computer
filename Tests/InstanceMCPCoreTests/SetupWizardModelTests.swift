@@ -62,11 +62,11 @@ final class SetupWizardPageTests: XCTestCase {
     }
 
     func testPageTwoShowsSkipUntilFullDiskAccessIsGranted() {
-        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: coreGranted), .skip)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: coreGranted), .skipToBrowser)
         let unknown = PermissionSnapshot(screenRecording: .granted, accessibility: .granted, fullDiskAccess: .unknown)
-        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: unknown), .skip)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: unknown), .skipToBrowser)
         let fdaGranted = PermissionSnapshot(screenRecording: .granted, accessibility: .granted, fullDiskAccess: .granted)
-        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: fdaGranted), .done)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: fdaGranted), .continueToBrowser)
     }
 
     func testContinueIsEnabledOnlyWhenBothCoreAreGranted() {

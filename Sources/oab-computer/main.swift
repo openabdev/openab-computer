@@ -488,6 +488,15 @@ if opts.menuBar {
     app.setActivationPolicy(.accessory)     // no Dock icon, no main menu; status item only
     let logPath = FirstRunSetup.logPath(home: firstRunHome ?? NSHomeDirectory())
     let exposure = tailnetExposure
+    // The managed Playwright's install, update, removal and sign-in. With an operator-supplied external Playwright the
+    // installer manages nothing, so the wizard page and the menu items are left out.
+    let browserTools: BrowserToolsController? = opts.upstreams.contains(where: { $0.0 == "browser" })
+        ? nil
+        : MainActor.assumeIsolated {
+            BrowserToolsController(installer: playwrightInstaller, store: BrowserToolsStore(log: log),
+                                   signIn: { name, args in try await playwrightBackend.call(name, arguments: args) },
+                                   log: log)
+        }
     // With the exposure object the menu takes the tailnet URL from it (verified), so the base line is the local one.
     let publicURL = (exposure == nil ? opts.publicURL : nil) ?? "http://\(opts.host):\(opts.port)\(opts.path)"
     statusItem = MainActor.assumeIsolated {
@@ -495,7 +504,8 @@ if opts.menuBar {
                              attach: attachManager, switchboard: switchboardSupervisor, notice: firstRunNotice,
                              exposure: exposure, bindHost: opts.host, bindPort: Int(opts.port), path: opts.path,
                              upstreams: opts.upstreams.map { NetworkUpstream(name: $0.0, url: $0.1) },
-                             attachEnabled: opts.attach, browserReport: { await browserRouter.report() })
+                             attachEnabled: opts.attach, browserReport: { await browserRouter.report() },
+                             browserTools: browserTools)
     }
     MainActor.assumeIsolated { statusItem?.refreshBrowserState() }
     // A stored opt-in is re-applied once per launch, off the main thread, and only when the mapping is missing.

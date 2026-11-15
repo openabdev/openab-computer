@@ -554,7 +554,29 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   backoff (1 s, 2 s, 4 s, up to 30 s) and is marked unavailable after 5 failures in 2 minutes. Its
   stderr is kept in memory only and is never written to a log. With nothing installed, the browser
   tools are not listed, a call says Playwright is not installed, and `sys_info` and the menu show
-  the same. The installer is part of this build ([What the app downloads](#what-the-app-downloads)); the wizard page and the menu entries that start it arrive in a separate change, so until then nothing triggers a download.
+  the same.
+- **Installing, updating and removing the managed Playwright.** The setup wizard has a **Browser
+  tools** page after Full Disk Access and before the optional tailnet page. Its Playwright box is
+  **pre-checked**; the text shows the download size, the three hosts, the install folder and the free
+  disk needed, all taken from the manifest built into the app, and says to **uncheck it to skip**.
+  Nothing is downloaded until you press **Continue** with the box checked; with the box unchecked,
+  Continue goes on and downloads nothing. The wizard always finishes: offline, or after a failed
+  download or check, the page shows what went wrong with **Retry** and **Continue without**, and
+  Playwright simply stays not installed. Closing the window is not completion. The same steps are in
+  the menu bar: **Set up browser tools…**, **Install Playwright…** (asks first, with the same text),
+  **Update Playwright… (x → y)** (shown only when this app carries a newer pinned version; it asks
+  before downloading, and a failed update leaves the installed version running), **Remove
+  Playwright…** (asks first; deletes the Playwright folder including the browser profile and its
+  cookies, and leaves Chrome, Safari and `~/.local/oab-computer/` alone), and **Open Playwright
+  window to sign in…**. Opening the menu reads one local file and starts nothing. The installer
+  and what it fetches are described under [What the app downloads](#what-the-app-downloads); an
+  install, update or removal takes effect on the next `browser_*` call with no restart.
+- **Signing in once.** **Open Playwright window to sign in…** starts the managed browser if needed and
+  opens a headed Chromium window on the managed browser's own persistent profile (not your Chrome or
+  Safari). Sign in to the sites you want agents to use; the session stays in that profile, including
+  after the app or the browser restarts, until you remove Playwright. The profile holds cookies, so
+  browser tools are owner-level (see above). Some sites may refuse an automated browser, and the app
+  cannot change that.
 
 ## Download and install
 
@@ -567,12 +589,15 @@ Tagged releases publish a universal, Developer-ID-signed and Apple-notarized ins
    bearer token, installs the LaunchAgent, detects the Playwright upstream, and configures
    `tailscale serve :8444`.
 4. On first launch, the **Set Up Mac Permissions** window opens if a required permission is missing. It
-   has two pages. Page 1 asks for Screen Recording and Accessibility, and you cannot finish it until
+   has three pages. Page 1 asks for Screen Recording and Accessibility, and you cannot finish it until
    both are on. Click Allow on each row, turn the switch on in System Settings, and return to the
    wizard, which re-tests on its own. Use Check Again if the row does not update. Page 2 is optional
-   Full Disk Access, which has a Skip link. Browser tools work without any of them. Future releases
+   Full Disk Access, which has a Skip link. Page 3 offers to install Playwright (pre-checked; uncheck it
+   to skip; see [Browser tools](#browser-tools-for-lent-sessions---upstream)), and the wizard completes
+   with or without it. A fourth page, tailnet access, appears only when a Tailscale login is detected.
+   Browser tools work without Full Disk Access. Future releases
    keep the same Developer ID + bundle id, so grants survive (the 0.12 rename changed the bundle id once; see [Upgrading from 0.11 or earlier](#upgrading-from-011-or-earlier)).
-5. The same wizard remains available from the menu bar as **Set Up Permissions…**; use the menu
+5. The same wizard remains available from the menu bar as **Set Up Permissions…** (and **Set up browser tools…**, which opens it on the Browser tools page); use the menu
    item to copy the MCP URL and bearer token into OpenAB Connect/Remote.
 
 Linux hands nodes: see [Quick start](#quick-start) and [`docs/linux-setup.md`](docs/linux-setup.md).
@@ -701,7 +726,7 @@ With `--menu-bar` (deploy.sh sets it) the agent shows a status item: the name "O
 (click to copy), a masked bearer token line (click to copy the full token), live ✓/✗/? rows for
 Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window, which opens on launch when a permission is missing and
 reopens while Screen Recording or Accessibility is still off), session / call counters with the
-last tool call, Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
+last tool call, the Playwright items (install, update, remove, sign in; see [Browser tools](#browser-tools-for-lent-sessions---upstream)), Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
 for each permission. Its Allow button calls the system permission request and re-tests, and it
 opens the pane only if the permission is still off. The window re-tests when the app becomes
 active or the user clicks Check Again. The menu bar checks Screen Recording and Accessibility every

@@ -123,8 +123,9 @@ final class TailnetExposureTests: XCTestCase {
     // MARK: no login
 
     func testThePageIsHiddenWithoutADetectedLogin() {
-        XCTAssertEqual(WizardModel.pages(tailnetOffered: false), [.core, .optional])
-        XCTAssertEqual(WizardModel.pages(tailnetOffered: true), [.core, .optional, .tailnet])
+        XCTAssertEqual(WizardModel.pages(tailnetOffered: false), [.core, .optional, .browser])
+        XCTAssertEqual(WizardModel.pages(tailnetOffered: true), [.core, .optional, .browser, .tailnet])
+        XCTAssertEqual(WizardModel.pages(tailnetOffered: true, browserPage: false), [.core, .optional, .tailnet])
         XCTAssertEqual(WizardModel.available(.tailnet, tailnetOffered: false), .optional)
         XCTAssertEqual(WizardModel.available(.tailnet, tailnetOffered: true), .tailnet)
         XCTAssertFalse(make(FakeTailscale(), login: false).offersExposure)

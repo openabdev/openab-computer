@@ -3,9 +3,11 @@ import ApplicationServices
 import CoreGraphics
 import InstanceMCPCore
 
-/// Permission setup wizard, two pages, or three when a Tailscale login was detected. Page 1 needs Screen Recording
+/// Permission setup wizard, three pages, or four when a Tailscale login was detected. Page 1 needs Screen Recording
 /// and Accessibility, and Continue stays disabled until both are granted. Page 2 is optional Full Disk Access with a
-/// Skip link. Page 3 is the opt-in "allow other devices on my tailnet" step (off unless the user turns it on).
+/// Skip link. Page 3 is the optional, pre-checked Playwright browser install (the user can uncheck it, and the
+/// wizard completes offline or after a failure). Page 4 is the opt-in "allow other devices on my tailnet" step (off
+/// unless the user turns it on).
 ///
 /// Allow calls the system request API for that permission, re-tests, and opens the matching System Settings
 /// pane when the permission is still not granted. The window never captures a screenshot. It re-tests on app
@@ -37,6 +39,10 @@ final class PermissionSetupWindowController: NSWindowController {
     private var tailnetMessage: String?
     private let corePage = NSStackView()
     private let optionalPage = NSStackView()
+    /// Nil when this process serves an operator-supplied external Playwright: the page is then not part of the wizard.
+    private let browserTools: BrowserToolsController?
+    private let browserPage = BrowserPageView()
+    private var browserPageShown = false
     private let revocationLabel = NSTextField(wrappingLabelWithString: "")
     private let adHocCoreLabel = NSTextField(wrappingLabelWithString: WizardCopy.adHocBanner)
     private let adHocOptionalLabel = NSTextField(wrappingLabelWithString: WizardCopy.adHocBanner)
@@ -70,8 +76,10 @@ final class PermissionSetupWindowController: NSWindowController {
     private(set) var snapshot = PermissionSnapshot(screenRecording: .denied, accessibility: .denied,
                                                   fullDiskAccess: .unknown)
 
-    init(store: SetupWizardStore, relaunch: RelaunchCoordinator, exposure: TailnetExposure? = nil) {
+    init(store: SetupWizardStore, relaunch: RelaunchCoordinator, exposure: TailnetExposure? = nil,
+         browserTools: BrowserToolsController? = nil) {
         self.store = store
+        self.browserTools = browserTools
         self.relaunch = relaunch
         self.exposure = exposure
         let signing = SigningIdentity.lookup()
@@ -85,6 +93,7 @@ final class PermissionSetupWindowController: NSWindowController {
         window.center()
         super.init(window: window)
         buildUI(in: window)
+        browserTools?.addObserver { [weak self] in self?.renderBrowserPage() }
         activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -109,13 +118,14 @@ final class PermissionSetupWindowController: NSWindowController {
     var isWindowVisible: Bool { window?.isVisible ?? false }
 
     private var tailnetOffered: Bool { exposure?.offersExposure ?? false }
+    private var browserOffered: Bool { browserTools != nil }
 
     /// Opens on the core page while a core permission is missing, and on the optional page otherwise. After a
     /// relaunch, `resume` is the page the previous instance was on.
     func show(resume: WizardPage? = nil) {
         let shown = SharedPermissionStatus.resolve(process: PermissionProbe.current(), child: childForStatus).shown
         page = WizardModel.available(resume ?? (SetupGate.evaluate(snapshot: shown).blocksCore ? .core : .optional),
-                                     tailnetOffered: tailnetOffered)
+                                     tailnetOffered: tailnetOffered, browserPage: browserOffered)
         refresh()
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
@@ -152,7 +162,7 @@ final class PermissionSetupWindowController: NSWindowController {
 
         // A missing core permission always returns the window to page 1.
         if SetupGate.evaluate(snapshot: current).blocksCore { page = .core }
-        page = WizardModel.available(page, tailnetOffered: tailnetOffered)
+        page = WizardModel.available(page, tailnetOffered: tailnetOffered, browserPage: browserOffered)
 
         for kind in PermissionKind.allCases { applyRow(kind, state: current[kind]) }
         applyFooters(current)
@@ -162,7 +172,15 @@ final class PermissionSetupWindowController: NSWindowController {
 
         corePage.isHidden = page != .core
         optionalPage.isHidden = page != .optional
+        browserPage.isHidden = page != .browser
         tailnetPage.isHidden = page != .tailnet
+        if page == .browser, !browserPageShown {
+            browserPageShown = true
+            browserTools?.pageShown()
+        } else if page != .browser {
+            browserPageShown = false
+        }
+        renderBrowserPage()
         updatePagers()
         updateChildCheckTimer()
         // A stale process may be waiting on the shared probe (for example right after a relaunch): ask for a fresh
@@ -273,10 +291,10 @@ final class PermissionSetupWindowController: NSWindowController {
         if case let .continueToOptional(enabled) = WizardModel.footerAction(page: .core, snapshot: current) {
             continueButton.isEnabled = enabled
         }
-        switch WizardModel.footerAction(page: .optional, snapshot: current, tailnetPage: tailnetOffered) {
+        switch WizardModel.footerAction(page: .optional, snapshot: current, tailnetPage: tailnetOffered, browserPage: browserOffered) {
         case .done: optionalFooterButton.title = "Done"
-        case .continueToTailnet: optionalFooterButton.title = "Continue"
-        case .skip, .skipToTailnet, .continueToOptional: optionalFooterButton.title = "Skip"
+        case .continueToTailnet, .continueToBrowser: optionalFooterButton.title = "Continue"
+        case .skip, .skipToTailnet, .skipToBrowser, .continueToOptional: optionalFooterButton.title = "Skip"
         }
         tailnetFooterButton.title = tailnetOn ? "Done" : "Skip"
         // While enable() runs, Skip would close the wizard as skipped and the mapping could still appear afterwards.
@@ -286,7 +304,7 @@ final class PermissionSetupWindowController: NSWindowController {
     private var tailnetOn: Bool { exposure?.publicURL != nil }
 
     private func updatePagers() {
-        let pages = WizardModel.pages(tailnetOffered: tailnetOffered)
+        let pages = WizardModel.pages(tailnetOffered: tailnetOffered, browserPage: browserOffered)
         for (kind, label) in pagerLabels {
             label.stringValue = pages.map { $0 == kind ? "●" : "○" }.joined(separator: "  ")
         }
@@ -427,7 +445,10 @@ final class PermissionSetupWindowController: NSWindowController {
     }
 
     @objc private func optionalFooterTapped() {
-        switch WizardModel.footerAction(page: .optional, snapshot: snapshot, tailnetPage: tailnetOffered) {
+        switch WizardModel.footerAction(page: .optional, snapshot: snapshot, tailnetPage: tailnetOffered, browserPage: browserOffered) {
+        case .continueToBrowser, .skipToBrowser:
+            page = .browser
+            refresh()
         case .continueToTailnet, .skipToTailnet:
             page = .tailnet
             refresh()
@@ -444,7 +465,7 @@ final class PermissionSetupWindowController: NSWindowController {
 
     private func buildUI(in window: NSWindow) {
         guard let content = window.contentView else { return }
-        for pageStack in [corePage, optionalPage, tailnetPage] {
+        for pageStack in [corePage, optionalPage, browserPage, tailnetPage] {
             pageStack.orientation = .vertical
             pageStack.alignment = .leading
             pageStack.spacing = 14
@@ -495,7 +516,22 @@ final class PermissionSetupWindowController: NSWindowController {
         optionalFooterButton.action = #selector(optionalFooterTapped)
         optionalPage.addArrangedSubview(footer(buttons: [optionalFooterButton], pager: "○  ●", page: .optional))
 
-        // Page 3: opt-in tailnet access. Built always, shown only when a login was detected.
+        // Page 3: optional Playwright install. Built always, shown only when the installer manages Playwright.
+        browserPage.checkbox.target = self
+        browserPage.checkbox.action = #selector(browserCheckboxTapped)
+        browserPage.continueButton.target = self
+        browserPage.continueButton.action = #selector(browserContinueTapped)
+        browserPage.cancelButton.target = self
+        browserPage.cancelButton.action = #selector(browserCancelTapped)
+        browserPage.retryButton.target = self
+        browserPage.retryButton.action = #selector(browserRetryTapped)
+        browserPage.continueWithoutButton.target = self
+        browserPage.continueWithoutButton.action = #selector(browserContinueWithoutTapped)
+        browserPage.signInButton.target = self
+        browserPage.signInButton.action = #selector(browserSignInTapped)
+        pagerLabels[.browser] = browserPage.pagerLabel
+
+        // Page 4: opt-in tailnet access. Built always, shown only when a login was detected.
         tailnetPage.addArrangedSubview(headline(WizardCopy.tailnetPageTitle, subtitle: WizardCopy.tailnetPageSubtitle))
         let tailnet = PermissionRowView(title: WizardCopy.tailnetRowTitle, detail: WizardCopy.tailnetDetail(name: nil),
                                         symbolName: "network", tag: PermissionKind.allCases.count,
@@ -511,7 +547,77 @@ final class PermissionSetupWindowController: NSWindowController {
         tailnetPage.addArrangedSubview(footer(buttons: [tailnetFooterButton], pager: "○  ○  ●", page: .tailnet))
 
         optionalPage.isHidden = true
+        browserPage.isHidden = true
         tailnetPage.isHidden = true
+    }
+
+    // MARK: Browser tools page
+
+    private func renderBrowserPage() {
+        guard let browserTools else { return }
+        browserPage.render(model: browserTools.model, plan: browserTools.plan)
+    }
+
+    @objc private func browserCheckboxTapped() {
+        browserTools?.setChecked(browserPage.checkbox.state == .on)
+    }
+
+    @objc private func browserContinueTapped() {
+        guard let browserTools else { return }
+        handleBrowserStep(browserTools.pageContinue())
+    }
+
+    @objc private func browserRetryTapped() {
+        guard let browserTools else { return }
+        handleBrowserStep(browserTools.pageRetry())
+    }
+
+    @objc private func browserContinueWithoutTapped() {
+        guard let browserTools else { return }
+        handleBrowserStep(browserTools.pageContinueWithout())
+    }
+
+    @objc private func browserCancelTapped() { browserTools?.cancelInstall() }
+
+    /// The page's Continue and Retry start the install on the page (R5.6). A completed step moves the wizard on.
+    private func handleBrowserStep(_ step: BrowserPageStep) {
+        guard let browserTools else { return }
+        switch step {
+        case .none: renderBrowserPage()
+        case .complete(let completion): completeBrowserPage(completion)
+        case .startInstall:
+            browserTools.runInstall { [weak self] _, outcome in
+                // Closing the window is not completion: a window that is gone does not advance.
+                guard let self, self.isWindowVisible, self.page == .browser else { return }
+                if case .complete(let completion) = outcome { self.completeBrowserPage(completion) }
+            }
+        }
+    }
+
+    private func completeBrowserPage(_ completion: BrowserPageCompletion) {
+        browserTools?.pageCompleted(completion)
+        if tailnetOffered {
+            page = .tailnet
+            refresh()
+        } else {
+            finish(.done)
+        }
+    }
+
+    @objc private func browserSignInTapped() {
+        guard let browserTools else { return }
+        browserPage.signInButton.isEnabled = false
+        Task { @MainActor [weak self] in
+            let outcome = await browserTools.signIn()
+            self?.browserPage.signInButton.isEnabled = true
+            if case .failed(let c) = outcome, let window = self?.window {
+                let alert = NSAlert()
+                alert.messageText = "Playwright"
+                alert.informativeText = WizardCopy.signInFailed(c)
+                alert.addButton(withTitle: "OK")
+                alert.beginSheetModal(for: window, completionHandler: nil)
+            }
+        }
     }
 
     private func headline(_ title: String, subtitle: String) -> NSStackView {

@@ -275,11 +275,15 @@ callers written for Playwright work unchanged. Unsupported options (for example
 
   Consent is the user pressing **Continue** with the box checked. Nothing is downloaded before
   that, and the copy never calls the result safe. When the install finishes, the row shows
-  **Open Playwright browser to sign in…**.
+  **Open Playwright window to sign in…**.
+  When the install was started from the wizard's Continue, the page completes and the wizard
+  advances at once (R5.6), so the sign-in button is seen when the page is reopened from
+  **Set up browser tools…** and in the menu. This implementation offers only the Playwright row;
+  the Apple Events rows arrive with their tier.
 - R5.9 **Menu bar.** The browser row reads, for example,
   `Browser tools: Playwright ready · Apple Events (Chrome ready)` or `Playwright not installed`.
   Items: **Set up browser tools…**, **Install Playwright…** (when not installed or failed),
-  **Open Playwright browser to sign in…**, **Remove Playwright…**,
+  **Open Playwright window to sign in…**, **Remove Playwright…**,
   **Prefer: Auto / Apple Events / Playwright**, and the target-browser choice. No URL, tab title
   or page text is ever shown there.
 - R5.10 **Persisted values** (`UserDefaults`, prefix `browserTools.`): `backend.v1`,
@@ -487,7 +491,7 @@ ignored; the managed child uses stdio, so a busy 8794 does not affect it.
 
 The user signs in once in the Playwright headed window and the persistent profile
 (`playwright/profile/`, 0700, shared across versions) keeps the session. There is no cookie import
-from Chrome or Safari. Entry points: **Open Playwright browser to sign in…** on the wizard page and
+from Chrome or Safari. Entry points: **Open Playwright window to sign in…** on the wizard page and
 in the menu. It starts the managed child if needed and makes one internal `browser_navigate` to
 `about:blank`, which opens the headed Chromium window; the user types the site into its address
 bar. That call is not logged with any URL.

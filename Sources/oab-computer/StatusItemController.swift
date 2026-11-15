@@ -77,6 +77,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Last known browser state. Refreshed from `peekStatus` (never starts the child) when the menu opens.
     private var browserState: NetworkBrowser?
     private var browserRowItem: NSMenuItem?
+    /// Install, update, remove and sign-in for the managed Playwright. Nil when Playwright is external (operator flag).
+    private let browserTools: BrowserToolsController?
     private var grantRowItems: [NSMenuItem] = []
     private var grantTimer: Timer?
     private static let timeFormatter: DateFormatter = {
@@ -96,6 +98,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
          bindHost: String = "127.0.0.1", bindPort: Int = 8795, path: String = "/mcp",
          upstreams: [NetworkUpstream] = [], attachEnabled: Bool = true,
          browserReport: (@Sendable () async -> BrowserReport)? = nil,
+         browserTools: BrowserToolsController? = nil,
          environment: [String: String] = ProcessInfo.processInfo.environment) {
         self.exposure = exposure
         self.bindHost = bindHost
@@ -104,6 +107,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.upstreams = upstreams
         self.attachEnabled = attachEnabled
         self.browserReport = browserReport
+        self.browserTools = browserTools
         self.launchdJobLabel = LaunchdJob.jobLabel(environment: environment)
         self.version = version
         self.url = url
@@ -210,7 +214,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func openPermissionSetup(page: WizardPage?) {
         if permissionSetupWindow == nil {
-            permissionSetupWindow = PermissionSetupWindowController(store: store, relaunch: relaunchCoordinator, exposure: exposure)
+            permissionSetupWindow = PermissionSetupWindowController(store: store, relaunch: relaunchCoordinator, exposure: exposure,
+                                                                    browserTools: browserTools)
         }
         permissionSetupWindow?.show(resume: page)
     }
@@ -411,6 +416,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         for item in permissionItems { menu.addItem(item) }
         menu.addItem(.separator())
 
+        addBrowserToolsSection()
+
         addSwitchboardSection()
         addGrantSection()
 
@@ -427,6 +434,99 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(label("Restart Agent", action: #selector(restart)))
         menu.addItem(label(MenuModel.quitTitle(underLaunchd: underLaunchd), action: #selector(quit)))
         startRefreshTimer()
+    }
+
+    // MARK: Playwright items
+
+    /// Reads `install.json` only (no network, no process) and lists what the state allows.
+    private func addBrowserToolsSection() {
+        guard let browserTools else { return }
+        browserTools.refresh()
+        let installing: PlaywrightInstallProgress?? = {
+            guard browserTools.model.isInstalling else { return nil }
+            if case .installing(let p) = browserTools.model.phase { return .some(p) }
+            return .some(nil)
+        }()
+        let items = MenuModel.playwrightMenu(state: browserTools.installState, plan: browserTools.plan,
+                                             installing: installing, lastFailed: browserTools.lastFailed)
+        for entry in items {
+            let action: Selector?
+            switch entry.kind {
+            case .line: action = nil
+            case .setUp: action = #selector(showBrowserSetup)
+            case .install: action = #selector(installPlaywright)
+            case .update: action = #selector(updatePlaywright)
+            case .remove: action = #selector(removePlaywright)
+            case .signIn: action = #selector(signInPlaywright)
+            case .cancelInstall: action = #selector(cancelPlaywrightInstall)
+            }
+            menu.addItem(label(entry.title, action: action, tip: entry.tip))
+        }
+        menu.addItem(.separator())
+    }
+
+    @objc private func showBrowserSetup() { openPermissionSetup(page: .browser) }
+
+    /// The consent sheet (R7.2 step 1): the same text as the wizard row. Nothing is downloaded before Install.
+    @objc private func installPlaywright() {
+        guard let browserTools else { return }
+        confirmAndInstall(browserTools, title: WizardCopy.installSheetTitle(update: false),
+                          text: WizardCopy.playwrightConsent(plan: browserTools.plan))
+    }
+
+    /// The update prompt (R7.7): never silent. It names the change and what is downloaded.
+    @objc private func updatePlaywright() {
+        guard let browserTools, case .installed(let id, _, _) = browserTools.installState else { return }
+        confirmAndInstall(browserTools, title: WizardCopy.installSheetTitle(update: true),
+                          text: WizardCopy.updatePrompt(installed: id, plan: browserTools.plan))
+    }
+
+    private func confirmAndInstall(_ tools: BrowserToolsController, title: String, text: String) {
+        guard !tools.model.isInstalling else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        _ = tools.startInstall { [weak self] result, _ in
+            switch result {
+            case .success: self?.showAlert("Playwright", WizardCopy.installReady)
+            case .failure(.cancelled): break
+            case .failure(let f): self?.showAlert("Playwright", WizardCopy.installFailure(f))
+            }
+        }
+    }
+
+    @objc private func cancelPlaywrightInstall() { browserTools?.cancelInstall() }
+
+    @objc private func removePlaywright() {
+        guard let browserTools else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = WizardCopy.browserRemoveMenu.replacingOccurrences(of: "…", with: "?")
+        alert.informativeText = WizardCopy.removalConfirmation(path: browserTools.plan.installPath)
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Remove")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        Task { @MainActor [weak self] in
+            switch await browserTools.remove() {
+            case .success: self?.showAlert("Playwright", WizardCopy.removalDone)
+            case .failure: self?.showAlert("Playwright", WizardCopy.removalFailed)
+            }
+        }
+    }
+
+    /// Opens the headed Playwright window on its own profile (the wizard page carries the note about it).
+    @objc private func signInPlaywright() {
+        guard let browserTools else { return }
+        Task { @MainActor [weak self] in
+            if case .failed(let c) = await browserTools.signIn() {
+                self?.showAlert("Playwright", WizardCopy.signInFailed(c))
+            }
+        }
     }
 
     /// The existing tailnet action rows, directly under the Tailnet row.

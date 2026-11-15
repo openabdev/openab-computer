@@ -132,10 +132,18 @@ final class MenuModelTests: XCTestCase {
     func testWizardFootersWithAndWithoutTheTailnetPage() {
         let granted = PermissionSnapshot(screenRecording: .granted, accessibility: .granted, fullDiskAccess: .granted)
         let noFDA = PermissionSnapshot(screenRecording: .granted, accessibility: .granted, fullDiskAccess: .denied)
-        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: granted), .done)
-        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: noFDA), .skip)
-        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: granted, tailnetPage: true), .continueToTailnet)
-        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: noFDA, tailnetPage: true), .skipToTailnet)
+        // The Browser tools page follows Full Disk Access, with or without a tailnet page.
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: granted), .continueToBrowser)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: noFDA), .skipToBrowser)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: granted, tailnetPage: true), .continueToBrowser)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: noFDA, tailnetPage: true), .skipToBrowser)
+        XCTAssertEqual(WizardModel.footerAction(page: .browser, snapshot: granted), .done)
+        XCTAssertEqual(WizardModel.footerAction(page: .browser, snapshot: granted, tailnetPage: true), .continueToTailnet)
+        // An external Playwright has no installer page: the old two-page flow stays.
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: granted, browserPage: false), .done)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: noFDA, browserPage: false), .skip)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: granted, tailnetPage: true, browserPage: false), .continueToTailnet)
+        XCTAssertEqual(WizardModel.footerAction(page: .optional, snapshot: noFDA, tailnetPage: true, browserPage: false), .skipToTailnet)
         XCTAssertEqual(WizardModel.footerAction(page: .tailnet, snapshot: granted, tailnetPage: true, tailnetOn: false), .skip)
         XCTAssertEqual(WizardModel.footerAction(page: .tailnet, snapshot: granted, tailnetPage: true, tailnetOn: true), .done)
     }

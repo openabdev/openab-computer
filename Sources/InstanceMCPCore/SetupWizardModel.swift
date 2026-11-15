@@ -7,6 +7,8 @@ import Foundation
 public enum WizardPage: String, Equatable, Sendable {
     case core
     case optional
+    /// The optional Playwright browser install (R5.1). Always offered, after Full Disk Access and before the tailnet page.
+    case browser
     /// Opt-in: let other devices on the tailnet reach this Mac. Shown only when a Tailscale login was detected.
     case tailnet
 }
@@ -39,6 +41,10 @@ public enum FooterAction: Equatable, Sendable {
     /// permission is granted, "Continue" after.
     case skipToTailnet
     case continueToTailnet
+    /// The Full Disk Access page always moves on to the Browser tools page. "Skip" until the permission is granted,
+    /// "Continue" after.
+    case skipToBrowser
+    case continueToBrowser
 }
 
 public enum WizardEvent: Equatable, Sendable {
@@ -73,29 +79,39 @@ public enum WizardModel {
 
     /// Core page: Continue, enabled only when both core permissions are granted. Optional page: Skip, or Done once
     /// Full Disk Access is granted. Skip never appears on the core page.
-    /// With a tailnet page, the Full Disk Access page moves on to it, and the tailnet page finishes: Skip while access
-    /// is off, Done once it is on.
+    /// The Full Disk Access page moves on to the Browser tools page, which moves on to the tailnet page when one is
+    /// offered and finishes otherwise (its own buttons come from `BrowserPageModel`). The tailnet page finishes:
+    /// Skip while access is off, Done once it is on.
     public static func footerAction(page: WizardPage, snapshot: PermissionSnapshot,
-                                    tailnetPage: Bool = false, tailnetOn: Bool = false) -> FooterAction {
+                                    tailnetPage: Bool = false, tailnetOn: Bool = false,
+                                    browserPage: Bool = true) -> FooterAction {
         switch page {
         case .core:
             return .continueToOptional(enabled: !SetupGate.evaluate(snapshot: snapshot).blocksCore)
         case .optional:
+            if browserPage { return snapshot.fullDiskAccess.isGranted ? .continueToBrowser : .skipToBrowser }
             if tailnetPage { return snapshot.fullDiskAccess.isGranted ? .continueToTailnet : .skipToTailnet }
             return snapshot.fullDiskAccess.isGranted ? .done : .skip
+        case .browser:
+            return tailnetPage ? .continueToTailnet : .done
         case .tailnet:
             return tailnetOn ? .done : .skip
         }
     }
 
-    /// The pages in order for this launch. The tailnet page exists only when a Tailscale login was detected.
-    public static func pages(tailnetOffered: Bool) -> [WizardPage] {
-        tailnetOffered ? [.core, .optional, .tailnet] : [.core, .optional]
+    /// The pages in order for this launch. The tailnet page exists only when a Tailscale login was detected. The
+    /// Browser tools page exists unless this process serves an operator-supplied external Playwright, which the
+    /// installer does not manage (`browserPage: false`).
+    public static func pages(tailnetOffered: Bool, browserPage: Bool = true) -> [WizardPage] {
+        var pages: [WizardPage] = [.core, .optional]
+        if browserPage { pages.append(.browser) }
+        if tailnetOffered { pages.append(.tailnet) }
+        return pages
     }
 
     /// A page that is not in this launch's list falls back to the Full Disk Access page.
-    public static func available(_ page: WizardPage, tailnetOffered: Bool) -> WizardPage {
-        pages(tailnetOffered: tailnetOffered).contains(page) ? page : .optional
+    public static func available(_ page: WizardPage, tailnetOffered: Bool, browserPage: Bool = true) -> WizardPage {
+        pages(tailnetOffered: tailnetOffered, browserPage: browserPage).contains(page) ? page : .optional
     }
 
     /// Completion is recorded for Skip, Done, and an observed complete state. Closing the window is not completion.
