@@ -78,6 +78,10 @@ final class SafeArchiveExtractorTests: XCTestCase {
         refuseTar([.file("a"), .file("a")], .duplicate)
         refuseTar([.file("Readme"), .file("README")], .caseCollision)
         refuseTar([.dir("a"), .file("a/b"), .file("A/c")], .caseCollision)
+        // An unlisted parent is still a directory: a later file or link of that name is refused in stage 1.
+        refuseTar([.file("a/x"), .file("a")], .duplicate)
+        refuseTar([.file("a/b/x"), .symlink("a/b", to: "x")], .duplicate)
+        refuseTar([.file("a/x"), .symlink("a", to: "x")], .duplicate)
     }
 
     func testLimits() {

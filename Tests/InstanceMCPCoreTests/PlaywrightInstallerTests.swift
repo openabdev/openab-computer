@@ -444,6 +444,52 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
     }
 
+    func testPreExistingProfileAndOutputAreUsedButNeverClaimedByRemove() async throws {
+        for d in ["profile", "output"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(d), withIntermediateDirectories: true)
+            try Data("mine".utf8).write(to: root.appendingPathComponent(d).appendingPathComponent("keep"))
+        }
+        let fx = try FakeInstallFixture()
+        let i = fx.installer(root: root)
+        _ = await installOK(i)
+        let rr = await i.remove()
+        XCTAssertEqual(describe(rr), "ok")
+        XCTAssertEqual(Set(children()), ["profile", "output"])
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("output/keep")), "mine")
+    }
+
+    func testASymlinkedProfileIsRefusedAndNothingBehindItIsTouched() async throws {
+        let elsewhere = work.url.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try Data("mine".utf8).write(to: elsewhere.appendingPathComponent("keep"))
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("profile"), withDestinationURL: elsewhere)
+        let fx = try FakeInstallFixture()
+        let f = await installFailure(fx.installer(root: root))
+        XCTAssertEqual(f, .other("commit_collision"))
+        XCTAssertEqual(try String(contentsOf: elsewhere.appendingPathComponent("keep")), "mine")
+        XCTAssertFalse(children().contains(fx.manifest.id))
+    }
+
+    func testAServerThatIsNotPlaywrightFailsTheHealthCheck() async throws {
+        let fx = try FakeInstallFixture(node: .otherServer)
+        let f = await installFailure(fx.installer(root: root))
+        XCTAssertEqual(f, .healthCheckFailed)
+        assertNothingInstalled()
+    }
+
+    func testALiveLockIsNotReclaimed() async throws {
+        let fx = try FakeInstallFixture()
+        let lock = root.appendingPathComponent(".install.lock")
+        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
+        // A live owner (this process) keeps its lock.
+        try "\(getpid())\n".write(to: lock.appendingPathComponent("pid"), atomically: true, encoding: .utf8)
+        let f = await installFailure(fx.installer(root: root, lockTries: 2))
+        XCTAssertEqual(f, .lockHeld)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lock.path))
+    }
+
     func testFirstInstallThatDoesNotServeLeavesNothing() async throws {
         let fx = try FakeInstallFixture()
         let f = await installFailure(fx.installer(root: root, serving: { false }))

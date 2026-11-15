@@ -152,6 +152,8 @@ final class EntryPlanner {
         for c in comps.dropLast() {
             prefix = prefix.isEmpty ? c : prefix + "/" + c
             if let k = kinds[prefix], k != .directory { throw SafeArchiveError.rejected(.unsafePath) }
+            // A parent the archive never lists is still a directory: a later file or link of that name is a conflict.
+            if kinds[prefix] == nil { kinds[prefix] = .directory }
             // APFS is case-insensitive: `a/x` and `A/y` would share a directory.
             if let other = lowered[prefix.lowercased()], other != prefix { throw SafeArchiveError.rejected(.caseCollision) }
         }

@@ -179,6 +179,16 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     }
 
     static let ownershipMarker = ".oab-owned"
+    /// Marks the profile and output directories this installer created (kept apart from the version marker,
+    /// so the orphan sweep never mistakes them for version directories).
+    static let dataMarker = ".oab-owned-data"
+
+    func hasDataMarker(_ name: String) -> Bool {
+        var st = stat()
+        let dir = root.appendingPathComponent(name)
+        guard lstat(dir.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { return false }
+        return lstat(dir.appendingPathComponent(Self.dataMarker).path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
+    }
 
     static func hasUUIDSuffix(_ name: String, prefix: String) -> Bool {
         name.hasPrefix(prefix) && UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
@@ -196,7 +206,9 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     /// Entries the installer creates; `remove` deletes only these.
     func isOurs(_ name: String, ownsRoot: Bool) -> Bool {
         if Self.hasUUIDSuffix(name, prefix: ".staging-") || Self.hasUUIDSuffix(name, prefix: "install.json.tmp-") { return true }
-        if ownsRoot, ["install.json", "profile", "output"].contains(name) { return true }
+        if ownsRoot, name == "install.json" { return true }
+        // profile and output are ours only if this installer created them (they carry its marker).
+        if ownsRoot, ["profile", "output"].contains(name), hasDataMarker(name) { return true }
         return hasOwnershipMarker(name)
     }
 
@@ -286,6 +298,12 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         return (p, parts.count > 1 ? Int64(parts[1]) : nil)
     }
 
+    private func lockOwner(from s: String) -> (pid: pid_t, start: Int64?)? {
+        let parts = s.split(whereSeparator: { $0 == " " || $0 == "\n" })
+        guard let first = parts.first, let p = pid_t(first) else { return nil }
+        return (p, parts.count > 1 ? Int64(parts[1]) : nil)
+    }
+
     private static func processStart(_ p: pid_t) -> Int64? {
         var info = proc_bsdinfo()
         let n = proc_pidinfo(p, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
@@ -314,8 +332,9 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         let gone = root.appendingPathComponent(".install.lock.stale-\(UUID().uuidString)", isDirectory: true)
         guard rename(lockURL.path, gone.path) == 0 else { return false }
         let moved = (try? String(contentsOf: gone.appendingPathComponent("pid"), encoding: .utf8)) ?? ""
-        let judgedText = judged.map { "\($0.pid)" } ?? ""
-        if let o = judged, !moved.hasPrefix(judgedText) || pidAlive(o) {
+        // Compare parsed owners, not text: pid 12 is not a prefix-match for pid 123.
+        let movedOwner = lockOwner(from: moved)
+        if let o = judged, movedOwner?.pid != o.pid || movedOwner?.start != o.start || pidAlive(o) {
             if rename(gone.path, lockURL.path) != 0 { try? FileManager.default.removeItem(at: gone) }
             return false
         }
@@ -492,8 +511,17 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         var createdDirs: [String] = []
         for d in ["profile", "output"] {
             let u = root.appendingPathComponent(d)
-            if !fm.fileExists(atPath: u.path) { createdDirs.append(d) }
-            try fm.createDirectory(at: u, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            var dst = stat()
+            if lstat(u.path, &dst) == 0 {
+                // Something is already there: it must be a real directory (never a link). It is used as is
+                // and is NOT claimed, so `remove` keeps it unless it carries our marker from an earlier install.
+                guard (dst.st_mode & S_IFMT) == S_IFDIR else { throw PlaywrightInstallFailure.other("commit_collision") }
+                continue
+            }
+            createdDirs.append(d)
+            try fm.createDirectory(at: u, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            do { try Data("oab-computer playwright install\n".utf8).write(to: u.appendingPathComponent(Self.dataMarker)) }
+            catch { throw PlaywrightInstallFailure.other("commit") }
         }
         let target = root.appendingPathComponent(manifest.id, isDirectory: true)
         // Only a directory this installer marked may be replaced; anything else at that name stays.
@@ -582,7 +610,11 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         var failure: PlaywrightInstallFailure?
         do {
             try await withTaskCancellationHandler {
-                try await client.initialize(timeout: timeout)
+                let info = try await client.initialize(timeout: timeout)
+                // The pinned package identifies itself as Playwright; anything else is not what was pinned.
+                guard info["serverInfo"]?["name"]?.stringValue?.lowercased().contains("playwright") == true else {
+                    throw PlaywrightInstallFailure.healthCheckFailed
+                }
                 let tools = try await client.listTools(timeout: timeout)
                 let names = Set(tools.compactMap { $0["name"]?.stringValue })
                 guard Set(BrowserToolCatalog.allNames).isSubset(of: names) else { throw PlaywrightInstallFailure.healthCheckFailed }

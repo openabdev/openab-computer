@@ -28,7 +28,7 @@ final class StubVerifier: NodeSignatureVerifying, @unchecked Sendable {
 /// becomes the fake MCP stdio server.
 final class FakeInstallFixture {
     enum NpmMode: String { case ok, fail, offline, integrity, hang, detached }
-    enum NodeMode: String { case ok, refused, missingTool, deadOnStart }
+    enum NodeMode: String { case ok, refused, missingTool, deadOnStart, otherServer }
 
     let tmp = TempDir()
     let record: URL
@@ -114,6 +114,7 @@ final class FakeInstallFixture {
     private static func nodeBody(_ m: NodeMode, _ fake: String, _ names: String) -> String {
         switch m {
         case .ok, .missingTool: return "exec '\(fake)' playwright-fake '\(names)'"
+        case .otherServer: return "exec '\(fake)' playwright-other '\(names)'"
         case .refused: return "echo 'Operation not permitted CANARY' >&2; exit 1"
         case .deadOnStart: return "exit 3"
         }

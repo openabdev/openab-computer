@@ -321,7 +321,7 @@ the download (and never less than the on-disk size) while it runs and an interne
   browser, the install stops with that message.
 - The Chromium it installs is a browser: the connections it makes while running (the pages it opens, and any background service Chrome for Testing contacts) are Chromium's, not the installer's, and the app does not bound them. On the pinned build it opened no listening TCP or UDP socket, and it exits when its stdin closes.
 - The install adds no LaunchAgent and no listener. An update is only ever offered, never applied
-  silently. Removing Playwright deletes what the installer created in that folder, including the browser profile and its cookies. A hand-made `install.json` is never replaced or removed: install refuses and remove leaves it, and what it points at, alone.
+  silently. Removing Playwright deletes what the installer created in that folder, including the browser profile and its cookies when the installer created that profile (a profile or output folder that already existed is left alone). A hand-made `install.json` is never replaced or removed: install refuses and remove leaves it, and what it points at, alone.
 - The numbers above come from the manifest in `release/playwright-pins/`; the release check
   (`scripts/playwright-pins.py`, run in CI) fails if they drift.
 

@@ -46,13 +46,15 @@ public actor StdioMCPClient {
     // MARK: lifecycle
 
     /// `initialize` then `notifications/initialized`.
-    public func initialize(timeout: TimeInterval = StdioMCPClient.initializeTimeout) async throws {
+    @discardableResult
+    public func initialize(timeout: TimeInterval = StdioMCPClient.initializeTimeout) async throws -> JSONValue {
         startReading()
-        _ = try await request("initialize", [
+        let result = try await request("initialize", [
             "protocolVersion": "2025-06-18", "capabilities": [:],
             "clientInfo": ["name": "oab-computer", "version": "browser"],
         ], timeout: timeout)
         try sendLine(["jsonrpc": "2.0", "method": "notifications/initialized"])
+        return result
     }
 
     public func ping(timeout: TimeInterval = StdioMCPClient.healthTimeout) async throws {
