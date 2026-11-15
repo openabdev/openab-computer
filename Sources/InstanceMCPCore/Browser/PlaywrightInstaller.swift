@@ -154,9 +154,15 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     /// At launch: removes staging directories and orphaned version directories left by a crash,
     /// and a stale lock. Does nothing while another install holds the lock.
     public func sweepStaging() {
-        if lockIsLive() { return }
         let fm = FileManager.default
-        _ = reclaimStaleLock()
+        guard fm.fileExists(atPath: root.path) else { return }
+        // One non-waiting attempt at the same lock an install holds: a live holder means no sweep.
+        var got = mkdir(lockURL.path, 0o700) == 0
+        if !got, errno == EEXIST, reclaimStaleLock() { got = mkdir(lockURL.path, 0o700) == 0 }
+        guard got else { return }
+        let start = Self.processStart(getpid()).map { " \($0)" } ?? ""
+        try? "\(getpid())\(start)\n".write(to: lockURL.appendingPathComponent("pid"), atomically: false, encoding: .utf8)
+        defer { releaseLock() }
         let keep = readRecord()?.version
         var n = 0
         for name in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] {
@@ -236,21 +242,33 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
     private var lockURL: URL { root.appendingPathComponent(".install.lock", isDirectory: true) }
 
-    private func lockOwner() -> pid_t? {
-        guard let s = try? String(contentsOf: lockURL.appendingPathComponent("pid"), encoding: .utf8),
-              let p = pid_t(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-        return p
+    /// The pid file holds "<pid> <start seconds>", so a recycled pid does not keep a dead owner's lock alive.
+    private func lockOwner() -> (pid: pid_t, start: Int64?)? {
+        guard let s = try? String(contentsOf: lockURL.appendingPathComponent("pid"), encoding: .utf8) else { return nil }
+        let parts = s.split(whereSeparator: { $0 == " " || $0 == "\n" })
+        guard let first = parts.first, let p = pid_t(first) else { return nil }
+        return (p, parts.count > 1 ? Int64(parts[1]) : nil)
     }
 
-    private func pidAlive(_ p: pid_t) -> Bool { kill(p, 0) == 0 || errno == EPERM }
+    private static func processStart(_ p: pid_t) -> Int64? {
+        var info = proc_bsdinfo()
+        let n = proc_pidinfo(p, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
+        return n == Int32(MemoryLayout<proc_bsdinfo>.size) ? Int64(info.pbi_start_tvsec) : nil
+    }
+
+    private func pidAlive(_ o: (pid: pid_t, start: Int64?)) -> Bool {
+        guard kill(o.pid, 0) == 0 || errno == EPERM else { return false }
+        if let s = o.start, let now = Self.processStart(o.pid) { return s == now }
+        return true
+    }
 
     /// A lock whose recorded process is gone is reclaimed; one with no pid file yet is given a few
     /// seconds, because its owner may be between `mkdir` and the pid write.
     private func reclaimStaleLock() -> Bool {
         var st = stat()
         guard lstat(lockURL.path, &st) == 0 else { return false }
-        if let p = lockOwner() {
-            guard !pidAlive(p) else { return false }
+        if let o = lockOwner() {
+            guard !pidAlive(o) else { return false }
         } else if Date().timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) < 5 {
             return false
         }
@@ -260,7 +278,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     private func lockIsLive() -> Bool {
         var st = stat()
         guard lstat(lockURL.path, &st) == 0 else { return false }
-        if let p = lockOwner() { return pidAlive(p) }
+        if let o = lockOwner() { return pidAlive(o) }
         return Date().timeIntervalSince1970 - Double(st.st_mtimespec.tv_sec) < 5
     }
 
@@ -268,7 +286,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         for _ in 0..<lockTries {
             if mkdir(lockURL.path, 0o700) == 0 {
-                try? "\(getpid())\n".write(to: lockURL.appendingPathComponent("pid"), atomically: false, encoding: .utf8)
+                let start = Self.processStart(getpid()).map { " \($0)" } ?? ""
+                try? "\(getpid())\(start)\n".write(to: lockURL.appendingPathComponent("pid"), atomically: false, encoding: .utf8)
                 return
             }
             guard errno == EEXIST else { throw PlaywrightInstallFailure.other("lock") }
@@ -326,6 +345,12 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         try await acquireLock()
         defer { releaseLock() }
 
+        // An install.json this installer did not write (no `manifestId`, or unreadable) is the user's
+        // configuration: it is never replaced, and nothing it points at is touched.
+        if FileManager.default.fileExists(atPath: root.appendingPathComponent("install.json").path),
+           readRecord()?.manifestId == nil {
+            throw PlaywrightInstallFailure.other("foreign_install")
+        }
         let before = state()
         if case .installed(let id, _, _) = before, id == manifest.id { return before }
 
@@ -468,8 +493,6 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         for n in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] where n != manifest.id && hasOwnershipMarker(n) {
             try? fm.removeItem(at: root.appendingPathComponent(n))
         }
-        // A previous install this app did not write (no `manifestId`: a hand-made `install.json`) is
-        // replaced as the selected version but its directory is left where it is.
         if let o = old, o.manifestId != nil, o.version != manifest.id, Self.safeVersion(o.version), hasOwnershipMarker(o.version) {
             let prev = o.version
             try? fm.removeItem(at: root.appendingPathComponent(prev))

@@ -277,6 +277,29 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertNotNil(r2)
     }
 
+    func testALockWithARecycledPidIsReclaimed() async throws {
+        let fx = try FakeInstallFixture()
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".install.lock"), withIntermediateDirectories: true)
+        // A live pid (this process) with a start time that is not its own: the original owner died.
+        try "\(getpid()) 1\n".write(to: root.appendingPathComponent(".install.lock/pid"), atomically: true, encoding: .utf8)
+        let r = await installOK(fx.installer(root: root, lockTries: 3))
+        XCTAssertNotNil(r)
+    }
+
+    func testSweepDoesNotRunWhileAnotherHoldsTheLock() throws {
+        let fx = try FakeInstallFixture()
+        let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".install.lock"), withIntermediateDirectories: true)
+        try "\(getppid())\n".write(to: root.appendingPathComponent(".install.lock/pid"), atomically: true, encoding: .utf8)
+        fx.installer(root: root).sweepStaging()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path), "a live holder keeps its staging")
+        try FileManager.default.removeItem(at: root.appendingPathComponent(".install.lock"))
+        fx.installer(root: root).sweepStaging()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertFalse(children().contains(".install.lock"))
+    }
+
     func testLockIsReleasedOnEveryFailurePath() async throws {
         for mode in [FakeInstallFixture.NpmMode.fail, .offline] {
             let fx = try FakeInstallFixture(npm: mode)
@@ -375,16 +398,29 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertTrue(logs.value.contains("browser: playwright_update_rolled_back"))
     }
 
-    func testAHandMadeInstallIsReplacedAsTheSelectionButItsFilesStay() async throws {
+    func testAHandMadeInstallIsNeverOverwritten() async throws {
         let hand = root.appendingPathComponent("handmade")
         try FileManager.default.createDirectory(at: hand.appendingPathComponent("node/bin"), withIntermediateDirectories: true)
         try Data("mine".utf8).write(to: hand.appendingPathComponent("my-notes.txt"))
-        try Data("{\"version\":\"handmade\",\"chromiumExecutable\":\"x\"}".utf8).write(to: root.appendingPathComponent("install.json"))
+        for d in ["profile", "output"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(d), withIntermediateDirectories: true)
+            try Data("mine".utf8).write(to: root.appendingPathComponent(d).appendingPathComponent("keep"))
+        }
+        let rec = Data("{\"version\":\"handmade\",\"chromiumExecutable\":\"x\"}".utf8)
+        try rec.write(to: root.appendingPathComponent("install.json"))
         let fx = try FakeInstallFixture()
-        let installed = await installOK(fx.installer(root: root))
-        XCTAssertNotNil(installed)
+        let f = await installFailure(fx.installer(root: root))
+        XCTAssertEqual(f, .other("foreign_install"))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("install.json")), rec)
         XCTAssertEqual(try String(contentsOf: hand.appendingPathComponent("my-notes.txt")), "mine")
-        XCTAssertEqual(fx.installer(root: root).state(), .installed(id: fx.manifest.id, updateAvailable: false, stale: false))
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("output/keep")), "mine")
+        XCTAssertEqual(Set(children()), ["handmade", "install.json", "profile", "output"])
+        // And remove() leaves a record it did not write, and what it points at, alone.
+        let rr = await fx.installer(root: root).remove()
+        XCTAssertEqual(describe(rr), "ok")
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("install.json")), rec)
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("profile/keep")), "mine")
     }
 
     func testFirstInstallThatDoesNotServeLeavesNothing() async throws {

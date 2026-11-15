@@ -519,6 +519,20 @@ def run_smoke(pins, lock, kp, lp, work):
 
 # ---------------------------------------------------------------- generate
 
+def verify_node_signature(node_bin, team_id):
+    """The downloaded Node must be validly signed by the expected team before the generator runs it."""
+    v = subprocess.run(["/usr/bin/codesign", "--verify", "--strict", node_bin],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    if v.returncode != 0:
+        raise PinError("downloaded node has no valid code signature")
+    d = subprocess.run(["/usr/bin/codesign", "-dvv", node_bin], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, timeout=120)
+    ids = [l.split("=", 1)[1].strip() for l in d.stderr.decode("utf-8", "replace").splitlines()
+           if l.startswith("TeamIdentifier=")]
+    if ids != [team_id]:
+        raise PinError("downloaded node TeamIdentifier does not match --node-team-id")
+
+
 def generate(args):
     if not args.node_team_id:
         raise PinError("--node-team-id is required: record it from a verified Node download (V10)")
@@ -550,6 +564,7 @@ def generate(args):
     node_dir = os.path.join(node_root, "node-v%s-darwin-%s" % (nv, NODE_ARCH[host_arch]))
     node_bin = os.path.join(node_dir, "bin", "node")
     npm_cli = os.path.join(node_dir, "lib", "node_modules", "npm", "bin", "npm-cli.js")
+    verify_node_signature(node_bin, args.node_team_id)   # V10: before this Node runs anything
     pkg = os.path.join(work, "pkg")
     os.makedirs(pkg, exist_ok=True)
     package_json = json.dumps({"name": "oab-playwright-pkg", "private": True, "version": "0.0.0",

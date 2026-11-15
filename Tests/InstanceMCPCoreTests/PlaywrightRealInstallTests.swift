@@ -107,7 +107,12 @@ final class PlaywrightRealInstallTests: XCTestCase {
 
         let tree = ProcessTree.descendants(of: [child.pid]).union([child.pid])
         let pidList = tree.map(String.init).joined(separator: ",")
-        let (_, sockets) = sh("/usr/sbin/lsof", ["-nP", "-i", "-a", "-p", pidList])
+        // The probe itself must work: lsof lists our own cwd (exit 0), so empty output below means "nothing found".
+        let (selfStatus, selfOut) = sh("/usr/sbin/lsof", ["-nP", "-a", "-d", "cwd", "-p", String(getpid())])
+        XCTAssertEqual(selfStatus, 0, "lsof works: \(selfOut)")
+        XCTAssertFalse(tree.isEmpty)
+        let (lsofStatus, sockets) = sh("/usr/sbin/lsof", ["-nP", "-i", "-a", "-p", pidList])
+        XCTAssertTrue(lsofStatus == 0 || (lsofStatus == 1 && sockets.isEmpty), "lsof probe failed (status \(lsofStatus)): \(sockets)")
         print("V12 processes in the tree: \(tree.count); lsof -nP -i:\n\(sockets.isEmpty ? "(no network sockets)" : sockets)")
         XCTAssertFalse(sockets.contains("LISTEN"), "no TCP listener")
         XCTAssertFalse(sockets.contains("UDP"), "no UDP socket")
@@ -118,7 +123,8 @@ final class PlaywrightRealInstallTests: XCTestCase {
         for _ in 0..<100 { if child.hasExited { exited = true; break }; try await Task.sleep(nanoseconds: 100_000_000) }
         print("V12 exits on stdin EOF: \(exited)")
         await child.terminate()
-        let (_, left) = sh("/bin/ps", ["-o", "pid=", "-p", pidList])
+        let (psStatus, left) = sh("/bin/ps", ["-o", "pid=", "-p", pidList])
+        XCTAssertTrue(psStatus == 0 || (psStatus == 1 && left.isEmpty), "ps probe failed (status \(psStatus)): \(left)")
         XCTAssertTrue(left.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "no process of the tree remains: \(left)")
     }
 }

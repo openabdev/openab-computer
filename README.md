@@ -282,7 +282,7 @@ installer runs the read-only `serve status` at the end and prints a warning if i
 
 | What | To where | When | What it is for |
 |---|---|---|---|
-| On-demand Playwright install, HTTPS | `nodejs.org`, `registry.npmjs.org` and `storage.googleapis.com`, nowhere else. Redirects to any other host are refused | Only when you choose to install or update Playwright (the install step is offered, pre-checked, and you can uncheck it). Never at launch, never in the background | Download Node, the pinned `@playwright/mcp` and the pinned Chromium. See [What the app downloads](#what-the-app-downloads) |
+| On-demand Playwright install, HTTPS | `nodejs.org`, `registry.npmjs.org` and `storage.googleapis.com`, nowhere else. Redirects to any other host are refused. The install's final health check also starts the installed Chromium once, and its own connections are Chromium's (see below) | Only when you choose to install or update Playwright (the install step is offered, pre-checked, and you can uncheck it). Never at launch, never in the background | Download Node, the pinned `@playwright/mcp` and the pinned Chromium. See [What the app downloads](#what-the-app-downloads) |
 | Upstream MCP, HTTP(S) | The URL given to `--upstream`. The installer uses `http://127.0.0.1:8794/mcp`. The app does not require loopback | Only with `--upstream`. The installer adds it when the Playwright agent is loaded | Browser tools |
 | Switchboard, WebSocket | `wss://<switchboard-host>.<tailnet>.ts.net/vm/attach`. `ws://` only to loopback | Only with `--switchboard` or a saved switchboard config. Redials for the life of the process | [Serving a switchboard](#serving-a-switchboard---switchboard) |
 | Reverse attach, WebSocket | `ws(s)://<runtime>/tools/attach/<session>`. The runtime and port come from the grant | Only after a `POST /attach`. Saved grants are redialled at launch | [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) |
@@ -321,7 +321,7 @@ the download (and never less than the on-disk size) while it runs and an interne
   browser, the install stops with that message.
 - The Chromium it installs is a browser: the connections it makes while running (the pages it opens, and any background service Chrome for Testing contacts) are Chromium's, not the installer's, and the app does not bound them. On the pinned build it opened no listening TCP or UDP socket, and it exits when its stdin closes.
 - The install adds no LaunchAgent and no listener. An update is only ever offered, never applied
-  silently. Removing Playwright deletes that whole folder, including the browser profile and its cookies.
+  silently. Removing Playwright deletes what the installer created in that folder, including the browser profile and its cookies. A hand-made `install.json` is never replaced or removed: install refuses and remove leaves it, and what it points at, alone.
 - The numbers above come from the manifest in `release/playwright-pins/`; the release check
   (`scripts/playwright-pins.py`, run in CI) fails if they drift.
 
