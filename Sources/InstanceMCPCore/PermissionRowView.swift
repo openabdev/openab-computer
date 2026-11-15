@@ -159,6 +159,44 @@ public enum WizardWindowFactory {
     public static func makeWindow(contentRect: NSRect) -> NSWindow {
         let window = NSWindow(contentRect: contentRect, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .aqua)
+        window.contentView?.appearance = NSAppearance(named: .aqua)
         return window
+    }
+}
+
+/// A rounded card whose fill follows the view's effective appearance. A layer's `cgColor` is resolved once, against
+/// whatever appearance is current when it is set (the system one, before the view is in the forced-light window),
+/// so a fixed `cgColor` stayed near-black under a dark system setting. This redraws the fill from the dynamic
+/// colour every time the appearance changes, the same `controlBackgroundColor` the permission rows use.
+@MainActor
+public final class WizardCardStackView: NSStackView {
+    public static let fill: NSColor = .controlBackgroundColor
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+    }
+
+    public convenience init(views: [NSView]) {
+        self.init(frame: .zero)
+        for view in views { addArrangedSubview(view) }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    public override var wantsUpdateLayer: Bool { true }
+
+    public override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = Self.fill.cgColor
+            layer?.borderWidth = 1
+            layer?.borderColor = NSColor.separatorColor.cgColor
+        }
+    }
+
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
     }
 }

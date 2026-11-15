@@ -45,7 +45,8 @@ final class BrowserPageView: NSStackView {
 
         checkbox.font = .systemFont(ofSize: 14, weight: .semibold)
         detail.font = .systemFont(ofSize: 12)
-        detail.textColor = .secondaryLabelColor
+        // Body text: .secondaryLabelColor is only 3.9:1 on the white card, under the 4.5:1 a 12 pt paragraph needs.
+        detail.textColor = .labelColor
         detail.maximumNumberOfLines = 0
         status.font = .systemFont(ofSize: 12, weight: .medium)
         status.maximumNumberOfLines = 0
@@ -53,7 +54,7 @@ final class BrowserPageView: NSStackView {
         failure.textColor = .systemRed
         failure.maximumNumberOfLines = 0
         progressLabel.font = .systemFont(ofSize: 11)
-        progressLabel.textColor = .secondaryLabelColor
+        progressLabel.textColor = .labelColor
         bar.style = .bar
         bar.isIndeterminate = false
         bar.minValue = 0
@@ -67,14 +68,11 @@ final class BrowserPageView: NSStackView {
         externalNote.isHidden = true
         addArrangedSubview(externalNote)
 
-        let card = NSStackView(views: [checkbox, detail, status, bar, progressLabel, failure, signInButton])
+        let card = WizardCardStackView(views: [checkbox, detail, status, bar, progressLabel, failure, signInButton])
         card.orientation = .vertical
         card.alignment = .leading
         card.spacing = 8
         card.edgeInsets = NSEdgeInsets(top: 12, left: 14, bottom: 12, right: 14)
-        card.wantsLayer = true
-        card.layer?.cornerRadius = 8
-        card.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         card.translatesAutoresizingMaskIntoConstraints = false
         card.widthAnchor.constraint(equalToConstant: 594).isActive = true
         detail.preferredMaxLayoutWidth = 560
