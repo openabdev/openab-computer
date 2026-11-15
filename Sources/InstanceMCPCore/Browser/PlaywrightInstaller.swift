@@ -131,7 +131,10 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         catch { return .failure(.other("lock")) }
         // Only what this installer wrote: a record it wrote (`manifestId`) owns install.json, profile
         // and output; a version directory must carry the ownership marker.
-        let ownsRoot = readRecord()?.manifestId != nil
+        // With no readable record, a root that holds one of our marked version directories is ours too.
+        let rec = readRecord()
+        let names0 = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
+        let ownsRoot = rec != nil ? rec?.manifestId != nil : names0.contains { hasOwnershipMarker($0) }
         // install.json goes first so a browser_* call cannot respawn the child from a directory being deleted.
         if ownsRoot { try? fm.removeItem(at: root.appendingPathComponent("install.json")) }
         await stopManaged()
@@ -411,11 +414,19 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
         // Commit: mark the directory as ours, rename staging to <root>/<id>, then write install.json by write then rename.
         try step(.commit, nil, progress)
+        var createdDirs: [String] = []
         for d in ["profile", "output"] {
-            try fm.createDirectory(at: root.appendingPathComponent(d), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let u = root.appendingPathComponent(d)
+            if !fm.fileExists(atPath: u.path) { createdDirs.append(d) }
+            try fm.createDirectory(at: u, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
         let target = root.appendingPathComponent(manifest.id, isDirectory: true)
-        if fm.fileExists(atPath: target.path) { try? fm.removeItem(at: target) }   // an invalid leftover
+        // Only a directory this installer marked may be replaced; anything else at that name stays.
+        var tst = stat()
+        if lstat(target.path, &tst) == 0 {
+            guard hasOwnershipMarker(manifest.id) else { throw PlaywrightInstallFailure.other("commit_collision") }
+            try? fm.removeItem(at: target)   // an invalid leftover of ours
+        }
         let oldBytes = try? Data(contentsOf: root.appendingPathComponent("install.json"))
         let old = readRecord()
         let hadInstall = old != nil
@@ -436,7 +447,11 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         try step(.switchOver, nil, progress)
         if hadInstall { await stopManaged() }
         do { try writeAtomically(recData, to: root.appendingPathComponent("install.json")) }
-        catch { try? fm.removeItem(at: target); throw error }
+        catch {
+            try? fm.removeItem(at: target)
+            if !hadInstall { for d in createdDirs { try? fm.removeItem(at: root.appendingPathComponent(d)) } }
+            throw error
+        }
         let serving = await verifyServing()
         guard serving else {
             // Roll back: the old install.json (or none), the old child, no new directory.
@@ -444,6 +459,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
             if let oldBytes { try? writeAtomically(oldBytes, to: root.appendingPathComponent("install.json")) }
             else { try? fm.removeItem(at: root.appendingPathComponent("install.json")) }
             try? fm.removeItem(at: target)
+            if hadInstall { _ = await verifyServing() }   // bring the old version's child back
+            else { for d in createdDirs { try? fm.removeItem(at: root.appendingPathComponent(d)) } }
             emit(.updateRolledBack)
             throw PlaywrightInstallFailure.healthCheckFailed
         }

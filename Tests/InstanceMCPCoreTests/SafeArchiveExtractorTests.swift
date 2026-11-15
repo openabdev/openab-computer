@@ -125,6 +125,10 @@ final class SafeArchiveExtractorTests: XCTestCase {
         refuseZip([method], .unsupported)
         refuseZip([Z(name: "dev", unixMode: 0o020644)], .forbiddenType)
         refuseZip([Z.file("x", mode: 0o104755)], .setuid)
+        var lm = Z.file("a"); lm.localMethod = 8
+        refuseZip([lm], .malformed)
+        var lc = Z.file("a"); lc.localCRC = 1
+        refuseZip([lc], .malformed)
         var two = Z.file("b"); two.localOffsetOverride = 0     // points at the first entry's header
         refuseZip([Z.file("a"), two], .malformed)
         refuseZip([Z.file("a"), Z.file("a")], .duplicate)

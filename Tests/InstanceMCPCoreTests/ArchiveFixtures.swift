@@ -117,6 +117,8 @@ enum ArchiveFixtures {
         var localName: String?
         var centralCompressedSize: UInt32?
         var localOffsetOverride: UInt32?
+    var localMethod: UInt16?
+    var localCRC: UInt32?
         var hostUnix = true
         static func file(_ n: String, _ s: String = "x", mode: UInt32 = 0o100644, deflated: Bool = false) -> ZipEntry {
             .init(name: n, data: Data(s.utf8), method: deflated ? 8 : 0, unixMode: mode)
@@ -132,8 +134,8 @@ enum ArchiveFixtures {
             let stored = e.method == 8 ? deflate(e.data) : e.data
             let off = UInt32(out.count)
             let ln = Data((e.localName ?? e.name).utf8)
-            out.append(contentsOf: le32(0x0403_4b50) + le16(20) + le16(e.flags) + le16(e.method) + le16(0) + le16(0)
-                       + le32(crc(e.data)) + le32(UInt32(stored.count)) + le32(UInt32(e.data.count))
+            out.append(contentsOf: le32(0x0403_4b50) + le16(20) + le16(e.flags) + le16(e.localMethod ?? e.method) + le16(0) + le16(0)
+                       + le32(e.localCRC ?? crc(e.data)) + le32(UInt32(stored.count)) + le32(UInt32(e.data.count))
                        + le16(UInt16(ln.count)) + le16(0))
             out.append(ln)
             out.append(stored)

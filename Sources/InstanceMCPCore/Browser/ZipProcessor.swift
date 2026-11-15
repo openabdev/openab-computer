@@ -112,6 +112,14 @@ enum ZipProcessor {
             throw SafeArchiveError.rejected(.malformed)
         }
         let nlen = Int(u16(scratch, 26)), elen = Int(u16(scratch, 28))
+        // The local header must agree with the central directory (flags, method and, unless a data
+        // descriptor follows, CRC and sizes), so the two views of one entry cannot differ.
+        guard u16(scratch, 6) == c.flags, u16(scratch, 8) == c.method else { throw SafeArchiveError.rejected(.malformed) }
+        if c.flags & 0x8 == 0 {
+            guard u32(scratch, 14) == c.crc, Int64(u32(scratch, 18)) == c.csize, Int64(u32(scratch, 22)) == c.usize else {
+                throw SafeArchiveError.rejected(.malformed)
+            }
+        }
         guard nlen == nameBytes.count else { throw SafeArchiveError.rejected(.malformed) }
         var nb = [UInt8](repeating: 0, count: nlen)
         guard try file.read(at: c.localOffset + 30, count: nlen, into: &nb) == nlen, nb == nameBytes else {

@@ -367,7 +367,7 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         let f = await installFailure(v2.installer(root: root, stop: { events.value += ["stop"] },
                                                   serving: { events.value += ["serving"]; return false }, logs: logs))
         XCTAssertEqual(f, .healthCheckFailed)
-        XCTAssertEqual(events.value, ["stop", "serving", "stop"])
+        XCTAssertEqual(events.value, ["stop", "serving", "stop", "serving"], "the old version is served again")
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("install.json")), before)
         XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("mcpfixture-1/node/bin/node").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("mcpfixture-2").path))
@@ -392,6 +392,28 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         let f = await installFailure(fx.installer(root: root, serving: { false }))
         XCTAssertEqual(f, .healthCheckFailed)
         assertNothingInstalled()
+        XCTAssertFalse(children().contains("profile") || children().contains("output"), "\(children())")
+    }
+
+    func testACollidingDirectoryWithoutOurMarkerIsNeverDeleted() async throws {
+        let fx = try FakeInstallFixture()
+        let theirs = root.appendingPathComponent(fx.manifest.id)
+        try FileManager.default.createDirectory(at: theirs, withIntermediateDirectories: true)
+        try Data("mine".utf8).write(to: theirs.appendingPathComponent("notes.txt"))
+        let f = await installFailure(fx.installer(root: root))
+        XCTAssertEqual(f, .other("commit_collision"))
+        XCTAssertEqual(try String(contentsOf: theirs.appendingPathComponent("notes.txt")), "mine")
+    }
+
+    func testRemoveWithoutAReadableRecordStillDeletesTheProfile() async throws {
+        let fx = try FakeInstallFixture()
+        let i = fx.installer(root: root)
+        _ = await installOK(i)
+        try Data("cookie".utf8).write(to: root.appendingPathComponent("profile/Cookies"))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("install.json"))
+        let rr = await i.remove()
+        XCTAssertEqual(describe(rr), "ok")
+        XCTAssertEqual(children(), [])
     }
 
     func testCrashBetweenRenameAndInstallJsonLeavesTheOldSelectedAndSweepCleans() async throws {
