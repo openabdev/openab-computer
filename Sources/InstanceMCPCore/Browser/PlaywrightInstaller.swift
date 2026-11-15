@@ -102,8 +102,14 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     /// One flow for a first install and for an update.
     public func install(progress: @escaping @Sendable (PlaywrightInstallProgress) -> Void)
         async -> Result<PlaywrightInstallState, PlaywrightInstallFailure> {
-        let task = Task { await self.runInstall(progress) }
-        stateLock.withLock { current = task }
+        // One install at a time in this process, so `cancel()` always reaches the running one.
+        let started: Task<Result<PlaywrightInstallState, PlaywrightInstallFailure>, Never>? = stateLock.withLock {
+            if current != nil { return nil }
+            let t = Task { await self.runInstall(progress) }
+            current = t
+            return t
+        }
+        guard let task = started else { return .failure(.lockHeld) }
         let r = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
         stateLock.withLock { if current == task { current = nil } }
         return r
@@ -118,14 +124,23 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
     /// Deletes what the installer created under the root, including the browser profile. Idempotent.
     public func remove() async -> Result<Void, PlaywrightInstallFailure> {
-        if lockIsLive() { return .failure(.lockHeld) }
-        await stopManaged()
         let fm = FileManager.default
+        guard fm.fileExists(atPath: root.path) else { onRemoved(); emit(.removed); return .success(()) }
+        do { try await acquireLock() }
+        catch let f as PlaywrightInstallFailure { return .failure(f) }
+        catch { return .failure(.other("lock")) }
+        // Only what this installer wrote: a record it wrote (`manifestId`) owns install.json, profile
+        // and output; a version directory must carry the ownership marker.
+        let ownsRoot = readRecord()?.manifestId != nil
+        // install.json goes first so a browser_* call cannot respawn the child from a directory being deleted.
+        if ownsRoot { try? fm.removeItem(at: root.appendingPathComponent("install.json")) }
+        await stopManaged()
         let names = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
-        for n in names where Self.isOurs(n) {
+        for n in names where n != ".install.lock" && isOurs(n, ownsRoot: ownsRoot) {
             do { try fm.removeItem(at: root.appendingPathComponent(n)) }
-            catch { emit(.installFailed("remove_failed")); return .failure(.other("remove_failed")) }
+            catch { releaseLock(); emit(.installFailed("remove_failed")); return .failure(.other("remove_failed")) }
         }
+        releaseLock()
         // Only an empty directory is removed: anything the installer did not create stays.
         rmdir(root.path)
         onRemoved()
@@ -142,8 +157,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         let keep = readRecord()?.version
         var n = 0
         for name in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] {
-            let isStaging = name.hasPrefix(".staging-")
-            let isOrphan = name.hasPrefix("mcp") && PlaywrightManifest.isSafeID(name) && name != keep
+            let isStaging = Self.hasUUIDSuffix(name, prefix: ".staging-")
+            let isOrphan = name != keep && hasOwnershipMarker(name)
             if isStaging || isOrphan, (try? fm.removeItem(at: root.appendingPathComponent(name))) != nil { n += 1 }
         }
         if n > 0 { emit(.swept(n)) }
@@ -155,11 +170,26 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         !v.isEmpty && !v.contains("/") && v != "." && v != ".." && !v.hasPrefix(".")
     }
 
+    static let ownershipMarker = ".oab-owned"
+
+    static func hasUUIDSuffix(_ name: String, prefix: String) -> Bool {
+        name.hasPrefix(prefix) && UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
+    }
+
+    /// A version directory this installer created carries a regular marker file written before the rename.
+    func hasOwnershipMarker(_ name: String) -> Bool {
+        guard PlaywrightManifest.isSafeID(name) else { return false }
+        var st = stat()
+        let dir = root.appendingPathComponent(name)
+        guard lstat(dir.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { return false }
+        return lstat(dir.appendingPathComponent(Self.ownershipMarker).path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
+    }
+
     /// Entries the installer creates; `remove` deletes only these.
-    static func isOurs(_ name: String) -> Bool {
-        if ["install.json", "profile", "output", ".install.lock"].contains(name) { return true }
-        if name.hasPrefix(".staging-") || name.hasPrefix("install.json.tmp-") { return true }
-        return name.hasPrefix("mcp") && PlaywrightManifest.isSafeID(name)
+    func isOurs(_ name: String, ownsRoot: Bool) -> Bool {
+        if Self.hasUUIDSuffix(name, prefix: ".staging-") || Self.hasUUIDSuffix(name, prefix: "install.json.tmp-") { return true }
+        if ownsRoot, ["install.json", "profile", "output"].contains(name) { return true }
+        return hasOwnershipMarker(name)
     }
 
     // MARK: install.json
@@ -379,7 +409,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
             try? fm.removeItem(at: staging.appendingPathComponent(n))
         }
 
-        // Commit: rename staging to <root>/<id>, then write install.json by write then rename.
+        // Commit: mark the directory as ours, rename staging to <root>/<id>, then write install.json by write then rename.
         try step(.commit, nil, progress)
         for d in ["profile", "output"] {
             try fm.createDirectory(at: root.appendingPathComponent(d), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -389,6 +419,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         let oldBytes = try? Data(contentsOf: root.appendingPathComponent("install.json"))
         let old = readRecord()
         let hadInstall = old != nil
+        do { try Data("oab-computer playwright install\n".utf8).write(to: staging.appendingPathComponent(Self.ownershipMarker)) }
+        catch { throw PlaywrightInstallFailure.other("commit") }
         guard rename(staging.path, target.path) == 0 else { throw PlaywrightInstallFailure.other("commit") }
         let rec = Record(version: manifest.id, chromiumExecutable: "chromium/" + crExec, manifestId: manifest.id,
                          arch: arch.rawValue, chromiumRevision: manifest.chromium.revision,
@@ -416,12 +448,12 @@ public final class PlaywrightInstaller: @unchecked Sendable {
             throw PlaywrightInstallFailure.healthCheckFailed
         }
         // The new version served once: the previous directory can go.
-        for n in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] where n != manifest.id && n.hasPrefix("mcp") && PlaywrightManifest.isSafeID(n) {
+        for n in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] where n != manifest.id && hasOwnershipMarker(n) {
             try? fm.removeItem(at: root.appendingPathComponent(n))
         }
         // A previous install this app did not write (no `manifestId`: a hand-made `install.json`) is
         // replaced as the selected version but its directory is left where it is.
-        if let o = old, o.manifestId != nil, o.version != manifest.id, Self.safeVersion(o.version) {
+        if let o = old, o.manifestId != nil, o.version != manifest.id, Self.safeVersion(o.version), hasOwnershipMarker(o.version) {
             let prev = o.version
             try? fm.removeItem(at: root.appendingPathComponent(prev))
         }

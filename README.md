@@ -307,7 +307,7 @@ the app bundle), for the architecture of this Mac:
 | Chromium (Chrome for Testing) | `https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.0/` | 154.0.8037.0 |
 
 Download: about 249 MB (Apple silicon) or 260 MB (Intel). On disk once installed: about 593 MB (Apple silicon) or 606 MB (Intel). The install needs free space of at least three times
-the download while it runs and an internet connection.
+the download (and never less than the on-disk size) while it runs and an internet connection.
 
 - Every file is checked against sizes and SHA-256 digests built into the signed app, **before** it is
   extracted. The npm packages are checked against a lockfile built into the app (`sha512` integrity

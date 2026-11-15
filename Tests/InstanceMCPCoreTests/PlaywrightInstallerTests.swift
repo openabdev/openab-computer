@@ -400,7 +400,10 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         // What a crash after the rename leaves: a new version directory no install.json points at,
         // a staging directory, and a lock whose owner is gone.
         try FileManager.default.createDirectory(at: root.appendingPathComponent("mcpfixture-2/node"), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".staging-DEAD/pkg"), withIntermediateDirectories: true)
+        try Data().write(to: root.appendingPathComponent("mcpfixture-2/.oab-owned"))
+        // A hand-made directory with a matching name but no marker must survive.
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("mcp-handmade/node"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".staging-\(UUID().uuidString)/pkg"), withIntermediateDirectories: true)
         let lock = root.appendingPathComponent(".install.lock")
         try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: true)
         try "999999\n".write(to: lock.appendingPathComponent("pid"), atomically: true, encoding: .utf8)
@@ -410,7 +413,7 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertEqual(i.state(), .installed(id: "mcpfixture-1", updateAvailable: false, stale: false))
         i.sweepStaging()
         let c = Set(children())
-        XCTAssertEqual(c, ["install.json", "mcpfixture-1", "profile", "output", "notes.txt"])
+        XCTAssertEqual(c, ["install.json", "mcpfixture-1", "profile", "output", "notes.txt", "mcp-handmade"])
         XCTAssertTrue(logs.value.contains("browser: playwright_swept count=2"))
     }
 
@@ -455,10 +458,11 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         let sibling = work.url.appendingPathComponent("sibling-sentinel")
         try Data("keep".utf8).write(to: sibling)
         try Data("mine".utf8).write(to: root.appendingPathComponent("not-ours.txt"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("mcp-handmade"), withIntermediateDirectories: true)
         let r = await i.remove()
         XCTAssertEqual(describe(r), "ok")
         XCTAssertEqual(events.value, ["stop", "removed"])
-        XCTAssertEqual(Set(children()), ["not-ours.txt"])
+        XCTAssertEqual(Set(children()), ["not-ours.txt", "mcp-handmade"])
         XCTAssertEqual(try String(contentsOf: sibling), "keep")
         XCTAssertEqual(i.state(), .notInstalled)
     }
