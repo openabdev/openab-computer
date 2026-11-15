@@ -298,6 +298,7 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         let fx = try FakeInstallFixture()
         let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data().write(to: staging.appendingPathComponent(".oab-staging"))
         let fd = try holdLock()
         fx.installer(root: root).sweepStaging()
         XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path), "a live holder keeps its staging")
@@ -554,7 +555,12 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         try Data().write(to: root.appendingPathComponent("mcpfixture-2/.oab-owned"))
         // A hand-made directory with a matching name but no marker must survive.
         try FileManager.default.createDirectory(at: root.appendingPathComponent("mcp-handmade/node"), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent(".staging-\(UUID().uuidString)/pkg"), withIntermediateDirectories: true)
+        let marked = root.appendingPathComponent(".staging-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: marked.appendingPathComponent("pkg"), withIntermediateDirectories: true)
+        try Data().write(to: marked.appendingPathComponent(".oab-staging"))
+        // A UUID-named directory without the marker is somebody else's and must survive sweep and remove.
+        let foreignStaging = ".staging-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(foreignStaging), withIntermediateDirectories: true)
         try "999999 1\n".write(to: root.appendingPathComponent(".install.lock"), atomically: true, encoding: .utf8)
         try Data("keep".utf8).write(to: root.appendingPathComponent("notes.txt"))
         let logs = MutableBox<[String]>([])
@@ -562,8 +568,11 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         XCTAssertEqual(i.state(), .installed(id: "mcpfixture-1", updateAvailable: false, stale: false))
         i.sweepStaging()
         let c = Set(children())
-        XCTAssertEqual(c, ["install.json", "mcpfixture-1", "profile", "output", "notes.txt", "mcp-handmade"])
+        XCTAssertEqual(c, ["install.json", "mcpfixture-1", "profile", "output", "notes.txt", "mcp-handmade", foreignStaging])
         XCTAssertTrue(logs.value.contains("browser: playwright_swept count=2"))
+        let r = await i.remove()
+        XCTAssertNotNil(try? r.get())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(foreignStaging).path), "remove keeps an unmarked staging-shaped directory")
     }
 
     // MARK: state

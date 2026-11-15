@@ -156,7 +156,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     }
 
     /// At launch: removes staging directories and orphaned version directories left by a crash,
-    /// and a stale lock. Does nothing while another install holds the lock.
+    /// Does nothing while another install holds the lock.
     public func sweepStaging() {
         let fm = FileManager.default
         guard rootIsPlainDirectory() == true else { return }
@@ -166,7 +166,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         let keep = readRecord()?.version
         var n = 0
         for name in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] {
-            let isStaging = Self.hasUUIDSuffix(name, prefix: ".staging-")
+            let isStaging = hasStagingMarker(name)
             let isOrphan = name != keep && hasOwnershipMarker(name)
             if isStaging || isOrphan, (try? fm.removeItem(at: root.appendingPathComponent(name))) != nil { n += 1 }
         }
@@ -201,6 +201,28 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         guard hasDataMarker(name) else { throw PlaywrightInstallFailure.other("foreign_data") }
     }
 
+    /// Written into every staging directory right after it is created: a UUID-shaped name alone proves nothing.
+    static let stagingMarker = ".oab-staging"
+
+    func hasStagingMarker(_ name: String) -> Bool {
+        guard Self.hasUUIDSuffix(name, prefix: ".staging-") else { return false }
+        var st = stat()
+        let dir = root.appendingPathComponent(name)
+        guard lstat(dir.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { return false }
+        return lstat(dir.appendingPathComponent(Self.stagingMarker).path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG
+    }
+
+    /// A leftover temp file is ours only if it is a regular file holding a record this installer would write.
+    func isOwnTempRecord(_ name: String) -> Bool {
+        guard Self.hasUUIDSuffix(name, prefix: "install.json.tmp-") else { return false }
+        var st = stat()
+        let p = root.appendingPathComponent(name).path
+        guard lstat(p, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_size < 65536,
+              let d = try? Data(contentsOf: URL(fileURLWithPath: p)),
+              let r = try? JSONDecoder().decode(Record.self, from: d) else { return false }
+        return r.manifestId != nil
+    }
+
     static func hasUUIDSuffix(_ name: String, prefix: String) -> Bool {
         name.hasPrefix(prefix) && UUID(uuidString: String(name.dropFirst(prefix.count))) != nil
     }
@@ -216,7 +238,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
     /// Entries the installer creates; `remove` deletes only these.
     func isOurs(_ name: String, ownsRoot: Bool) -> Bool {
-        if Self.hasUUIDSuffix(name, prefix: ".staging-") || Self.hasUUIDSuffix(name, prefix: "install.json.tmp-") { return true }
+        if hasStagingMarker(name) || isOwnTempRecord(name) { return true }
         if ownsRoot, name == "install.json" { return true }
         // profile and output are ours only if this installer created them (they carry its marker).
         if ownsRoot, ["profile", "output"].contains(name), hasDataMarker(name) { return true }
@@ -291,7 +313,12 @@ public final class PlaywrightInstaller: @unchecked Sendable {
             // Someone created the config in the gap: theirs stays, ours is dropped.
             let exists = errno == EEXIST
             unlink(tmp.path)
-            unlink(grab.path)
+            if exists {
+                unlink(grab.path)   // a newer config took the name; the grabbed one is the stale copy
+            } else {
+                // The old selection must survive a failed write: put it back (never delete it).
+                _ = renamex_np(grab.path, url.path, UInt32(RENAME_EXCL))
+            }
             throw PlaywrightInstallFailure.other(exists ? "foreign_install" : "write_install_json")
         }
         unlink(grab.path)
@@ -420,6 +447,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         let staging = root.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         guard mkdir(staging.path, 0o700) == 0 else { throw PlaywrightInstallFailure.other("staging") }
         defer { try? fm.removeItem(at: staging) }
+        do { try Data("oab-computer playwright staging\n".utf8).write(to: staging.appendingPathComponent(Self.stagingMarker)) }
+        catch { throw PlaywrightInstallFailure.other("staging") }
         var st = stat()
         guard lstat(staging.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR, st.st_uid == geteuid() else {
             throw PlaywrightInstallFailure.other("staging")
@@ -521,6 +550,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         }
         let old = readRecord()
         let hadInstall = old != nil
+        unlink(staging.appendingPathComponent(Self.stagingMarker).path)
         do { try Data("oab-computer playwright install\n".utf8).write(to: staging.appendingPathComponent(Self.ownershipMarker)) }
         catch { throw PlaywrightInstallFailure.other("commit") }
         guard rename(staging.path, target.path) == 0 else { throw PlaywrightInstallFailure.other("commit") }
