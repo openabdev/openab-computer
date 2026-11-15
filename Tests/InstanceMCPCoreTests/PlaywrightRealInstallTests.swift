@@ -58,6 +58,37 @@ final class PlaywrightRealInstallTests: XCTestCase {
         }
         XCTAssertFalse(sh("/usr/bin/xattr", ["-l", node.path]).1.contains("com.apple.quarantine"), "recorded in V7; the app never adds it")
 
+        // Fidelity: our extraction equals Apple's own (`ditto -x -k`) of the same pinned zip, and the
+        // app bundle passes the same deep signature check as the reference copy.
+        let ref = root.appendingPathComponent("fidelity-reference", isDirectory: true)
+        try FileManager.default.createDirectory(at: ref, withIntermediateDirectories: true)
+        let zip = ref.appendingPathComponent("c.zip")
+        let art = m.chromiumArtifact(arch)!
+        try await URLSessionArtifactDownloader(policy: .production(manifest: m))
+            .download(from: URL(string: art.url)!, to: zip.path, expectedSize: art.size, expectedSHA256: art.sha256) { _ in }
+        let refTree = ref.appendingPathComponent("tree", isDirectory: true)
+        XCTAssertEqual(sh("/usr/bin/ditto", ["-x", "-k", zip.path, refTree.path]).0, 0)
+        let ours = vd.appendingPathComponent("chromium")
+        let (dc, diff) = sh("/usr/bin/diff", ["-rq", ours.path, refTree.path])
+        print("fidelity diff -rq vs ditto: exit \(dc) \(diff.prefix(600))")
+        XCTAssertEqual(dc, 0, "extraction differs from ditto")
+        func listing(_ dir: URL) -> String {
+            sh("/usr/bin/find", [dir.path, "-exec", "stat", "-f", "%N %Sp %Y", "{}", ";"]).1
+                .replacingOccurrences(of: dir.path, with: "")
+                .split(separator: "\n").sorted().joined(separator: "\n")
+        }
+        let a = listing(ours), b = listing(refTree)
+        // The root directories themselves (0700 here, the umask default for ditto) are not compared.
+        let la = Set(a.split(separator: "\n").filter { !$0.hasPrefix(" ") }), lb = Set(b.split(separator: "\n").filter { !$0.hasPrefix(" ") })
+        print("fidelity listing: \(la.count) vs \(lb.count) entries; only ours: \(la.subtracting(lb).sorted().prefix(8)); only ditto: \(lb.subtracting(la).sorted().prefix(8))")
+        XCTAssertEqual(la, lb, "file kinds, modes or link targets differ from ditto")
+        for (label, dir) in [("ours", ours), ("ditto", refTree)] {
+            let app = dir.appendingPathComponent("chrome-mac-arm64/Google Chrome for Testing.app")
+            let (rc, ro) = sh("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
+            print("fidelity codesign --verify --deep --strict \(label): exit \(rc) \(ro.replacingOccurrences(of: "\n", with: " | ").suffix(160))")
+        }
+        try? FileManager.default.removeItem(at: ref)
+
         // V8 and V12: start the pinned MCP the way the app does (headless here, no window server over SSH).
         guard case .success(let spec0) = ManagedPlaywrightLocator(root: root).locate() else { return XCTFail("locate") }
         let spec = ManagedLaunchSpec(executable: spec0.executable, arguments: spec0.arguments + ["--headless"],
