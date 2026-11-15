@@ -325,14 +325,14 @@ final class BrowserCopyAndMenuTests: XCTestCase {
         XCTAssertTrue(t.contains("browser profile")); XCTAssertTrue(t.contains("cookies"))
         XCTAssertTrue(t.contains("does not touch Chrome, Safari or ~/.local/oab-computer/"))
         XCTAssertFalse(t.contains("deletes"), "remove() leaves items it does not own")
-        XCTAssertTrue(t.contains("cannot confirm stays"))
-        XCTAssertTrue(t.contains("unreadable or invalid"))
-        XCTAssertTrue(t.contains("readable install.json written by this app"))
+        XCTAssertTrue(t.contains("carry this app's marker"), "marked version folders go even with a bad install.json")
+        XCTAssertTrue(t.contains("removed even if install.json is unreadable, invalid or made by hand"))
+        XCTAssertTrue(t.contains("only when a readable install.json written by this app confirms it created them"))
+        XCTAssertTrue(t.contains("Anything else stays"))
         let partial = WizardCopy.removalPartial(path: "/Users/someone/x/playwright", home: "/Users/someone")
         XCTAssertTrue(partial.contains("could not be confirmed as created by this app"))
         XCTAssertTrue(partial.contains("unreadable, invalid or made by hand"))
         XCTAssertFalse(partial.contains("were not created by this app"), "an invalid record can sit beside items the app did create")
-        XCTAssertTrue(t.contains("install.json made by hand"))
         XCTAssertTrue(t.contains("~/x/playwright"))
     }
 

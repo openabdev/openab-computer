@@ -79,7 +79,7 @@ extension WizardCopy {
     /// `PlaywrightInstaller.remove()`: only items that carry the installer's marker, or that an `install.json`
     /// written by the installer owns. A foreign or unreadable `install.json`, and the profile, stay.
     public static func removalConfirmation(path: String, home: String = NSHomeDirectory()) -> String {
-        "This removes what this app installed in \(displayPath(path, home: home)): Node.js, the Playwright MCP server, the downloaded Chromium, and the browser profile with its cookies and sign-ins, but only the items this app can confirm it created, which needs a readable install.json written by this app. Anything it cannot confirm stays, for example an install.json made by hand, an install.json that is unreadable or invalid, and the profile and output folder it points to. It does not touch Chrome, Safari or ~/.local/oab-computer/. Agents lose the browser tools until you install it again."
+        "This removes what this app installed in \(displayPath(path, home: home)). Version folders that carry this app's marker (Node.js, the Playwright MCP server and the downloaded Chromium) are removed even if install.json is unreadable, invalid or made by hand. The browser profile with its cookies and sign-ins, the output folder and install.json are removed only when a readable install.json written by this app confirms it created them. Anything else stays, and it does not touch Chrome, Safari or ~/.local/oab-computer/. Agents lose the browser tools until you install it again."
     }
 
     public static let removalDone = "Playwright was removed."
