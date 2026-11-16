@@ -555,7 +555,6 @@ fn extract_body(
 /// Creates entries below a directory fd, one component at a time, never following a link.
 struct TreeWriter {
     root: OwnedFd,
-    cache: Option<(String, OwnedFd)>,
     current: Option<File>,
 }
 
@@ -578,7 +577,6 @@ impl TreeWriter {
         }
         Ok(TreeWriter {
             root,
-            cache: None,
             current: None,
         })
     }
@@ -597,12 +595,8 @@ impl TreeWriter {
         if comps.is_empty() {
             return self.root.try_clone().map_err(map_io);
         }
-        let key = comps.join("/");
-        if let Some((k, fd)) = &self.cache {
-            if *k == key {
-                return fd.try_clone().map_err(map_io);
-            }
-        }
+        // Always re-walk from the root with O_NOFOLLOW: a cached directory fd would keep
+        // pointing at a directory that was renamed away after its first use.
         let mut cur = self.root.try_clone().map_err(map_io)?;
         for c in comps {
             match rustix::fs::mkdirat(&cur, *c, Mode::from_raw_mode(0o755)) {
@@ -611,7 +605,6 @@ impl TreeWriter {
             }
             cur = Self::open_dir(&cur, c)?;
         }
-        self.cache = Some((key, cur.try_clone().map_err(map_io)?));
         Ok(cur)
     }
 

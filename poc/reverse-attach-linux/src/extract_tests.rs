@@ -1234,7 +1234,7 @@ fn a_directory_swapped_for_a_symlink_cannot_lead_outside() {
         assert_eq!(err.reason(), Reason::Io, "{f:?}");
         assert!(fx.outside_untouched(), "{f:?}: nothing may land outside");
     }
-    // The same swap one level down, through the cached parent descriptor's path: a symlink in
+    // The same swap one level down, through the parent path: a symlink in
     // place of an intermediate directory.
     for (f, b) in both(&[
         E::D("p"),
@@ -1256,6 +1256,31 @@ fn a_directory_swapped_for_a_symlink_cannot_lead_outside() {
             "{f:?}"
         );
         assert!(fx.outside_untouched(), "{f:?}");
+    }
+}
+
+#[test]
+fn a_populated_parent_renamed_away_between_entries_is_not_written_through() {
+    for (f, b) in both(&[
+        E::D("a"),
+        E::F("a/one", b"1", 0o644),
+        E::F("a/two", b"2", 0o644),
+    ]) {
+        let fx = Fx::new(&b);
+        let plan = validate(&fx.art(), f, &lim()).unwrap();
+        let (stage, outside) = (fx.stage.clone(), fx.outside.clone());
+        let mut hook = |i: usize, _: &PlannedEntry| {
+            if i == 2 {
+                fs::rename(stage.join("a"), outside.join("moved")).unwrap();
+                std::os::unix::fs::symlink(&outside, stage.join("a")).unwrap();
+            }
+        };
+        assert!(
+            extract_with_hook(&plan, &fx.art(), &fx.stage, &mut hook).is_err(),
+            "{f:?}"
+        );
+        assert!(!outside.join("moved").join("two").exists(), "{f:?}");
+        assert!(!outside.join("two").exists(), "{f:?}");
     }
 }
 
