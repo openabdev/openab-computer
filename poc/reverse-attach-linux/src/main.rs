@@ -10,10 +10,20 @@
 mod attach;
 mod audit;
 mod auth;
+// L1a (#119): the managed Playwright tier's pins, download and extraction. Nothing calls them
+// until the install path lands (L1b), so the linker drops them from the binary until then.
+#[allow(dead_code)]
+mod download;
+#[allow(dead_code)]
+mod extract;
 mod http;
 #[cfg(test)]
 mod http_conformance;
 mod jobs;
+#[allow(dead_code)]
+mod manifest;
+#[cfg(test)]
+mod manifest_conformance;
 mod mcp;
 mod platform;
 #[cfg(test)]
