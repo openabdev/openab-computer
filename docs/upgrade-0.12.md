@@ -260,6 +260,8 @@ Check each path before you delete it. The `tccutil reset` commands from step 3 b
 
 Possible until step 8, as long as the old install directory and the backup exist.
 
+If you also installed the managed Playwright on macOS, remove it first from the menu (**Remove Playwright…**), before the macOS commands below boot the app out.
+
 macOS:
 
 ```sh
@@ -285,5 +287,4 @@ systemctl --user enable --now oab-instance-mcp.service
 
 The tailnet mapping on `:8444` points at `127.0.0.1:8795` in both versions, so it can stay. The old
 token file was never changed, so clients that used it keep working. Remove the new agent's files
-(`~/.local/oab-computer`, `~/.config/oab-computer`) only if you will not try again. If you also
-installed the managed Playwright on macOS, remove it first from the menu (**Remove Playwright…**).
+(`~/.local/oab-computer`, `~/.config/oab-computer`) only if you will not try again.

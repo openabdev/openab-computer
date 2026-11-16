@@ -21,7 +21,7 @@ details are in the README sections
 | Browser | A pinned Chromium (Chrome for Testing) the app downloads | The distro `chromium` if present, otherwise Playwright's own Chromium |
 | Update and remove | Menu items | By hand, see [Linux update and remove](#linux-update-and-remove) below |
 | Sign-in window | Menu item **Open Playwright window to sign in…** | The browser window is on the node's desktop seat |
-| Who can call the tools | `owner` profile only | `owner` profile only |
+| Who can call the tools | Through oab-computer, the `owner` profile only. With an external listener, anyone who can reach its port directly bypasses that check | Through oab-computer, the `owner` profile only. Port `8794` itself is open to every local user, see the warning below |
 
 Every `browser_*` call acts as the user on the sites the browser is signed in to, and
 `browser_evaluate` and `browser_run_code_unsafe` run arbitrary code in the page or in Node. Treat
@@ -148,7 +148,7 @@ files. It starts nothing.
 - on Ubuntu with `apparmor_restrict_unprivileged_userns` set (and `sudo` allowed), an AppArmor profile
   `/etc/apparmor.d/playwright-chromium` that lets Playwright's own Chromium create its sandbox,
 - the font packages `fonts-dejavu-core`, `fonts-liberation`, `fonts-noto-cjk` and
-  `fonts-noto-color-emoji` (when `sudo` allows it), so pages do not render as boxes.
+  `fonts-noto-color-emoji` (when no DejaVu, Liberation or Noto font is present and `sudo` allows it), so pages do not render as boxes.
 
 **Port 8794 is unauthenticated.** Any local user on the node can call every browser tool, including
 `browser_run_code_unsafe` (arbitrary Node code). On a shared host use `--no-browser`. The installer
@@ -161,7 +161,11 @@ commands for the browser: use `systemctl --user` and the steps in [Linux setup](
 
 ### Linux update and remove
 
-There is no command for these. To update, stop the unit, change the version, and start it again:
+There is no command for these. Re-running `install-linux.sh` without `--no-browser` does neither: it
+recreates the unit and the `MCP_UPSTREAM` line, and it skips `npm install` when `playwright-mcp`
+already exists, so it neither updates the browser nor keeps it removed.
+
+To update, stop the unit, change the version, and start it again:
 
 ```sh
 systemctl --user stop oab-computer-pw-mcp.service
@@ -169,16 +173,27 @@ cd ~/.local/oab-computer/pw-mcp && npm install --save-exact @playwright/mcp@NEW_
 systemctl --user start oab-computer-pw-mcp.service
 ```
 
-To remove the browser tools:
+This is enough when the unit uses the distro `chromium`. When the installer downloaded Playwright's
+own Chromium, the new `@playwright/mcp` may need a matching build: run
+`npx playwright install chromium` in `~/.local/oab-computer/pw-mcp`, then update the
+`Environment=PW_CHROMIUM=` line in `~/.config/systemd/user/oab-computer-pw-mcp.service` to the new
+binary path, run `systemctl --user daemon-reload`, and restart the unit.
+
+To remove the browser tools, edit `oab-computer.service` first so the daemon stops pointing at port
+8794 (a freed port could be bound by any local user, who would then answer `browser_*` calls):
 
 ```sh
+sed -i '/^Environment=MCP_UPSTREAM=browser=/d' ~/.config/systemd/user/oab-computer.service
 systemctl --user disable --now oab-computer-pw-mcp.service
 rm ~/.config/systemd/user/oab-computer-pw-mcp.service
 rm -r ~/.local/oab-computer/pw-mcp ~/.local/oab-computer/pw-profile   # the profile holds your sign-ins
 systemctl --user daemon-reload
+systemctl --user restart oab-computer.service
 ```
 
-Then delete the `MCP_UPSTREAM=browser=...` line from `oab-computer.service` and restart that unit.
+Leftovers you may also delete: `~/.cache/ms-playwright`, `/etc/apparmor.d/playwright-chromium`,
+the Chromium policy file `/etc/chromium/policies/managed/oab-computer.json`, and the unit's output
+and config files if present.
 
 ### Planned: a managed Linux tier
 

@@ -271,23 +271,23 @@ desktop at Connect's quality 0.6, against about 2 MB as PNG.
 
 ```mermaid
 sequenceDiagram
-    participant H as "Human, CLI or Connect"
-    participant N as "hands node port 8444"
-    participant R as "openab-pty runtime port 8090"
-    participant A as "agent in the session"
-    H->>N: "POST /attach with runtime, session, profile, ttl_secs, admin_credential"
-    N->>R: "POST /admin/sessions/SESSION/tools-attach with ttl_secs"
-    R-->>N: "secret and expires_in_secs"
-    N-->>H: "202 grant with id, state idle"
-    N->>R: "WebSocket GET /tools/attach/SESSION with Bearer secret"
-    R-->>N: "101, state attached"
-    A->>R: "tools/list via OPENAB_TOOLS_MCP_URL"
-    R->>N: "tools/list over the WebSocket"
-    N-->>R: "owner gets 9 local tools and 32 browser tools, observe gets sys_info and screenshot"
-    A->>R: "tools/call screenshot"
-    R->>N: "tools/call screenshot"
-    N-->>R: "image/jpeg"
-    Note over N,R: "close 4010 or DELETE /attach/ID stops it, close 1000 redials with backoff"
+    participant H as Human, CLI or Connect
+    participant N as hands node port 8444
+    participant R as openab-pty runtime port 8090
+    participant A as agent in the session
+    H->>N: POST /attach with runtime, session, profile, ttl_secs, admin_credential
+    N->>R: POST /admin/sessions/SESSION/tools-attach with ttl_secs
+    R-->>N: secret and expires_in_secs
+    N-->>H: 202 grant with id, state idle
+    N->>R: WebSocket GET /tools/attach/SESSION with Bearer secret
+    R-->>N: 101, state attached
+    A->>R: tools/list via OPENAB_TOOLS_MCP_URL
+    R->>N: tools/list over the WebSocket
+    N-->>R: owner gets 9 local tools and 32 browser tools, observe gets sys_info and screenshot
+    A->>R: tools/call screenshot
+    R->>N: tools/call screenshot
+    N-->>R: image/jpeg
+    Note over N,R: close 4010 or DELETE /attach/ID stops it, close 1000 redials with backoff
 ```
 
 ```sh

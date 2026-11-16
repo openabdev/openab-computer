@@ -294,7 +294,7 @@ flowchart TB
     downloading -- "Cancel, staging is removed once the transfer stops" --> pre
     verifying -- "Cancel, staging is removed once the step stops" --> pre
     failed -- "Retry" --> preflight
-    failed -- "Decline" --> declined
+    failed -- "user unchecks the box" --> declined
     failed -- "Continue without" --> without
     without --> complete
 ```
