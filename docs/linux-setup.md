@@ -48,7 +48,12 @@ flowchart LR
 ```
 
 Two systemd **user** units with linger enabled, both binding loopback only; `tailscale serve`
-terminates TLS and stamps the caller's Tailscale identity. Same shape as the Mac.
+terminates TLS and stamps the caller's Tailscale identity. Same shape as the Mac, except for
+Playwright: macOS runs it as a managed child with no port, while Linux runs it as a separate unit on
+loopback `8794`. A managed Linux tier is designed
+([#119](https://github.com/openabdev/openab-computer/issues/119),
+[ADR](adr/linux-browser-tier.md)) and not built. The `8794` listener has no authentication; see
+[Browser tools](#4-browser-tools-playwrightmcp).
 
 ## Prerequisites
 
@@ -65,12 +70,18 @@ terminates TLS and stamps the caller's Tailscale identity. Same shape as the Mac
   `tailscale serve`). Do **not** do this on a k3s node that hosts openab-pty pods: host-level
   `tailscaled` gives every pod tailnet egress as the node (measured, see
   [`docs/adr/reverse-attach.md`](adr/reverse-attach.md)).
-- Rust ≥ 1.85 (`rustup`), `sudo`.
+- `sudo`. Rust ≥ 1.85 (`rustup`) is needed only to build from source.
 
 ```sh
-sudo apt-get install -y grim wlrctl wtype nodejs npm        # + sway for --headless-seat
+sudo apt-get install -y grim wtype nodejs npm               # + sway for --headless-seat
 sudo apt-get install -y chromium                             # Debian / Raspberry Pi OS only
 ```
+
+`install-linux.sh` still exits 78 ("missing: wlrctl") when `wlrctl` is not installed, although the
+daemon never calls it: it spawns `grim` and `wtype` and holds its own virtual pointer.
+`wlrctl` is not in the Ubuntu 24.04 archive, so on Ubuntu the installer cannot finish until
+[#130](https://github.com/openabdev/openab-computer/issues/130) is fixed. Install `wlrctl` first if
+your distro packages it.
 
 Debian 13 ships `nodejs` 20 and `npm` 9, which is enough for `@playwright/mcp`. Ubuntu has no
 `chromium` deb (snap only, unusable from a user unit); the installer downloads Playwright's
@@ -104,12 +115,13 @@ curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz.sha256"
 sha256sum -c "oab-computer-$V-linux-$A.tar.gz.sha256"
 tar xzf "oab-computer-$V-linux-$A.tar.gz" && cd "oab-computer-$V-linux-$A"
-./install-linux.sh            # does steps 3–5 below; --allow-login / --no-browser / --port
+./install-linux.sh            # does steps 3–5 below; --allow-login / --no-browser / --port / --serve-port
 ./install-linux.sh --headless-seat   # same, on a box with no desktop (creates oab-seat.service)
 ```
 
 `install-linux.sh` is idempotent: it keeps an existing token, detects your Tailscale login,
-writes both user units, installs `@playwright/mcp` when `node`/`chromium` are present, enables
+writes both user units, installs `@playwright/mcp` when `node` and `npm` are present (it downloads
+Playwright's Chromium if no distro `chromium` exists; `--no-browser` skips all of it), enables
 linger and `tailscale serve`. If it did everything, skip to [Verify](#6-verify-from-another-tailnet-machine);
 steps 3–5 describe what it did.
 
@@ -152,6 +164,8 @@ Environment=WAYLAND_DISPLAY=wayland-0
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Restart=always
 RestartSec=2
+# Apps opened via `bash` belong to the desktop, not to this daemon: a restart must not kill them.
+KillMode=process
 
 [Install]
 WantedBy=default.target
@@ -178,7 +192,7 @@ local `POST /attach` goes through the `https://…:8444` URL below.
 
 ```sh
 mkdir -p ~/.local/oab-computer/pw-mcp && cd ~/.local/oab-computer/pw-mcp
-npm install --save-exact @playwright/mcp@0.0.82        # same pin as poc/pw-mcp (macOS)
+npm install --save-exact @playwright/mcp@0.0.82        # same version as the macOS managed Playwright
 cp ~/repo/oab-computer/poc/reverse-attach-linux/pw-mcp.sh ~/.local/oab-computer/pw-mcp.sh
 chmod +x ~/.local/oab-computer/pw-mcp.sh
 
@@ -209,8 +223,8 @@ echo '{"DefaultMediaStreamSetting": 2, "DefaultNotificationsSetting": 2, "Defaul
 systemctl --user restart oab-computer-pw-mcp
 ```
 
-`pw-mcp.sh` uses the distro Chromium (`--executable-path /usr/bin/chromium`) so nothing is
-downloaded, launches it **headed** into the seat, keeps a persistent profile under
+`pw-mcp.sh` uses `PW_CHROMIUM` (the installer sets it; the distro Chromium when present, so nothing is
+downloaded), launches it **headed** into the seat, keeps a persistent profile under
 `~/.local/oab-computer/pw-profile`, and lists `--allowed-hosts` in both `host` and
 `host:port` forms (Playwright answers 403 to everything otherwise). Chromium runs with its
 sandbox on; check with `tr '\0' '\n' </proc/$(pgrep -f 'chromium.*user-data-dir' | head -1)/cmdline | grep -c no-sandbox`
@@ -225,7 +239,10 @@ sudo tailscale serve status
 # |-- / proxy http://127.0.0.1:8795
 ```
 
-The Playwright port is **not** served; only the daemon re-serves it, filtered by profile.
+The Playwright port is **not** served on the tailnet; only the daemon re-serves it, filtered by
+profile. On the node itself it listens on loopback **without authentication**, so any local user on
+this node can reach it directly and call every browser tool, including `browser_run_code_unsafe`
+(arbitrary Node code). Use `--no-browser` on a shared host.
 
 ## 6. Verify from another tailnet machine
 
@@ -399,7 +416,7 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
 - **`grim -t jpeg` → "jpeg support disabled"** on Debian's build. The daemon never asks grim
   for JPEG: it takes raw PPM from grim and encodes the JPEG itself.
 - **A seat with no physical input silently drops transient virtual devices.** Headless sway
-  and a Pi with no mouse advertise no pointer/keyboard capability, so a `wlrctl`/`wtype` call that
+  and a Pi with no mouse advertise no pointer/keyboard capability, so a one-shot `wtype` call (or any short-lived virtual pointer) that
   creates a device, sends and exits within milliseconds is lost: Chromium never binds
   `wl_pointer`/`wl_keyboard` in time, yet the tool exits 0 and `mouse`/`key` report `ok: true`.
   The daemon therefore holds a **persistent** virtual pointer (its own Wayland connection, absolute
@@ -422,3 +439,18 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   userns restriction; see [Headless server notes](#headless-server-notes-ubuntu-2404).
 - **Headed browser "without having a XServer"** on a headless seat: Chromium picked X11; add
   `--ozone-platform=wayland` (the installer's `pw-config.json` does).
+
+## Upgrading from 0.11
+
+0.12.0 renamed the units to `oab-computer.service` and `oab-computer-pw-mcp.service`. The
+installer only warns about the old ones. The old `oab-instance-mcp.service` holds port 8795, so
+stop it before the new unit can bind:
+
+```sh
+systemctl --user disable --now oab-instance-mcp.service
+systemctl --user disable --now oab-pw-mcp.service      # only if you used the Playwright unit
+systemctl --user restart oab-computer.service
+```
+
+Full steps, with the old and new names: the README section
+[Upgrading from 0.11 or earlier](../README.md#upgrading-from-011-or-earlier).

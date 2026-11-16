@@ -2,9 +2,9 @@
 
 **Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
 
-- **Status:** Proposed
+- **Status:** Accepted. Implemented: the Rust Linux node ships as release tarballs since 0.6.7 (validation gate and parity tracked in [`docs/parity-checklist.md`](../parity-checklist.md)).
 - **Date:** 2026-09-27
-- **Related:** [openabdev/instance-mcp#15](https://github.com/openabdev/instance-mcp/issues/15) (FR + phased plan + arch diagrams), [`reverse-attach.md`](reverse-attach.md), [`sandbox-adapter.md`](sandbox-adapter.md)
+- **Related:** [openabdev/instance-mcp#15](https://github.com/openabdev/openab-computer/issues/15) (FR + phased plan + arch diagrams), [`reverse-attach.md`](reverse-attach.md), [`sandbox-adapter.md`](sandbox-adapter.md)
 - **Review:** Two independent reviewers (fable/claude-fable-5.1, sol/gpt-5.6-sol) returned NEEDS_CHANGES; this revision incorporates their convergent findings. See PR discussion.
 
 ## Context

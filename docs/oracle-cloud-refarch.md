@@ -1,5 +1,12 @@
 # Reference architecture: instance-mcp on an Oracle Cloud Ubuntu VM
 
+> **Archived: describes the hand-installed 0.8.0 setup.** The commands, unit names, release asset names
+> and SHA-256 values below are from 0.8.0 and no longer work for 0.12.0 or later. For a current
+> install, use [`docs/linux-setup.md`](linux-setup.md) (it has the `install-linux.sh` path). To upgrade
+> an existing node, see the README section
+> [Upgrading from 0.11 or earlier](../README.md#upgrading-from-011-or-earlier) and
+> [`docs/upgrade-0.12.md`](upgrade-0.12.md).
+
 **Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
 
 | Old (0.8–0.11) | New (0.12.0) |
@@ -9,15 +16,6 @@
 | `dev.openab.instance-mcp.pw-mcp`, `oab-pw-mcp.service` | `dev.openab.computer.pw-mcp`, `oab-computer-pw-mcp.service` |
 | `oab-instance-mcp.service` | `oab-computer.service` |
 | `OAB_INSTANCE_MCP_*` | `OAB_COMPUTER_*` |
-
-> Agent-friendly prompt block (copy-paste to set up a new VM)
->
-> ```
-> Set up instance-mcp 0.8.0 on an Oracle Cloud Ubuntu 24.04 arm64 VM as a Tailscale node.
-> Follow docs/oracle-cloud-refarch.md sections 2 and 3 in order, then verify with section 4 from
-> another tailnet machine. Run the daemon as a dedicated user with no sudo, bound to
-> 127.0.0.1:8795, behind `tailscale serve --https=8444`. Never print or paste the bearer token.
-> ```
 
 **Status.** Written from the live VM `<oracle-host>`, checked with read-only commands and one
 handshake over the tailnet. Where the VM differs from the earlier investigation, this page
@@ -159,7 +157,7 @@ The service user only reads this tree. The reference VM's copy is owned by `ubun
 ### 3.4 Daemon binary (admin account, then the service user)
 
 The v0.8.0 release contains `oab-instance-mcp-0.8.0-linux-arm64.tar.gz` and a `.sha256`. Checksums
-from the reference VM, for comparison:
+from the reference VM, for comparison. They are historical: they describe the 0.8.0 release only.
 
 | File | SHA-256 |
 |---|---|
@@ -614,55 +612,11 @@ going through serve. The daemon answers 401 for every denied request, whatever t
 
 ### 7.5 Upgrade
 
-1. Read the release notes. Check whether a unit file or the Playwright pin changes.
-2. Keep the current binary for rollback before you touch the new release. Keep one older copy
-   too: `.prev2` receives the old `.prev`, then `.prev` receives the current binary. Use absolute
-   paths, because `~` is expanded by the admin shell before `sudo` runs:
-
-   ```sh
-   D=/home/oabmcp/.local/oab-instance-mcp
-   if sudo -u oabmcp test -e $D/oab-instance-mcp.prev; then
-     sudo -u oabmcp cp $D/oab-instance-mcp.prev $D/oab-instance-mcp.prev2
-   fi
-   sudo -u oabmcp cp $D/oab-instance-mcp $D/oab-instance-mcp.prev
-   ```
-
-3. Download and verify the new tarball. Set `V` to the new version (`0.8.1` below is a
-   placeholder). The extracted binary is `/tmp/oab-instance-mcp-$V-linux-arm64/oab-instance-mcp`:
-
-   ```sh
-   V=0.8.1
-   cd /tmp
-   curl -fsSLO https://github.com/openabdev/instance-mcp/releases/download/v$V/oab-instance-mcp-$V-linux-arm64.tar.gz
-   curl -fsSLO https://github.com/openabdev/instance-mcp/releases/download/v$V/oab-instance-mcp-$V-linux-arm64.tar.gz.sha256
-   sha256sum -c oab-instance-mcp-$V-linux-arm64.tar.gz.sha256
-   tar -xzf oab-instance-mcp-$V-linux-arm64.tar.gz
-   ```
-
-4. Stop the daemon, install the new binary, and start it again. Stopping first avoids replacing a
-   running executable:
-
-   ```sh
-   ouser systemctl --user stop oab-instance-mcp
-   sudo -u oabmcp install -m 755 /tmp/oab-instance-mcp-$V-linux-arm64/oab-instance-mcp \
-     /home/oabmcp/.local/oab-instance-mcp/oab-instance-mcp
-   ouser systemctl --user start oab-instance-mcp
-   ```
-
-5. Run the handshake (4.3) and confirm the tool count.
-6. To roll back, stop the daemon, copy `oab-instance-mcp.prev` back over the binary, and start it:
-
-   ```sh
-   ouser systemctl --user stop oab-instance-mcp
-   sudo -u oabmcp install -m 755 /home/oabmcp/.local/oab-instance-mcp/oab-instance-mcp.prev \
-     /home/oabmcp/.local/oab-instance-mcp/oab-instance-mcp
-   ouser systemctl --user start oab-instance-mcp
-   ```
-
-`.prev2` holds the binary from one upgrade earlier. To roll back to it, use the step 6 commands
-with `.prev2` in place of `.prev`.
-
-Before you rely on a rollback copy, compare its SHA-256 with the release it should match (3.4).
+The 0.8.0 upgrade steps that used to be here downloaded `oab-instance-mcp-*` assets from the old
+repository and restarted the old unit names. Those assets and units do not exist from 0.12.0 on, so
+the steps were removed. To upgrade a node installed this way, follow the README section
+[Upgrading from 0.11 or earlier](../README.md#upgrading-from-011-or-earlier) and
+[`docs/upgrade-0.12.md`](upgrade-0.12.md). Keep a copy of the current binary before you start.
 
 ### 7.6 Stop exposing the node
 
@@ -672,7 +626,7 @@ sudo tailscale serve --https=8444 off
 
 ### 7.7 Gotchas found while installing
 
-- **The installer exits 78 without `wlrctl`.** `scripts/install-linux.sh` checks for `tailscale`,
+- **The installer exits 78 without `wlrctl`** (tracked in [#130](https://github.com/openabdev/openab-computer/issues/130)). `scripts/install-linux.sh` checks for `tailscale`,
   `grim`, `wlrctl`, `wtype` and `python3`, and stops at the first missing one. The reference VM
   has no `wlrctl`, so the installer was not run there. The hand-written units in section 3 do the
   same job. `wlrctl` is not in the Ubuntu 24.04 archive (`apt-cache show wlrctl` finds nothing),

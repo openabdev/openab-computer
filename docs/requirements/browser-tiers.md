@@ -1,9 +1,15 @@
 # Requirement — browser tools in tiers (Playwright first, Apple Events fallback)
 
+> **Implementation status (0.12.0):** shipped: the macOS router and the managed Playwright. Not
+> implemented: the Apple Events tier, the CDP tier, the installed-Chrome fallback
+> ([#128](https://github.com/openabdev/openab-computer/issues/128)) and the menu preference pin.
+>
 > Implements the decision in [`docs/adr/browser-tiers.md`](../adr/browser-tiers.md) for issue
 > [#118](https://github.com/openabdev/openab-computer/issues/118). Linux is covered only by the
 > parity statement at the end; its installer is issue
-> [#119](https://github.com/openabdev/openab-computer/issues/119).
+> [#119](https://github.com/openabdev/openab-computer/issues/119), designed in
+> [`docs/adr/linux-browser-tier.md`](../adr/linux-browser-tier.md) and
+> [`linux-browser-tier.md`](linux-browser-tier.md).
 
 ## Statement
 

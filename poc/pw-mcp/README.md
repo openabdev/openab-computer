@@ -1,5 +1,12 @@
 # Step 1 PoC — Playwright MCP on the Mac, driven from the tailnet
 
+> **Optional external Playwright.** On macOS, most Macs should use **Browser tools** in the setup
+> wizard: the app installs, runs and removes its own Playwright, with no listener (see the
+> [README](../../README.md#browser-tools)). Use this directory only to run Playwright as a separate,
+> operator-managed process that the app reaches with `--upstream browser=…`. On Linux the same
+> pattern is [`poc/reverse-attach-linux/pw-mcp.sh`](../reverse-attach-linux/pw-mcp.sh); see
+> [`docs/linux-setup.md`](../../docs/linux-setup.md). The text below is the dated 2026-09-22 PoC record.
+
 > Done 2026-09-22. Design context: openabdev/openab#1544.
 > Proves the browser half of the relay-agent design before any Swift is written:
 > a headed browser living in the Mac's Aqua session, served as an MCP server on loopback.

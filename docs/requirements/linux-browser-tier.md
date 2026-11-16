@@ -1,5 +1,8 @@
 # Requirements: Linux managed Playwright tier
 
+> **Status:** accepted design, not implemented as of v0.12.0. Today's Linux behavior is in
+> [`docs/linux-setup.md`](../linux-setup.md).
+
 - **Issues:** [#119](https://github.com/openabdev/openab-computer/issues/119), [#118](https://github.com/openabdev/openab-computer/issues/118)
 - **ADR:** [`docs/adr/linux-browser-tier.md`](../adr/linux-browser-tier.md) (decisions D1 to D17 are cited below)
 - **macOS counterparts:** [`docs/adr/browser-tiers.md`](../adr/browser-tiers.md), [`browser-tiers.md`](browser-tiers.md)

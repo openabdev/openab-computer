@@ -1,6 +1,6 @@
 # ADR: Linux managed Playwright tier
 
-- **Status:** Accepted
+- **Status:** Accepted, not implemented as of v0.12.0. There is no `oab-computer browser` subcommand and no managed Linux Playwright; today's Linux behavior (an external unit on `127.0.0.1:8794`) is in [`docs/linux-setup.md`](../linux-setup.md).
 - **Issues:** [#119](https://github.com/openabdev/openab-computer/issues/119) (this work), [#118](https://github.com/openabdev/openab-computer/issues/118) (macOS tiers)
 - **Requirement:** [`docs/requirements/linux-browser-tier.md`](../requirements/linux-browser-tier.md) (requirements, cutover runbook, test plan, PR split)
 - **Related:** [`browser-tiers.md`](browser-tiers.md) (the macOS ADR; its questions are cited here as "macOS Q*n*"), [`reverse-attach.md`](reverse-attach.md), [`docs/linux-setup.md`](../linux-setup.md), [`docs/tool-profiles.md`](../tool-profiles.md)

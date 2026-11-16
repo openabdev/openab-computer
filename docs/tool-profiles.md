@@ -25,16 +25,17 @@ They are named after the one boundary that is real: shell-equivalent or not.
 > tools, and GUI control is a shell too (`osascript` runs `do shell script`, `key` can type into a
 > terminal, and `mouse` can open one). It also serves every browser tool. The browser uses this
 > computer's persistent profile and network, so it is owner-level as well
-> ([#45](https://github.com/openabdev/instance-mcp/issues/45)). When you grant `owner`, lend a
+> ([#45](https://github.com/openabdev/openab-computer/issues/45)). When you grant `owner`, lend a
 > **dedicated computer** (a Linux hands node, a throwaway machine or VM), not the one you work on.
 >
 > Every **local** tool is classified `observe` (reads only), `act` (changes state) or `shell`
 > (reaches the desktop user's shell). The boundary tests fail on any **unclassified** local tool,
 > on a profile that claims to be narrower than a shell while allowing a `shell` tool, and on
 > `observe` holding anything but `observe` tools (macOS `ProfileBoundaryTests`, Linux
-> `profile_tests`). Upstream `browser_*` tools are classified by profile: `owner` gets all of them,
-> including tools the upstream adds later, and `observe` gets none. Both platforms check this
-> against the same 32-tool fixture in `conformance/profile_vectors.json` (`BrowserProfileTests`,
+> `profile_tests`). Upstream `browser_*` tools are classified by profile: on macOS
+> `owner` gets the 32 names in the catalog (a tool the upstream adds later is filtered out), and on Linux
+> it gets every tool the upstream offers. `observe` gets none on both. Both platforms check
+> this against the same 32-tool fixture in `conformance/profile_vectors.json` (`BrowserProfileTests`,
 > `profile_conformance`).
 
 ## 1. Available profiles
@@ -88,6 +89,12 @@ JavaScript in that profile. In the managed Playwright the user signs in to sites
 window, and an agent acts as the user on those sites; some sites may refuse an automated browser.
 Profile and cookies live in `~/Library/Application Support/oab-computer/playwright/profile/`
 and are deleted with the install.
+Callers can send an `OAB-Browser-Backend` header (`auto`, `playwright` or `appleEvents`); only the
+Playwright backend exists in 0.12.0, so `appleEvents` answers "not set up".
+On Linux, Playwright is only the external unit on loopback `127.0.0.1:8794`, and that listener has no
+authentication: any local user on the node can call every browser tool there, including
+`browser_run_code_unsafe`. Use `--no-browser` on a shared host. A managed Linux tier is designed and not
+built ([ADR](adr/linux-browser-tier.md)).
 
 ### `observe`
 
@@ -212,4 +219,4 @@ keys, so they keep working. Until they are updated, picking "Desktop" there gets
   shell-equivalent.
 - **VMs**: lend a disposable macOS VM instead of the host.
 
-All tracked in [#45](https://github.com/openabdev/instance-mcp/issues/45).
+All tracked in [#45](https://github.com/openabdev/openab-computer/issues/45).
