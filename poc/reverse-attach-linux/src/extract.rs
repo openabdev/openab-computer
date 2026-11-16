@@ -452,12 +452,24 @@ fn identity(f: &File) -> Res<Identity> {
 }
 
 /// SHA-256 of the open descriptor's bytes, read with `pread` so the cursor stays at 0.
-fn hash_fd(f: &File) -> Res<[u8; 32]> {
+///
+/// The read is capped at `max` bytes: a descriptor that holds more than the verified size is
+/// refused as changed instead of being read to its end.
+fn hash_fd(f: &File, max: u64) -> Res<[u8; 32]> {
     let mut h = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut off = 0u64;
     loop {
-        let n = f.read_at(&mut buf, off).map_err(map_io)?;
+        let want = (buf.len() as u64).min(max - off) as usize;
+        if want == 0 {
+            // `max` bytes were hashed; any further byte means the file grew.
+            let mut one = [0u8; 1];
+            if f.read_at(&mut one, off).map_err(map_io)? != 0 {
+                return rej(Reason::Changed);
+            }
+            break;
+        }
+        let n = f.read_at(&mut buf[..want], off).map_err(map_io)?;
         if n == 0 {
             break;
         }
@@ -473,7 +485,10 @@ fn hash_fd(f: &File) -> Res<[u8; 32]> {
 fn open_verified(file: &VerifiedArtifact) -> Res<(File, Identity)> {
     let f = open_archive(file.path())?;
     let id = identity(&f)?;
-    if hash_fd(&f)? != file.sha256() {
+    if id.2 != file.size() {
+        return rej(Reason::Changed);
+    }
+    if hash_fd(&f, file.size())? != file.sha256() {
         return rej(Reason::Changed);
     }
     if identity(&f)? != id {
@@ -1294,6 +1309,11 @@ fn read_small(f: &File, c: &Central, data_start: u64) -> Res<String> {
         out
     };
     if out.len() as u64 != c.usize {
+        return rej(Reason::Malformed);
+    }
+    let mut crc = Crc::new();
+    crc.update(&out);
+    if crc.sum() != c.crc {
         return rej(Reason::Malformed);
     }
     utf8(&out)

@@ -1475,3 +1475,42 @@ fn errors_name_no_entry() {
         assert!(!s.contains("canary") && !s.contains("secret"), "{s}");
     }
 }
+
+#[test]
+fn a_replacement_artifact_larger_than_the_verified_size_is_refused_before_hashing() {
+    for (f, b) in both(&[E::F("a", b"one", 0o644)]) {
+        let fx = Fx::new(&b);
+        let art = fx.art();
+        let mut big = b.clone();
+        big.resize(big.len() + 3 * 1024 * 1024, 0u8);
+        fs::write(&fx.archive, &big).unwrap();
+        assert_eq!(
+            validate(&art, f, &lim()).map(|_| ()).unwrap_err().reason(),
+            Reason::Changed,
+            "{f:?} grown"
+        );
+        // Same size check also covers a shrunk file.
+        fs::write(&fx.archive, &b[..b.len() - 1]).unwrap();
+        assert_eq!(
+            validate(&art, f, &lim()).map(|_| ()).unwrap_err().reason(),
+            Reason::Changed,
+            "{f:?} shrunk"
+        );
+        assert!(fx.stage_is_empty());
+    }
+}
+
+#[test]
+fn a_zip_symlink_with_a_wrong_crc_is_refused() {
+    let e = vec![ZEntry {
+        lie_crc: Some(0x1234_5678),
+        ..ZEntry::symlink("l", "target")
+    }];
+    rejects(
+        Format::Zip,
+        &zip_build(&e),
+        &lim(),
+        Reason::Malformed,
+        "symlink crc",
+    );
+}

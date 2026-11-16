@@ -162,8 +162,9 @@ disables), mode 600. Smoke checks the `attach` and `resume` records.
 ## Managed Playwright tier, L1a modules (#119)
 
 Three modules the install path of the managed tier will use. Nothing calls them yet (the
-`install` subcommands land in L1b), so the linker drops them from the release binary and the
-size check does not measure them until then. Design: `docs/adr/linux-browser-tier.md` (D3) and
+`install` subcommands land in L1b), so the linker keeps only the part the crate's own `main`
+reaches (the stripped size still grew a little through the new dependencies), and the size check
+does not measure the full modules until then. Design: `docs/adr/linux-browser-tier.md` (D3) and
 `docs/requirements/linux-browser-tier.md`.
 
 - `src/manifest.rs`: reads the embedded `release/playwright-pins/pins.json` (schema 2, four
