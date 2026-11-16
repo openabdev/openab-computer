@@ -10,7 +10,7 @@
 //! Not in this build, and refused with exit 2: `signin` (L3), `--apply-system-changes` (L3) and
 //! `--use-system-chromium` (needs the recorded refusals of L2).
 
-use std::io::{BufRead, IsTerminal};
+use std::io::{BufRead, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -279,7 +279,8 @@ pub fn run(args: &[String]) -> i32 {
         }
         eprint!("{q}");
         let mut line = String::new();
-        std::io::stdin().lock().read_line(&mut line).ok()?;
+        // At most 64 bytes: an answer is "y" or "yes"; anything longer is not one.
+        std::io::stdin().lock().take(64).read_line(&mut line).ok()?;
         Some(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
     };
     execute(&cmd, &o, &mut io, &mut ask)

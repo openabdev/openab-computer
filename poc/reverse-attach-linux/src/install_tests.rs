@@ -461,6 +461,7 @@ pub(crate) fn good_facts() -> Facts {
         userns: Userns::default(),
         free_disk: Some(u64::MAX / 4),
         seat: false,
+        data_base: PathBuf::from("/home/u/.local/share"),
     }
 }
 

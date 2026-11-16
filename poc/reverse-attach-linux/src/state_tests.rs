@@ -103,6 +103,50 @@ fn exists(p: &Path) -> bool {
 }
 
 #[test]
+fn remove_deletes_only_exact_generated_temp_files_with_record_content() {
+    let t = TempDir::new();
+    let root = t.root();
+    make_version(&t, "id-1", true);
+    write_record_file(&t, &record("id-1"));
+    let rec = record("id-1").to_json();
+    let ours = [
+        ("install.json.tmp-0123456789abcdef", rec.clone()),
+        (
+            "pending-cleanup.json.tmp-fedcba9876543210",
+            pending_json("old-1"),
+        ),
+    ];
+    let foreign = [
+        ("install.json.tmp-notes", "my notes".to_string()),
+        ("install.json.tmp-0123456789ABCDEF", rec.clone()),
+        ("install.json.tmp-0123456789abcde", rec.clone()),
+        ("install.json.tmp-0123456789abcdef0", rec.clone()),
+        ("install.json.tmp-aaaaaaaaaaaaaaaa", "not json".to_string()),
+        ("install.json.tmp-bbbbbbbbbbbbbbbb", pending_json("old-1")),
+        ("pending-cleanup.json.tmp-cccccccccccccccc", rec.clone()),
+        (
+            "pending-cleanup.json.tmp-dddddddddddddddd",
+            "{\"schema\":1,\"previous\":\"../x\"}".to_string(),
+        ),
+    ];
+    for (n, c) in ours.iter().chain(foreign.iter()) {
+        put(&rootp(&t).join(n), c);
+    }
+    let rep = remove_all(&root).unwrap();
+    for (n, _) in &ours {
+        assert!(!exists(&rootp(&t).join(n)), "{n} should be removed");
+    }
+    for (n, c) in &foreign {
+        assert_eq!(
+            std::fs::read_to_string(rootp(&t).join(n)).unwrap(),
+            *c,
+            "{n} must stay"
+        );
+        assert!(rep.left.iter().any(|(l, _)| l == n), "{n} reported");
+    }
+}
+
+#[test]
 fn the_root_is_created_private_and_reopened() {
     let t = TempDir::new();
     assert!(Root::open(&t.base(), false).unwrap().is_none());

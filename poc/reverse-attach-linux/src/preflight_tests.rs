@@ -33,6 +33,7 @@ fn healthy(m: &Manifest, sel: &Selection<'_>) -> Facts {
         userns: Userns::default(),
         free_disk: Some(u64::MAX / 2),
         seat: false,
+        data_base: PathBuf::from("/home/u/.local/share"),
     }
 }
 
@@ -325,4 +326,39 @@ fn the_staged_scan_finds_unsatisfied_needs_and_counts_trees_as_providers() {
     assert!(scan_trees(&[&t.path.join("nope")], &l, "AArch64")
         .missing
         .is_empty());
+}
+
+#[test]
+fn apparmor_restriction_prints_the_exact_command_and_never_runs_it() {
+    let m = Manifest::embedded();
+    let sel = arm(m);
+    let mut f = healthy(m, &sel);
+    f.userns.apparmor_restricted = Some(true);
+    let r = evaluate(m, &sel, &f, 0);
+    assert_eq!(r.root_actions.len(), 1);
+    let a = &r.root_actions[0];
+    assert_eq!(
+        a.command,
+        "printf '%s\\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+         'profile oab-computer-chromium /home/u/.local/share/oab-computer/playwright/*/chromium/**/chrome flags=(unconfined) {' \
+         '  userns,' '}' | sudo tee /etc/apparmor.d/oab-computer-chromium >/dev/null \
+         && sudo apparmor_parser -r /etc/apparmor.d/oab-computer-chromium"
+    );
+    assert!(a.reason.contains("apparmor_restrict_unprivileged_userns"));
+    let text = render(&r);
+    assert!(text.contains(&format!("needs root (not run by this tool): {}", a.command)));
+    assert!(r.ok(), "a root action is advice, not a blocker");
+
+    // A path with a quote or a space is refused rather than written into a shell command.
+    for bad in [
+        "/home/a b/.local/share",
+        "/home/it's/share",
+        "/home/a*/share",
+        "rel/share",
+    ] {
+        f.data_base = PathBuf::from(bad);
+        let r = evaluate(m, &sel, &f, 0);
+        assert!(r.root_actions.is_empty(), "{bad}");
+        assert!(render(&r).contains("write a profile"), "{bad}");
+    }
 }

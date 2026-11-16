@@ -97,6 +97,9 @@ pub struct Facts {
     pub userns: Userns,
     pub free_disk: Option<u64>,
     pub seat: bool,
+    /// The data base directory (`$XDG_DATA_HOME` or `~/.local/share`). Names the install root in
+    /// the AppArmor command.
+    pub data_base: PathBuf,
 }
 
 /// Where the host facts come from. Tests point these at fixture files and a fake `ldconfig`.
@@ -208,6 +211,7 @@ impl Facts {
             },
             free_disk: free_disk(disk_probe),
             seat: crate::platform::linux::seat::wayland_socket().exists(),
+            data_base: disk_probe.to_path_buf(),
         }
     }
 }
@@ -285,6 +289,45 @@ fn mb(bytes: u64) -> u64 {
     bytes.div_ceil(1_000_000)
 }
 
+/// Name of the AppArmor profile file the root action writes.
+pub const APPARMOR_PROFILE: &str = "oab-computer-chromium";
+
+/// The profile text for the installing user's own data path. It covers every version directory
+/// under that path, so one load serves `install` and every later `update`. `None` when the path
+/// holds a character that is unsafe in a profile or in the shell command.
+pub fn apparmor_profile(data_base: &Path) -> Option<Vec<String>> {
+    let root = data_base.join("oab-computer/playwright");
+    let p = root.to_str()?;
+    let simple = p.starts_with('/')
+        && !p.contains("//")
+        && p.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'_' | b'.' | b'-'));
+    simple.then(|| {
+        vec![
+            "abi <abi/4.0>,".to_string(),
+            "include <tunables/global>".to_string(),
+            format!("profile {APPARMOR_PROFILE} {p}/*/chromium/**/chrome flags=(unconfined) {{"),
+            "  userns,".to_string(),
+            "}".to_string(),
+        ]
+    })
+}
+
+/// The exact command that loads the profile. Printed, never run.
+pub fn apparmor_action(data_base: &Path) -> Option<RootAction> {
+    let lines = apparmor_profile(data_base)?;
+    let args: Vec<String> = lines.iter().map(|l| format!("'{l}'")).collect();
+    let file = format!("/etc/apparmor.d/{APPARMOR_PROFILE}");
+    Some(RootAction {
+        command: format!(
+            "printf '%s\\n' {} | sudo tee {file} >/dev/null && sudo apparmor_parser -r {file}",
+            args.join(" ")
+        ),
+        reason: "kernel.apparmor_restrict_unprivileged_userns is 1, so Chromium cannot create its sandbox; this profile allows user namespaces only for the Chromium under your own install path, and it covers every version directory, so it also serves later updates"
+            .into(),
+    })
+}
+
 /// `needed_disk` is the figure the install needs free (`install::disk_needed`).
 pub fn evaluate(m: &Manifest, sel: &Selection<'_>, f: &Facts, needed_disk: u64) -> Report {
     let _ = m;
@@ -348,12 +391,13 @@ pub fn evaluate(m: &Manifest, sel: &Selection<'_>, f: &Facts, needed_disk: u64) 
         Some(true) => {
             r.lines
                 .push("apparmor user namespace restriction: on".into());
-            r.root_actions.push(RootAction {
-                command: "load an AppArmor profile that allows user namespaces for the installed Chromium"
-                    .into(),
-                reason: "kernel.apparmor_restrict_unprivileged_userns is 1, so an unconfined Chromium cannot create its sandbox"
-                    .into(),
-            });
+            match apparmor_action(&f.data_base) {
+                Some(a) => r.root_actions.push(a),
+                None => r.lines.push(
+                    "apparmor: the install path has characters this tool will not write into a profile; write a profile that allows `userns` for the installed Chromium by hand"
+                        .into(),
+                ),
+            }
         }
         Some(false) => r
             .lines

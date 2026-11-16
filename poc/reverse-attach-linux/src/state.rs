@@ -583,6 +583,44 @@ pub fn pending_json(previous: &str) -> String {
     json!({"schema": 1, "previous": previous}).to_string()
 }
 
+/// `<base>.tmp-<16 lowercase hex>` where `<base>` is a record name this installer writes.
+fn tmp_base(name: &str) -> Option<&'static str> {
+    for base in [RECORD_NAME, PENDING_NAME] {
+        if let Some(sfx) = name
+            .strip_prefix(base)
+            .and_then(|r| r.strip_prefix(".tmp-"))
+        {
+            let hex =
+                sfx.len() == 16 && sfx.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+            return hex.then_some(base);
+        }
+    }
+    None
+}
+
+/// A leftover temp file is ours only with the exact generated name and content that parses as
+/// the record it would have become. Anything else (a note someone named `install.json.tmp-x`) is
+/// left in place.
+fn tmp_is_ours(root: &Root, name: &str) -> bool {
+    let Some(base) = tmp_base(name) else {
+        return false;
+    };
+    let Ok(bytes) = read_file_capped(root.fd(), name, RECORD_CAP) else {
+        return false;
+    };
+    if base == RECORD_NAME {
+        return InstallRecord::parse(&bytes).is_some();
+    }
+    serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .is_some_and(|v| {
+            v.get("schema").and_then(Value::as_i64) == Some(1)
+                && v.get("previous")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_safe_id)
+        })
+}
+
 /// `pw-config.json` is ours only when it is a JSON object with `_oabInstallerOwned: true`.
 fn config_is_ours(root: &Root) -> bool {
     let Ok(bytes) = read_file_capped(root.fd(), CONFIG_NAME, CONFIG_CAP) else {
@@ -993,8 +1031,9 @@ pub fn remove_all(root: &Root) -> R<Report> {
             }
         } else if n.starts_with("install.json.tmp-") || n.starts_with("pending-cleanup.json.tmp-") {
             // A record temp file that an interrupted write left behind. Ours only when a record
-            // of ours exists and it is a small regular file.
-            if ours.is_some() && is_regular(st) && st.st_size as u64 <= RECORD_CAP {
+            // of ours exists, the name is exactly what `write_record` generates, and the content
+            // parses as a record this installer writes.
+            if ours.is_some() && is_regular(st) && tmp_is_ours(root, n) {
                 Plan::Tmp
             } else {
                 Plan::Skip("not created by this installer")

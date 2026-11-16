@@ -111,6 +111,10 @@ pub fn lines_of(data: &[u8], cap: usize) -> Vec<Line> {
     }
 }
 
+/// Parsed lines that may wait unread. A child that writes faster than the caller reads blocks on
+/// its own pipe instead of growing memory (each line may be up to the line cap).
+const LINE_QUEUE: usize = 4;
+
 impl Child {
     /// Starts the child. `scope` is the directory whose files the child executes (staging); it is
     /// resolved now so the later `/proc` walk compares real paths.
@@ -170,7 +174,7 @@ impl Child {
             });
         }
         let lines = child.stdout.take().map(|out| {
-            let (tx, rx) = mpsc::channel();
+            let (tx, rx) = mpsc::sync_channel(LINE_QUEUE);
             std::thread::spawn(move || {
                 let mut r = std::io::BufReader::with_capacity(64 * 1024, out);
                 loop {

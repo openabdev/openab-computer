@@ -250,3 +250,32 @@ fn has_exited_does_not_reap_and_exit_ok_does() {
     assert_eq!(c.exit_ok(), Some(true));
     assert!(c.has_exited());
 }
+
+#[test]
+fn an_unread_flood_of_lines_blocks_the_child_instead_of_filling_memory() {
+    let t = TempDir::new();
+    let cwd = t.base();
+    std::fs::create_dir_all(&cwd).unwrap();
+    // 200 lines of about 100 KB (20 MB) and then a marker file. With an unbounded queue the
+    // marker appears at once; with the bound the child stays blocked on its pipe.
+    let script = "i=0; l=$(head -c 100000 /dev/zero | tr '\\0' a); \
+                  while [ $i -lt 200 ]; do echo \"$l\"; i=$((i+1)); done; touch done";
+    let mut c = Child::spawn(&sh(script, &cwd), false, true, 1 << 20, &cwd).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !cwd.join("done").exists(),
+        "the child finished: lines were queued without bound"
+    );
+    let mut n = 0;
+    while let Ok(Line::Data(_)) = c
+        .lines
+        .as_ref()
+        .unwrap()
+        .recv_timeout(Duration::from_secs(10))
+    {
+        n += 1;
+    }
+    assert_eq!(n, 200, "backpressure must not drop lines");
+    assert!(cwd.join("done").exists());
+    c.stop();
+}
