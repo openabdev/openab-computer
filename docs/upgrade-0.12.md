@@ -35,8 +35,10 @@ Things that are new in 0.12.0 and are worth knowing before you install:
   package install the computer is reachable on your tailnet at `:8444` before the wizard asks
   anything. A caller still needs the bearer token and an allowed Tailscale login. Without
   passwordless `sudo`, `install-linux.sh` prints the command instead of running it.
-  A plain app launch without the installer never creates the mapping and never overwrites one it
-  does not own. On macOS, the wizard's tailnet page and the menu item **Turn Off Tailnet Access**
+  A plain app launch without the installer creates no mapping until you turn tailnet access on,
+  but it leaves an existing `:8444` mapping in place (for example one from an earlier install) and
+  never overwrites one it does not own. Remove it with **Turn Off Tailnet Access** or
+  `tailscale serve --https=8444 off`. On macOS, the wizard's tailnet page and the menu item **Turn Off Tailnet Access**
   control the mapping afterwards (the menu item **Allow tailnet access…** turns it on).
 - **macOS browser tools are managed by the app.** The wizard offers to install Playwright
   (about 249 MB download, about 593 MB installed, about 842 MB free space needed while it runs on Apple silicon).
@@ -125,7 +127,7 @@ reused by 0.12 anyway: lend each session again after the upgrade.
 - Linux: download `oab-computer-VERSION-linux-ARCH.tar.gz`, unpack it and run `./install-linux.sh`
   ([Quick start](../README.md#quick-start), [Linux setup](linux-setup.md)). On Ubuntu 24.04 the
   installer currently stops with exit 78 unless `wlrctl` is installed. Ubuntu 24.04 packages it only
-  for amd64 (universe); on arm64 install the units by hand ([Linux setup](linux-setup.md), steps 3-5) ([#130](https://github.com/openabdev/openab-computer/issues/130)).
+  for amd64 (universe); on Ubuntu arm64 install the units by hand ([Linux setup](linux-setup.md), steps 3-5) ([#130](https://github.com/openabdev/openab-computer/issues/130)).
 
 The installer prints a warning when it finds the old agent. It never stops, disables or removes it.
 Until you finish step 4, `/healthz` on port 8795 may be answered by the old agent, so a healthy check
@@ -267,6 +269,7 @@ macOS:
 ```sh
 launchctl bootout gui/$(id -u)/dev.openab.computer
 launchctl bootout gui/$(id -u)/dev.openab.computer.pw-mcp   # only if step 7 installed it; it holds 127.0.0.1:8794
+mv ~/Library/LaunchAgents/dev.openab.computer.pw-mcp.plist ~/oab-instance-mcp-backup/ 2>/dev/null   # else it starts again at login and holds 127.0.0.1:8794
 mv ~/Library/LaunchAgents/dev.openab.computer.plist ~/oab-instance-mcp-backup/   # else it starts again at login and races the old agent for 127.0.0.1:8795
 cp ~/oab-instance-mcp-backup/dev.openab.instance-mcp*.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.plist
@@ -274,7 +277,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.
 ```
 
 If the old app the plist points to is gone, install the 0.11.0 package from its release page instead.
-Grants you already reset with `tccutil` in step 8 must be granted again to the old app.
+If you ran the step 8 `tccutil` resets anyway, grant the old app its permissions again.
 
 Linux:
 

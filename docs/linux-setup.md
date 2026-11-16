@@ -82,7 +82,7 @@ sudo apt-get install -y chromium                             # Debian / Raspberr
 `install-linux.sh` still exits 78 ("missing: wlrctl") when `wlrctl` is not installed, although the
 daemon never calls it: it spawns `grim` and `wtype` and holds its own virtual pointer.
 Ubuntu 24.04 packages `wlrctl` only for amd64 (universe), so the `apt-get` line above works there.
-On arm64 the package does not exist, the line fails and the installer exits 78 until
+On Ubuntu arm64 the package does not exist, the line fails and the installer exits 78 until
 [#130](https://github.com/openabdev/openab-computer/issues/130) is fixed. On arm64 drop `wlrctl`
 from the line and install the units by hand as in steps 3-5, which do not check for it.
 

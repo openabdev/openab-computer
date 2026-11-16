@@ -21,8 +21,8 @@ the intelligence stays in the caller.
 >
 > Installing the `.pkg` (or `install-prebuilt.sh`) runs `tailscale serve --bg --https=8444`, so the
 > Mac is reachable on your tailnet at `:8444` right after the install. A caller still needs the
-> bearer token and an allowed Tailscale login. Only a plain app launch without the installer leaves
-> tailnet access off until you turn it on. See [Download and install](#download-and-install).
+> bearer token and an allowed Tailscale login. A plain app launch without the installer creates no
+> mapping until you turn tailnet access on, but it leaves an existing `:8444` mapping in place. See [Download and install](#download-and-install).
 
 ```mermaid
 flowchart LR
@@ -143,7 +143,7 @@ The accessibility-tree tools are macOS only for now; Linux is deferred
   (designed in [#119](https://github.com/openabdev/openab-computer/issues/119), not built;
   [ADR](docs/adr/linux-browser-tier.md)).
 - The Linux installer still requires `wlrctl`, which Ubuntu 24.04 packages only for amd64 (universe).
-  On arm64 the installer exits 78, so install the units by hand ([Linux setup](docs/linux-setup.md), steps 3-5)
+  On Ubuntu arm64 the installer exits 78, so install the units by hand ([Linux setup](docs/linux-setup.md), steps 3-5)
   ([#130](https://github.com/openabdev/openab-computer/issues/130)).
 
 ## Quick start
@@ -680,8 +680,9 @@ Tagged releases publish a universal, Developer-ID-signed and Apple-notarized ins
    `tailscale serve --bg --https=8444`. **So the Mac is reachable on your tailnet at `:8444` as soon as
    the package finishes, before the wizard asks.** A caller still needs the bearer token and an allowed
    Tailscale login. The "opt-in" for tailnet access applies to launching the app without the installer
-   (for example a plain app launch): then the app never creates the mapping and never overwrites a
-   mapping it does not own. After an install, the wizard's tailnet page and the menu item
+   (for example a plain app launch): then the app creates no mapping until you turn tailnet access on,
+   but it leaves an existing `:8444` mapping in place (for example one from an earlier install; the menu
+   shows it as an existing mapping) and never overwrites a mapping it does not own. After an install, the wizard's tailnet page and the menu item
    **Turn Off Tailnet Access** control the mapping.
 4. On first launch, the **Set Up Mac Permissions** window opens if a required permission is missing. It
    has three pages. Page 1 asks for Screen Recording and Accessibility, and you cannot finish it until
@@ -705,7 +706,7 @@ The `.app.zip` beside the package is an advanced/manual artifact. After unzippin
 ```
 
 The installer never re-signs the app: doing so would change the identity TCC grants are bound to.
-See [`docs/releasing.md`](docs/releasing.md) for artifacts, signing/notarization, required secrets,
+See [`docs/releasing.md`](docs/releasing.md) for artifacts, signing/notarization, required secrets and
 local packaging smoke.
 
 ## Upgrading from 0.11 or earlier

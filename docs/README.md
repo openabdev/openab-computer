@@ -23,7 +23,7 @@ Several carry the pre-0.12 names (`oab-instance-mcp`) because they are dated rec
 
 | Document | What it covers | Status |
 |---|---|---|
-| [ADR: Reverse attach](adr/reverse-attach.md) | The Mac dials the sandbox | Accepted, shipped since 0.6.0 |
+| [ADR: Reverse attach](adr/reverse-attach.md) | The Mac dials the sandbox | Accepted, shipped in every release (0.6.0 and later) |
 | [Requirement: Reverse attach](requirements/reverse-attach.md) | Full design, threat model, phasing | Dated record, implemented |
 | [ADR: Linux-first Rust port](adr/linux-rust-port.md) | One core, per-OS backends | Accepted, Linux tarballs shipped since 0.6.5 |
 | [Parity checklist](parity-checklist.md) | What the conformance suite does not cover yet, for the Swift retirement gate | Tracking |

@@ -2,7 +2,7 @@
 
 **Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
 
-- **Status:** Accepted. Implemented and shipped since 0.6.0 (reverse attach, tool profiles, `/attach`).
+- **Status:** Accepted. Implemented and shipped in every release (0.6.0 and later) (reverse attach, tool profiles, `/attach`).
 - **Date:** 2026-09-25
 - **Requirement:** [`docs/requirements/reverse-attach.md`](../requirements/reverse-attach.md) (full design, threat model, phasing)
 - **Related:** [openabdev/openab#1544](https://github.com/openabdev/openab/issues/1544) (brain/hands split), [`connect-closed-loop.md`](../requirements/connect-closed-loop.md) Phase 4, [`sandbox-adapter.md`](sandbox-adapter.md)
