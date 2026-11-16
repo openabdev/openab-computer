@@ -216,7 +216,10 @@ Confirm that the new agent, not a leftover, owns the port.
 lsof -nP -iTCP:8795 -sTCP:LISTEN
 # Linux
 ss -ltnp 'sport = :8795'
+ss -ltnp 'sport = :8794'   # only on a node with the browser tools: the Playwright unit should own it
 ```
+
+Browser sign-ins live in the old profile, which step 8 deletes, so sign in again after the upgrade.
 
 You should see one `oab-computer` process (macOS may shorten the name). Then `curl -s http://127.0.0.1:8795/healthz` prints `ok`,
 and a client with the token should reach the MCP URL (`https://<host>.<tailnet>.ts.net:8444/mcp`).
@@ -262,7 +265,7 @@ tccutil reset SystemPolicyAllFiles dev.openab.instance-mcp   # only if you used 
 
 Possible until step 8, as long as the old install directory and the backup exist.
 
-If you also installed the managed Playwright on macOS, remove it first from the menu (**Remove Playwright…**), before the macOS commands below boot the app out.
+Only if you installed the managed Playwright on macOS and the old agent will not hold `127.0.0.1:8794` again: remove it first from the menu (**Remove Playwright…**), before the macOS commands below boot the app out. Otherwise the managed browser stays installed and unused.
 
 macOS:
 

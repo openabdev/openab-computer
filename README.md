@@ -139,9 +139,8 @@ The accessibility-tree tools are macOS only for now; Linux is deferred
 - The browser router in 0.12.0 has only the Playwright backend. The Apple Events tier is not built,
   and neither is the "use my installed Chrome" fallback if macOS refuses the downloaded Chromium
   ([#128](https://github.com/openabdev/openab-computer/issues/128)).
-- Linux has no managed browser tier. Playwright there is an external unit on `127.0.0.1:8794`
-  (designed in [#119](https://github.com/openabdev/openab-computer/issues/119), not built;
-  [ADR](docs/adr/linux-browser-tier.md)).
+- Linux has no managed browser tier (designed in [#119](https://github.com/openabdev/openab-computer/issues/119),
+  not built; [ADR](docs/adr/linux-browser-tier.md)). Playwright there is an external unit on `127.0.0.1:8794`.
 - The Linux installer still requires `wlrctl`, which Ubuntu 24.04 packages only for amd64 (universe).
   On Ubuntu arm64 the installer exits 78, so install the units by hand ([Linux setup](docs/linux-setup.md), steps 3-5)
   ([#130](https://github.com/openabdev/openab-computer/issues/130)).

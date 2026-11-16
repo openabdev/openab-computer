@@ -78,7 +78,7 @@ Playwright is chosen when ready, else Apple Events.
 - Every result from a selected backend carries `structuredContent.backend`. Errors raised before a
   backend is chosen (no backend ready, a guarded selection) carry none.
 
-The diagram shows how a call reaches a backend. Dotted or marked parts are designed and not built in 0.12.0. The identity guard
+The diagram shows how a call reaches a backend. Marked parts are designed and not built in 0.12.0. The identity guard
 needs two ready backends, so it has no effect until Tier A exists.
 
 ```mermaid
