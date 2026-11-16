@@ -60,6 +60,15 @@ class Server:
                 except OSError:
                     pass
 
+            def do_HEAD(self):
+                outer.hits.append("HEAD " + self.path)
+                status, headers, body = outer.routes.get(self.path, (404, {}, b"no"))
+                self.send_response(status)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+
         self.httpd = HTTPServer(("127.0.0.1", 0), H)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -158,13 +167,13 @@ class OfflineVerify(unittest.TestCase):
 
     def test_pins_must_use_the_allowed_hosts(self):
         pj = json.loads(read(os.path.join(self.dir, "pins.json")))
-        pj["node"]["artifacts"]["arm64"]["url"] = "https://evil.example/node.tar.gz"
+        pj["node"]["artifacts"]["darwin-arm64"]["url"] = "https://evil.example/node.tar.gz"
         write(os.path.join(self.dir, "pins.json"), pins.dump_pins(pj))
         self.assertTrue(any("url" in p for p in self.check()))
 
     def test_http_urls_fail(self):
         pj = json.loads(read(os.path.join(self.dir, "pins.json")))
-        pj["chromium"]["artifacts"]["arm64"]["url"] = pj["chromium"]["artifacts"]["arm64"]["url"].replace("https", "http")
+        pj["chromium"]["artifacts"]["darwin-arm64"]["url"] = pj["chromium"]["artifacts"]["darwin-arm64"]["url"].replace("https", "http")
         write(os.path.join(self.dir, "pins.json"), pins.dump_pins(pj))
         self.assertTrue(any("url" in p for p in self.check()))
 
@@ -300,6 +309,277 @@ class Archives(unittest.TestCase):
         os.makedirs(out)
         pins.extract_tar_gz_for_generate(p, out)
         self.assertEqual(read(os.path.join(out, "d/l")), "x")
+
+
+def make_elf(needed, glibc, sections=True):
+    """A small 64-bit little-endian ELF with a dynamic section and a version-needs section. Never executed."""
+    import struct
+    dynstr = b"\0"
+    offs = {}
+    for name in list(needed) + ["libc.so.6"] + ["GLIBC_%s" % v for v in glibc] + ["GLIBC_PRIVATE"]:
+        if name not in offs:
+            offs[name] = len(dynstr)
+            dynstr += name.encode() + b"\0"
+    dynamic = b"".join(struct.pack("<qQ", 1, offs[n]) for n in needed) + struct.pack("<qQ", 0, 0)
+    vers = ["GLIBC_%s" % v for v in glibc] + ["GLIBC_PRIVATE"]
+    verneed = struct.pack("<HHIII", 1, len(vers), offs["libc.so.6"], 16, 0)
+    for i, v in enumerate(vers):
+        verneed += struct.pack("<IHHII", 0, 0, 2 + i, offs[v], 16 if i < len(vers) - 1 else 0)
+    body = dynstr + dynamic + verneed
+    base = 64
+    o_dynstr, o_dyn, o_ver = base, base + len(dynstr), base + len(dynstr) + len(dynamic)
+    shoff = base + len(body)
+    shdrs = struct.pack("<IIQQQQIIQQ", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    shdrs += struct.pack("<IIQQQQIIQQ", 0, 3, 0, 0, o_dynstr, len(dynstr), 0, 0, 1, 0)
+    shdrs += struct.pack("<IIQQQQIIQQ", 0, 6, 0, 0, o_dyn, len(dynamic), 1, 0, 8, 16)
+    shdrs += struct.pack("<IIQQQQIIQQ", 0, 0x6ffffffe, 0, 0, o_ver, len(verneed), 1, 1, 4, 0)
+    ident = b"\x7fELF" + bytes([2, 1, 1, 0]) + bytes(8)
+    head = ident + struct.pack("<HHIQQQIHHHHHH", 3, 62, 1, 0, 0, shoff if sections else 0, 0, 64, 56, 0, 64, 4 if sections else 0, 0)
+    return head + body + shdrs
+
+
+class LinuxFacts(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="oab-pins-elf.")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def elf(self, name, data):
+        p = os.path.join(self.tmp, name)
+        with open(p, "wb") as f:
+            f.write(data)
+        return p
+
+    def test_needed_and_the_highest_glibc_are_read_from_a_generated_elf(self):
+        f = pins.elf_facts(self.elf("a", make_elf(["libnss3.so", "libc.so.6"], ["2.17", "2.28", "2.5"])))
+        self.assertEqual(f["needed"], ["libnss3.so", "libc.so.6"])
+        self.assertEqual(f["glibc"], (2, 28, 0))
+        self.assertEqual(pins.glibc_string(f["glibc"]), "2.28")
+        self.assertEqual(pins.glibc_string((2, 28, 1)), "2.28.1")
+
+    def test_glibc_private_is_not_a_version(self):
+        f = pins.elf_facts(self.elf("a", make_elf(["libc.so.6"], ["2.3"])))
+        self.assertEqual(f["glibc"], (2, 3, 0))
+
+    def test_an_elf_without_section_headers_is_refused_not_guessed(self):
+        with self.assertRaises(pins.PinError):
+            pins.elf_facts(self.elf("a", make_elf(["libc.so.6"], ["2.3"], sections=False)))
+
+    def test_a_non_elf_and_a_truncated_elf_are_refused(self):
+        with self.assertRaises(pins.PinError):
+            pins.elf_facts(self.elf("a", b"#!/bin/sh\n" + bytes(100)))
+        with self.assertRaises(pins.PinError):
+            pins.elf_facts(self.elf("b", make_elf(["libc.so.6"], ["2.3"])[:200]))
+
+    def test_zip_facts_drop_libraries_the_zip_ships_and_add_hints(self):
+        p = os.path.join(self.tmp, "c.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("chrome-linux64/chrome", make_elf(["libnss3.so", "libvulkan.so.1", "libc.so.6"], ["2.25"]))
+            z.writestr("chrome-linux64/libvulkan.so.1", make_elf(["libc.so.6", "libm.so.6"], ["2.17"]))
+            z.writestr("chrome-linux64/notes.so", b"not an elf")
+        f = pins.linux_facts_zip(p, self.tmp)
+        self.assertEqual(f["minGlibc"], "2.25")
+        self.assertEqual(f["needed"], ["libc.so.6", "libm.so.6", "libnss3.so"])
+        self.assertEqual(f["packageHints"], {"apt": ["libc6", "libnss3"]})
+
+    def test_a_library_with_no_package_hint_stops_the_generator(self):
+        p = os.path.join(self.tmp, "c.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("chrome-linux64/chrome", make_elf(["libnew-thing.so.1", "libc.so.6"], ["2.25"]))
+        with self.assertRaises(pins.PinError):
+            pins.linux_facts_zip(p, self.tmp)
+
+    def test_tar_facts_read_the_named_member(self):
+        p = os.path.join(self.tmp, "n.tar.gz")
+        data = make_elf(["libstdc++.so.6", "libc.so.6"], ["2.28"])
+        with tarfile.open(p, "w:gz") as t:
+            ti = tarfile.TarInfo("node-v1.0.0-linux-x64/bin/node")
+            ti.size = len(data)
+            t.addfile(ti, io.BytesIO(data))
+        f = pins.linux_facts_tar(p, "node-v1.0.0-linux-x64/bin/node", self.tmp)
+        self.assertEqual(f["minGlibc"], "2.28")
+        self.assertEqual(f["packageHints"], {"apt": ["libc6", "libstdc++6"]})
+
+    def test_inspect_zip_finds_the_one_linux_executable(self):
+        p = os.path.join(self.tmp, "c.zip")
+        with zipfile.ZipFile(p, "w") as z:
+            z.writestr("chrome-linux-arm64/chrome", b"x")
+            z.writestr("chrome-linux-arm64/chrome_sandbox", b"x")
+            z.writestr("chrome-linux-arm64/locales/chrome", b"x")
+        self.assertEqual(pins.inspect_zip(p)["linuxExecutables"], ["chrome-linux-arm64/chrome"])
+
+
+class PlatformKeys(unittest.TestCase):
+    """Schema 2: four platform ids, one source recorded per Chromium artifact, shared fields that cannot drift."""
+
+    def setUp(self):
+        self.pins = json.loads(read(os.path.join(pins.PINS_DIR, "pins.json")))
+
+    def problems(self):
+        out = []
+        pins.verify_pins_structure(self.pins, out)
+        return out
+
+    def test_the_tracked_pins_have_all_four_platforms_with_linux_facts(self):
+        self.assertEqual(self.problems(), [])
+        for label in ("node", "chromium"):
+            self.assertEqual(list(self.pins[label]["artifacts"]), list(pins.PLATFORMS))
+        for plat in pins.LINUX_PLATFORMS:
+            for label in ("node", "chromium"):
+                a = self.pins[label]["artifacts"][plat]
+                self.assertTrue(a["minGlibc"] and a["needed"] and a["packageHints"]["apt"])
+        for plat in pins.DARWIN_PLATFORMS:
+            for a in (self.pins["node"]["artifacts"][plat], self.pins["chromium"]["artifacts"][plat]):
+                self.assertFalse(set(pins.LINUX_FIELDS) & set(a))
+
+    def test_a_missing_platform_fails_for_every_platform_and_both_sections(self):
+        for label in ("node", "chromium"):
+            for plat in pins.PLATFORMS:
+                p = json.loads(json.dumps(self.pins))
+                del p[label]["artifacts"][plat]
+                out = []
+                pins.verify_pins_structure(p, out)
+                self.assertTrue(any("must cover exactly" in x for x in out), (label, plat, out))
+
+    def test_schema_1_keys_are_not_platform_ids(self):
+        p = self.pins
+        p["node"]["artifacts"]["arm64"] = p["node"]["artifacts"].pop("darwin-arm64")
+        self.assertTrue(any("must cover exactly" in x for x in self.problems()))
+
+    def test_every_chromium_artifact_records_a_known_source_that_matches_its_host(self):
+        self.pins["chromium"]["artifacts"]["linux-x64"]["source"] = "mirror"
+        self.assertTrue(any("source must be one of" in x for x in self.problems()))
+        self.pins["chromium"]["artifacts"]["linux-x64"]["source"] = "playwright-cdn"
+        self.assertTrue(any("does not match its source" in x for x in self.problems()))
+
+    def test_the_playwright_cdn_fallback_is_accepted_when_the_url_and_hosts_follow(self):
+        a = self.pins["chromium"]["artifacts"]["linux-arm64"]
+        a["source"] = "playwright-cdn"
+        a["url"] = "%s/%s/chromium-linux-arm64.zip" % (pins.CDN_BASE, self.pins["chromium"]["revision"])
+        a["executable"] = "chrome-linux/chrome"
+        self.assertTrue(any("hosts must be" in x for x in self.problems()))
+        self.pins["hosts"] = self.pins["hosts"] + [pins.CDN_HOST]
+        self.assertEqual(self.problems(), [])
+
+    def test_shared_fields_that_drift_between_platforms_fail(self):
+        self.pins["chromium"]["artifacts"]["linux-x64"]["url"] = self.pins["chromium"]["artifacts"]["linux-x64"]["url"].replace(
+            self.pins["chromium"]["browserVersion"], "1.2.3.4")
+        self.assertTrue(any("chromium/linux-x64 url does not follow" in x for x in self.problems()))
+
+    def test_node_version_drift_fails_on_every_platform(self):
+        self.pins["node"]["version"] = "1.2.3"
+        self.assertEqual(len([x for x in self.problems() if "does not follow node.version" in x]), 4)
+
+    def test_hints_that_do_not_follow_from_needed_fail(self):
+        self.pins["chromium"]["artifacts"]["linux-x64"]["packageHints"] = {"apt": ["libfoo"]}
+        self.assertTrue(any("do not follow from needed" in x for x in self.problems()))
+
+    def test_linux_fields_on_a_darwin_artifact_fail(self):
+        self.pins["node"]["artifacts"]["darwin-x64"]["minGlibc"] = "2.28"
+        self.assertTrue(any("must not carry" in x for x in self.problems()))
+
+    def test_the_release_check_has_a_mac_unchanged_id(self):
+        self.assertEqual(self.pins["id"], "mcp0.0.82-node24.22.3-cr1246-ae3053ed")
+
+    def test_the_shared_vectors_agree_with_the_python_check_on_valid_or_not(self):
+        doc = json.loads(read(os.path.join(ROOT, "conformance", "pins_vectors.json")))
+        self.assertGreaterEqual(len(doc["cases"]), 40)
+        for c in doc["cases"]:
+            p = json.loads(read(os.path.join(ROOT, doc["pins"])))
+            for op in c["ops"]:
+                apply_op(p, op)
+            out = []
+            pins.verify_pins_structure(p, out)
+            self.assertEqual(not out, c["valid"], (c["name"], out))
+
+    def test_a_lockfile_with_an_os_conditional_optional_dependency_is_still_checked(self):
+        lock = json.loads(read(os.path.join(pins.PINS_DIR, "package-lock.json")))
+        package = json.loads(read(os.path.join(pins.PINS_DIR, "package.json")))
+        lock["packages"]["node_modules/fsevents"] = {
+            "version": "2.3.3", "resolved": pins.NPM_REGISTRY + "fsevents/-/fsevents-2.3.3.tgz",
+            "integrity": "sha512-AAAA", "optional": True, "os": ["darwin"]}
+        out = []
+        pins.verify_lockfile(lock, package, self.pins, out)
+        self.assertEqual(out, [])
+        del lock["packages"]["node_modules/fsevents"]["integrity"]
+        pins.verify_lockfile(lock, package, self.pins, out)
+        self.assertTrue(any("without sha512 integrity" in x for x in out))
+
+
+def expand_value(v, p):
+    if isinstance(v, str):
+        return v.replace("{browserVersion}", p["chromium"]["browserVersion"]).replace(
+            "{revision}", p["chromium"]["revision"]).replace("{nodeVersion}", p["node"]["version"])
+    return v
+
+
+def apply_op(p, op):
+    path = op["path"]
+    if op["op"] == "copy":
+        src = p
+        for k in op["from"]:
+            src = src[k]
+        value = json.loads(json.dumps(src))
+    parent = p
+    for k in path[:-1]:
+        parent = parent.setdefault(k, {})
+    last = path[-1]
+    if op["op"] == "set":
+        parent[last] = expand_value(json.loads(json.dumps(op["value"])), p)
+    elif op["op"] == "remove":
+        del parent[last]
+    elif op["op"] == "copy":
+        parent[last] = value
+    elif op["op"] == "replace":
+        a, b = expand_value(op["from"], p), expand_value(op["to"], p)
+        assert a in parent[last], op
+        parent[last] = parent[last].replace(a, b)
+    else:
+        raise AssertionError(op)
+
+
+class SourceChoice(unittest.TestCase):
+    """The release check fails a platform that has neither source, and one that uses the wrong one."""
+
+    def setUp(self):
+        self.old = (pins.CFT_BASE, pins.CFT_HOST, pins.CDN_BASE, pins.CDN_HOST)
+
+    def tearDown(self):
+        pins.CFT_BASE, pins.CFT_HOST, pins.CDN_BASE, pins.CDN_HOST = self.old
+
+    def serve(self, routes):
+        s = Server(routes)
+        self.addCleanup(s.close)
+        base = s.url("")
+        pins.CFT_BASE, pins.CDN_BASE = base + "/cft", base + "/cdn"
+        pins.CFT_HOST = pins.CDN_HOST = "127.0.0.1"
+        return s
+
+    def head_routes(self, paths):
+        # The test server answers GET; a HEAD request lands in do_HEAD below.
+        return {p: (200, {}, b"") for p in paths}
+
+    def test_cft_wins_when_it_hosts_the_version(self):
+        self.serve(self.head_routes(["/cft/9.9/linux64/chrome-linux64.zip", "/cdn/7/chromium-linux.zip"]))
+        self.assertEqual(pins.choose_chromium_source("9.9", "7", "linux-x64")[0], "chrome-for-testing")
+
+    def test_the_cdn_is_used_only_when_cft_lacks_the_platform(self):
+        self.serve(self.head_routes(["/cdn/7/chromium-linux-arm64.zip"]))
+        src, url = pins.choose_chromium_source("9.9", "7", "linux-arm64")
+        self.assertEqual(src, "playwright-cdn")
+        self.assertTrue(url.endswith("/cdn/7/chromium-linux-arm64.zip"))
+
+    def test_neither_source_is_an_error_for_a_linux_platform(self):
+        self.serve({})
+        with self.assertRaises(pins.PinError) as cm:
+            pins.choose_chromium_source("9.9", "7", "linux-x64")
+        self.assertIn("neither", str(cm.exception))
+
+    def test_a_darwin_platform_has_no_cdn_fallback(self):
+        self.serve(self.head_routes(["/cdn/7/chromium-linux.zip"]))
+        with self.assertRaises(pins.PinError):
+            pins.choose_chromium_source("9.9", "7", "darwin-arm64")
 
 
 class Generate(unittest.TestCase):

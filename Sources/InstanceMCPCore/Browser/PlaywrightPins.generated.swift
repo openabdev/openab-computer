@@ -5,7 +5,7 @@ enum PlaywrightPins {
     /// release/playwright-pins/pins.json, without its final newline.
     static let pinsJSONBody = #"""
 {
-  "schema": 1,
+  "schema": 2,
   "id": "mcp0.0.82-node24.22.3-cr1246-ae3053ed",
   "mcp": {
     "package": "@playwright/mcp",
@@ -21,7 +21,7 @@ enum PlaywrightPins {
     "version": "24.22.3",
     "teamIdentifier": "HX7739G8FX",
     "artifacts": {
-      "arm64": {
+      "darwin-arm64": {
         "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-darwin-arm64.tar.gz",
         "format": "tar.gz",
         "size": 53084299,
@@ -31,7 +31,7 @@ enum PlaywrightPins {
         "entryCount": 5888,
         "maxEntryBytes": 122586000
       },
-      "x86_64": {
+      "darwin-x64": {
         "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-darwin-x64.tar.gz",
         "format": "tar.gz",
         "size": 54395976,
@@ -40,6 +40,60 @@ enum PlaywrightPins {
         "expandedBytes": 200641924,
         "entryCount": 5888,
         "maxEntryBytes": 125755312
+      },
+      "linux-x64": {
+        "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.gz",
+        "format": "tar.gz",
+        "size": 58330843,
+        "sha256": "061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2",
+        "stripComponents": 1,
+        "expandedBytes": 201778667,
+        "entryCount": 5888,
+        "maxEntryBytes": 126891984,
+        "minGlibc": "2.28",
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6",
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libm.so.6",
+          "libpthread.so.0",
+          "libstdc++.so.6"
+        ],
+        "packageHints": {
+          "apt": [
+            "libc6",
+            "libgcc-s1",
+            "libstdc++6"
+          ]
+        }
+      },
+      "linux-arm64": {
+        "url": "https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-arm64.tar.gz",
+        "format": "tar.gz",
+        "size": 58051304,
+        "sha256": "261af2af250dfd7e9f25cf151d1b2713a0adf8f10a9ad116c4947f68627affe8",
+        "stripComponents": 1,
+        "expandedBytes": 198333367,
+        "entryCount": 5888,
+        "maxEntryBytes": 123446736,
+        "minGlibc": "2.28",
+        "needed": [
+          "ld-linux-aarch64.so.1",
+          "libc.so.6",
+          "libdl.so.2",
+          "libgcc_s.so.1",
+          "libm.so.6",
+          "libpthread.so.0",
+          "libstdc++.so.6"
+        ],
+        "packageHints": {
+          "apt": [
+            "libc6",
+            "libgcc-s1",
+            "libstdc++6"
+          ]
+        }
       }
     }
   },
@@ -49,7 +103,7 @@ enum PlaywrightPins {
     "releasedAt": "2026-09-01",
     "host": "storage.googleapis.com",
     "artifacts": {
-      "arm64": {
+      "darwin-arm64": {
         "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.0/mac-arm64/chrome-mac-arm64.zip",
         "format": "zip",
         "size": 191396177,
@@ -58,9 +112,10 @@ enum PlaywrightPins {
         "expandedBytes": 376747548,
         "entryCount": 673,
         "maxEntryBytes": 247230480,
-        "executable": "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+        "executable": "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        "source": "chrome-for-testing"
       },
-      "x86_64": {
+      "darwin-x64": {
         "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.0/mac-x64/chrome-mac-x64.zip",
         "format": "zip",
         "size": 201605834,
@@ -69,7 +124,158 @@ enum PlaywrightPins {
         "expandedBytes": 387158652,
         "entryCount": 673,
         "maxEntryBytes": 267098208,
-        "executable": "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+        "executable": "chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        "source": "chrome-for-testing"
+      },
+      "linux-x64": {
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.0/linux64/chrome-linux64.zip",
+        "format": "zip",
+        "size": 196289395,
+        "sha256": "653722163d58ef998a028352db9ffe9a038c937acb8962b6abe4ffafc2fb77f5",
+        "stripComponents": 0,
+        "expandedBytes": 411584588,
+        "entryCount": 306,
+        "maxEntryBytes": 294063424,
+        "executable": "chrome-linux64/chrome",
+        "source": "chrome-for-testing",
+        "minGlibc": "2.25",
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libX11.so.6",
+          "libXcomposite.so.1",
+          "libXdamage.so.1",
+          "libXext.so.6",
+          "libXfixes.so.3",
+          "libXrandr.so.2",
+          "libasound.so.2",
+          "libatk-1.0.so.0",
+          "libatk-bridge-2.0.so.0",
+          "libatspi.so.0",
+          "libc.so.6",
+          "libcairo.so.2",
+          "libcups.so.2",
+          "libdbus-1.so.3",
+          "libdl.so.2",
+          "libexpat.so.1",
+          "libgbm.so.1",
+          "libgcc_s.so.1",
+          "libgio-2.0.so.0",
+          "libglib-2.0.so.0",
+          "libgobject-2.0.so.0",
+          "libm.so.6",
+          "libnspr4.so",
+          "libnss3.so",
+          "libnssutil3.so",
+          "libpango-1.0.so.0",
+          "libpthread.so.0",
+          "libsmime3.so",
+          "libudev.so.1",
+          "libxcb.so.1",
+          "libxkbcommon.so.0"
+        ],
+        "packageHints": {
+          "apt": [
+            "libasound2",
+            "libatk-bridge2.0-0",
+            "libatk1.0-0",
+            "libatspi2.0-0",
+            "libc6",
+            "libcairo2",
+            "libcups2",
+            "libdbus-1-3",
+            "libexpat1",
+            "libgbm1",
+            "libgcc-s1",
+            "libglib2.0-0",
+            "libnspr4",
+            "libnss3",
+            "libpango-1.0-0",
+            "libudev1",
+            "libx11-6",
+            "libxcb1",
+            "libxcomposite1",
+            "libxdamage1",
+            "libxext6",
+            "libxfixes3",
+            "libxkbcommon0",
+            "libxrandr2"
+          ]
+        }
+      },
+      "linux-arm64": {
+        "url": "https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.0/linux-arm64/chrome-linux-arm64.zip",
+        "format": "zip",
+        "size": 196474766,
+        "sha256": "51f69faf816adcb9264905daa31a7068138e7beefc4d4206edf552311be287d8",
+        "stripComponents": 0,
+        "expandedBytes": 411783047,
+        "entryCount": 308,
+        "maxEntryBytes": 287051144,
+        "executable": "chrome-linux-arm64/chrome",
+        "source": "chrome-for-testing",
+        "minGlibc": "2.25",
+        "needed": [
+          "ld-linux-aarch64.so.1",
+          "libX11.so.6",
+          "libXcomposite.so.1",
+          "libXdamage.so.1",
+          "libXext.so.6",
+          "libXfixes.so.3",
+          "libXrandr.so.2",
+          "libasound.so.2",
+          "libatk-1.0.so.0",
+          "libatk-bridge-2.0.so.0",
+          "libatspi.so.0",
+          "libc.so.6",
+          "libcairo.so.2",
+          "libcups.so.2",
+          "libdbus-1.so.3",
+          "libdl.so.2",
+          "libexpat.so.1",
+          "libgbm.so.1",
+          "libgcc_s.so.1",
+          "libgio-2.0.so.0",
+          "libglib-2.0.so.0",
+          "libgobject-2.0.so.0",
+          "libm.so.6",
+          "libnspr4.so",
+          "libnss3.so",
+          "libnssutil3.so",
+          "libpango-1.0.so.0",
+          "libpthread.so.0",
+          "libsmime3.so",
+          "libudev.so.1",
+          "libxcb.so.1",
+          "libxkbcommon.so.0"
+        ],
+        "packageHints": {
+          "apt": [
+            "libasound2",
+            "libatk-bridge2.0-0",
+            "libatk1.0-0",
+            "libatspi2.0-0",
+            "libc6",
+            "libcairo2",
+            "libcups2",
+            "libdbus-1-3",
+            "libexpat1",
+            "libgbm1",
+            "libgcc-s1",
+            "libglib2.0-0",
+            "libnspr4",
+            "libnss3",
+            "libpango-1.0-0",
+            "libudev1",
+            "libx11-6",
+            "libxcb1",
+            "libxcomposite1",
+            "libxdamage1",
+            "libxext6",
+            "libxfixes3",
+            "libxkbcommon0",
+            "libxrandr2"
+          ]
+        }
       }
     }
   },

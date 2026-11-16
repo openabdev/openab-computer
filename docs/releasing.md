@@ -124,6 +124,27 @@ must carry the upgrade table and the operator steps from
 happens to `desktop` requests, to stored `desktop` grants and to a `switchboard.profile` of
 `desktop`, and how to grant `owner` again.
 
+## Playwright pins
+
+`release/playwright-pins/pins.json` is schema 2. Node and Chromium artifacts are keyed by platform id
+(`darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`); `package.json`, the lockfile and the
+version fields are shared. Each Chromium artifact records its source: Chrome for Testing wherever it
+hosts the pinned version, else the pinned Playwright CDN build. Linux artifacts also record `minGlibc`,
+`needed` (shared libraries the host must provide) and `packageHints` (Debian package names, advice only).
+
+The release job runs `scripts/playwright-pins.py verify --offline` and `verify --online`. The online
+check re-downloads every platform artifact and compares size and SHA-256, checks Node's digest against
+`SHASUMS256.txt`, recomputes `minGlibc`, `needed` and the hints from the downloaded binaries, and fails
+when a platform has neither source, when a platform that Chrome for Testing hosts pins another source,
+or when a version drifts between platforms. It needs about 1.1 GB of downloads.
+
+To add or refresh the Linux platforms without touching the shared and macOS pins, run
+`python3 scripts/playwright-pins.py add-linux --workdir <temp dir>`, then `render-swift`. A full
+`generate` rewrites the lockfile too. After either, run `swift test` (the macOS pins test pins the
+schema 1 values) and `python3 scripts/test-playwright-pins.py`.
+
+The Swift validator and the future Rust validator both satisfy `conformance/pins_vectors.json`.
+
 ## Linux version
 
 The Linux hands node reports the release version in `sys_info.agent.version` and in MCP
