@@ -89,7 +89,8 @@ JavaScript in that profile. In the managed Playwright the user signs in to sites
 window, and an agent acts as the user on those sites; some sites may refuse an automated browser.
 Profile and cookies live in `~/Library/Application Support/oab-computer/playwright/profile/`
 and are deleted with the install.
-Callers can send an `OAB-Browser-Backend` header (`auto`, `playwright` or `appleEvents`); only the
+Direct `/mcp` callers can send an `OAB-Browser-Backend` header (`auto`, `playwright` or `appleEvents`;
+switchboard and reverse-attach callers use the stored preference, or `auto`); only the
 Playwright backend exists in 0.12.0, so `appleEvents` answers "not set up".
 On Linux, Playwright is only the external unit on loopback `127.0.0.1:8794`, and that listener has no
 authentication: any local user on the node can call every browser tool there, including

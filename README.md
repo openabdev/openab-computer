@@ -38,6 +38,7 @@ flowchart LR
         ts["tailscale serve, https port 8444, TLS and the Tailscale login header"]
         subgraph app["oab-computer, LaunchAgent dev.openab.computer"]
             ep["HTTP endpoint 127.0.0.1 port 8795, paths mcp and attach and healthz. Callers are checked as described under Auth"]
+            mcp["MCP server, shared by the HTTP endpoint and both dial-out clients"]
             tools["Local tools, sys_info exec screenshot ui_snapshot ui_action mouse key osascript"]
             router["BrowserRouter, one Playwright slot, 32 browser tools, owner profile only"]
             dial["Dial-out clients, switchboard and reverse attach"]
@@ -55,9 +56,11 @@ flowchart LR
     dial -- "WSS dialed out to vm attach" --> sb
     sb -- "tool calls down that socket" --> dial
     dial -- "WS dialed out after POST attach" --> rt
-    ep --> tools
-    ep --> router
-    dial --> ep
+    rt -- "tool calls back down the same socket" --> dial
+    ep --> mcp
+    dial --> mcp
+    mcp --> tools
+    mcp --> router
     router --> managed
     router --> ext
     router -.-> ae
@@ -139,7 +142,8 @@ The accessibility-tree tools are macOS only for now; Linux is deferred
 - Linux has no managed browser tier. Playwright there is an external unit on `127.0.0.1:8794`
   (designed in [#119](https://github.com/openabdev/openab-computer/issues/119), not built;
   [ADR](docs/adr/linux-browser-tier.md)).
-- The Linux installer still requires `wlrctl`, which Ubuntu 24.04 does not package
+- The Linux installer still requires `wlrctl`, which Ubuntu 24.04 packages only for amd64 (universe).
+  On arm64 the installer exits 78, so install the units by hand ([Linux setup](docs/linux-setup.md), steps 3-5)
   ([#130](https://github.com/openabdev/openab-computer/issues/130)).
 
 ## Quick start
@@ -571,7 +575,8 @@ On macOS the app installs, runs and removes its own Playwright (the managed tier
 caller with the `owner` profile: direct `/mcp`, a switchboard, or a lent session. An external
 Playwright is the other option (`--upstream`, below). Both feed the same router.
 
-The router reads an `OAB-Browser-Backend` request header with the values `auto`, `playwright` or
+The router reads an `OAB-Browser-Backend` request header (direct `/mcp` requests only; switchboard
+and reverse-attach callers use the stored preference, or `auto`) with the values `auto`, `playwright` or
 `appleEvents`. Only the Playwright backend exists in 0.12.0, so `appleEvents` answers "not set up".
 The Apple Events tier is not built. Design: [ADR](docs/adr/browser-tiers.md).
 

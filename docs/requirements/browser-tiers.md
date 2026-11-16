@@ -260,6 +260,7 @@ callers written for Playwright work unchanged. Unsupported options (for example
   the window is not completion; the page reopens from **Set up browser tools…**. Tailnet exposure
   stays reachable from the Network menu regardless. If no supported browser is installed, only the
   Playwright row shows.
+
 The states of the Playwright row on this page (R5.6, R7.2, R7.3), as the page model implements them:
 
 ```mermaid

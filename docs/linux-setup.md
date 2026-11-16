@@ -81,9 +81,10 @@ sudo apt-get install -y chromium                             # Debian / Raspberr
 
 `install-linux.sh` still exits 78 ("missing: wlrctl") when `wlrctl` is not installed, although the
 daemon never calls it: it spawns `grim` and `wtype` and holds its own virtual pointer.
-`wlrctl` is not in the Ubuntu 24.04 archive, so on Ubuntu the `apt-get` line above fails and the
-installer cannot finish until [#130](https://github.com/openabdev/openab-computer/issues/130) is
-fixed. On Ubuntu drop `wlrctl` from that line and install it another way first.
+Ubuntu 24.04 packages `wlrctl` only for amd64 (universe), so the `apt-get` line above works there.
+On arm64 the package does not exist, the line fails and the installer exits 78 until
+[#130](https://github.com/openabdev/openab-computer/issues/130) is fixed. On arm64 drop `wlrctl`
+from the line and install the units by hand as in steps 3-5, which do not check for it.
 
 Debian 13 ships `nodejs` 20 and `npm` 9, which is enough for `@playwright/mcp`. Ubuntu has no
 `chromium` deb (snap only, unusable from a user unit); the installer downloads Playwright's
@@ -201,7 +202,7 @@ chmod +x ~/.local/oab-computer/pw-mcp.sh
 cat > ~/.config/systemd/user/oab-computer-pw-mcp.service <<'EOF'
 [Unit]
 Description=Playwright MCP for the oab-computer hands node (loopback :8794)
-After=graphical-session.target
+After=graphical-session.target oab-seat.service
 
 [Service]
 ExecStart=%h/.local/oab-computer/pw-mcp.sh

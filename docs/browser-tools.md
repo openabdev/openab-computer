@@ -40,7 +40,8 @@ only the first slot exists.
 | Installed-Chrome fallback | Use your own Chrome when macOS refuses the downloaded Chromium | Not built ([#128](https://github.com/openabdev/openab-computer/issues/128)) |
 
 A caller can send an `OAB-Browser-Backend` request header with `auto`, `playwright` or `appleEvents`.
-With only the Playwright slot filled, `auto` and `playwright` both use it.
+Only direct `/mcp` requests are read for it; switchboard and reverse-attach callers use the stored
+preference, or `auto`. With only the Playwright slot filled, `auto` and `playwright` both use it.
 
 ## macOS
 
@@ -84,8 +85,8 @@ browser tools are not listed, and a call says Playwright is not installed.
 
 ### Update
 
-**Update Playwright… (x → y)** appears only when the app you run carries a newer pinned version than
-the one installed. It asks before it downloads, and a failed update leaves the installed version
+**Update Playwright… (x → y)** appears only when the Playwright version pinned in the app you run
+differs from the installed one. The app compares the two ids for inequality, not their order. It asks before it downloads, and a failed update leaves the installed version
 running. An update is only ever offered, never applied silently.
 
 ### Remove
@@ -191,9 +192,10 @@ systemctl --user daemon-reload
 systemctl --user restart oab-computer.service
 ```
 
-Leftovers you may also delete: `~/.cache/ms-playwright`, `/etc/apparmor.d/playwright-chromium`,
-the Chromium policy file `/etc/chromium/policies/managed/oab-computer.json`, and the unit's output
-and config files if present.
+Leftovers you may also delete: `/etc/apparmor.d/playwright-chromium`, the Chromium policy file
+`/etc/chromium/policies/managed/oab-computer.json`, and the unit's output and config files if
+present. Leave `~/.cache/ms-playwright` alone: it is Playwright's shared cache, and other
+Playwright installs of yours may keep browsers there.
 
 ### Planned: a managed Linux tier
 

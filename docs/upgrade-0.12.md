@@ -124,8 +124,8 @@ reused by 0.12 anyway: lend each session again after the upgrade.
   ([Download and install](../README.md#download-and-install)).
 - Linux: download `oab-computer-VERSION-linux-ARCH.tar.gz`, unpack it and run `./install-linux.sh`
   ([Quick start](../README.md#quick-start), [Linux setup](linux-setup.md)). On Ubuntu 24.04 the
-  installer currently stops with exit 78 unless `wlrctl` is installed, which that release does not
-  package ([#130](https://github.com/openabdev/openab-computer/issues/130)).
+  installer currently stops with exit 78 unless `wlrctl` is installed. Ubuntu 24.04 packages it only
+  for amd64 (universe); on arm64 install the units by hand ([Linux setup](linux-setup.md), steps 3-5) ([#130](https://github.com/openabdev/openab-computer/issues/130)).
 
 The installer prints a warning when it finds the old agent. It never stops, disables or removes it.
 Until you finish step 4, `/healthz` on port 8795 may be answered by the old agent, so a healthy check
@@ -160,13 +160,7 @@ grants. On first launch the **Set Up Mac Permissions** window asks for Screen Re
 Accessibility (required) and offers Full Disk Access (optional, with a Skip link). Click Allow on
 each row and turn the switch on in System Settings.
 
-Wait with the cleanup of the old entries until step 8, so a rollback keeps the old grants. Then:
-
-```sh
-tccutil reset ScreenCapture dev.openab.instance-mcp
-tccutil reset Accessibility dev.openab.instance-mcp
-tccutil reset SystemPolicyAllFiles dev.openab.instance-mcp   # only if you used Full Disk Access
-```
+Leave the old app's entries alone for now, so a rollback keeps its grants. Step 8 resets them.
 
 Future releases keep the same Developer ID and the new bundle id, so these grants survive later
 upgrades. Linux has no equivalent step.
@@ -254,7 +248,13 @@ rm -rf ~/.local/oab-instance-mcp ~/.config/oab-instance-mcp ~/oab-instance-mcp-b
 # Linux also: $XDG_STATE_HOME/oab-instance-mcp (default ~/.local/state/oab-instance-mcp)
 ```
 
-Check each path before you delete it. The `tccutil reset` commands from step 3 belong here too.
+Check each path before you delete it. Now reset the old app's grants (macOS only):
+
+```sh
+tccutil reset ScreenCapture dev.openab.instance-mcp
+tccutil reset Accessibility dev.openab.instance-mcp
+tccutil reset SystemPolicyAllFiles dev.openab.instance-mcp   # only if you used Full Disk Access
+```
 
 ## Rollback
 
@@ -266,13 +266,15 @@ macOS:
 
 ```sh
 launchctl bootout gui/$(id -u)/dev.openab.computer
+launchctl bootout gui/$(id -u)/dev.openab.computer.pw-mcp   # only if step 7 installed it; it holds 127.0.0.1:8794
 mv ~/Library/LaunchAgents/dev.openab.computer.plist ~/oab-instance-mcp-backup/   # else it starts again at login and races the old agent for 127.0.0.1:8795
 cp ~/oab-instance-mcp-backup/dev.openab.instance-mcp*.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist   # only if you had the old Playwright agent
 ```
 
 If the old app the plist points to is gone, install the 0.11.0 package from its release page instead.
-Grants you reset with `tccutil` in step 3 must be granted again to the old app.
+Grants you already reset with `tccutil` in step 8 must be granted again to the old app.
 
 Linux:
 
