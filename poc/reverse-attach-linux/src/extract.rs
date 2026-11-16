@@ -178,15 +178,18 @@ pub struct PlannedEntry {
 pub struct Plan {
     format: Format,
     entries: Vec<PlannedEntry>,
+    #[allow(dead_code)] // read through `total_bytes()` by tests
     total_bytes: u64,
     limits: Limits,
     identity: Identity,
 }
 
 impl Plan {
+    #[allow(dead_code)] // the tests inspect the plan
     pub fn entries(&self) -> &[PlannedEntry] {
         &self.entries
     }
+    #[allow(dead_code)] // the tests inspect the plan
     pub fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
@@ -524,6 +527,10 @@ pub fn validate(file: &VerifiedArtifact, format: Format, limits: &Limits) -> Res
 }
 
 /// Stage 2: re-reads the archive and writes it below `into`, an existing empty directory.
+///
+/// Contract for the caller: on any error `into` may hold a partial tree, so the caller deletes the
+/// whole staging directory that contains it (the installer's staging guard does, on every error
+/// path). Stage 1 (`validate`) creates nothing.
 pub fn extract(plan: &Plan, file: &VerifiedArtifact, into: &Path) -> Res<()> {
     extract_with_hook(plan, file, into, &mut |_, _| {})
 }
@@ -783,7 +790,8 @@ fn run_tar_gz(file: File, limits: &Limits, sink: &mut dyn TarSink) -> Res<()> {
         .max_total_bytes
         .saturating_add(limits.max_entries.saturating_add(16).saturating_mul(4096))
         .saturating_add(1 << 20);
-    let gz = flate2::bufread::GzDecoder::new(BufReader::with_capacity(64 * 1024, file));
+    let gz =
+        flate2::bufread::GzDecoder::new(BufReader::with_capacity(64 * 1024, file.take(compressed)));
     let mut r = Capped {
         inner: gz,
         produced: 0,
@@ -1451,4 +1459,4 @@ fn zip_extract(
 
 #[cfg(test)]
 #[path = "extract_tests.rs"]
-mod tests;
+pub(crate) mod tests;

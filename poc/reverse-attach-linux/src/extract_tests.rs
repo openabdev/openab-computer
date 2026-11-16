@@ -129,7 +129,7 @@ fn tar_header(name: &[u8], typ: u8, mode: u32, size: u64, link: &str) -> [u8; 51
 }
 
 #[derive(Default)]
-struct TarBuilder {
+pub(crate) struct TarBuilder {
     out: Vec<u8>,
 }
 
@@ -140,7 +140,7 @@ impl TarBuilder {
         self.out.resize(self.out.len().div_ceil(512) * 512, 0);
         self
     }
-    fn file(&mut self, name: &str, data: &[u8], mode: u32) -> &mut Self {
+    pub(crate) fn file(&mut self, name: &str, data: &[u8], mode: u32) -> &mut Self {
         self.long(name);
         self.raw(
             tar_header(name.as_bytes(), b'0', mode, data.len() as u64, ""),
@@ -194,7 +194,7 @@ impl TarBuilder {
         o.extend_from_slice(&[0u8; 1024]);
         o
     }
-    fn gz(&self) -> Vec<u8> {
+    pub(crate) fn gz(&self) -> Vec<u8> {
         gz(&self.bytes())
     }
 }
@@ -202,7 +202,7 @@ impl TarBuilder {
 // ---- zip builder ----------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct ZEntry {
+pub(crate) struct ZEntry {
     name: Vec<u8>,
     data: Vec<u8>,
     deflate: bool,
@@ -216,7 +216,7 @@ struct ZEntry {
 }
 
 impl ZEntry {
-    fn file(name: &str, data: &[u8], deflate: bool, mode: u32) -> ZEntry {
+    pub(crate) fn file(name: &str, data: &[u8], deflate: bool, mode: u32) -> ZEntry {
         ZEntry {
             name: name.into(),
             data: data.to_vec(),
@@ -248,7 +248,7 @@ impl ZEntry {
     }
 }
 
-fn zip_build(entries: &[ZEntry]) -> Vec<u8> {
+pub(crate) fn zip_build(entries: &[ZEntry]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut central = Vec::new();
     for e in entries {

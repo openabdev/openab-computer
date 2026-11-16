@@ -179,6 +179,16 @@ fn serve(shared: &Shared, mut s: TcpStream) {
                 b"",
             );
         }
+        "/hop1" | "/hop2" | "/hop3" => {
+            // Each hop is slow on its own; only the sum of them breaks the operation deadline.
+            thread::sleep(Duration::from_millis(300));
+            let next = match path.as_str() {
+                "/hop1" => "/hop2",
+                "/hop2" => "/hop3",
+                _ => "/ok",
+            };
+            send(&mut s, &redirect(302, next), b"");
+        }
         "/status404" => {
             send(
                 &mut s,
@@ -680,6 +690,166 @@ fn a_slow_body_ends_at_the_total_deadline() {
     );
     assert!(t.elapsed() < Duration::from_secs(5));
     assert!(h.clean());
+}
+
+#[test]
+fn the_deadline_covers_the_whole_redirect_chain_not_each_hop() {
+    let h = Harness::new();
+    let l = Limits {
+        total: Duration::from_millis(700),
+        max_redirects: 5,
+        ..Harness::limits()
+    };
+    let t = Instant::now();
+    // Three hops of 300 ms each fit in 700 ms one by one, but not together.
+    assert_eq!(
+        h.get_with("/hop1", &l, h.size(), &h.sha).unwrap_err(),
+        DownloadError::Timeout
+    );
+    assert!(t.elapsed() < Duration::from_secs(4), "{:?}", t.elapsed());
+    assert!(h.clean());
+    // With room for all hops it still works.
+    let ok = Limits {
+        total: Duration::from_secs(20),
+        max_redirects: 5,
+        ..Harness::limits()
+    };
+    assert!(h.get_with("/hop1", &ok, h.size(), &h.sha).is_ok());
+}
+
+// ---- local files (--from-dir) ---------------------------------------------------------------
+
+fn local_fixture(bytes: &[u8]) -> (PathBuf, PathBuf) {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let base = std::env::temp_dir().join(format!(
+        "oab-l1b-local-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = fs::remove_dir_all(&base);
+    let (src, dst) = (base.join("src"), base.join("dst"));
+    fs::create_dir_all(&src).unwrap();
+    fs::create_dir_all(&dst).unwrap();
+    fs::set_permissions(&dst, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(src.join("a.bin"), bytes).unwrap();
+    (src, dst)
+}
+
+#[test]
+fn a_local_file_is_hashed_while_copied_and_only_then_named() {
+    let bytes: Vec<u8> = (0..200_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    let sha = crate::manifest::sha256_hex(&bytes);
+    let (src, dst) = local_fixture(&bytes);
+    let pin = |size: u64, sha: &str| (size, sha.to_string());
+    let run = |name: &str, p: (u64, String)| {
+        let url = "http://127.0.0.1/x";
+        let pin = Pin {
+            url,
+            size: p.0,
+            sha256: &p.1,
+        };
+        verify_local(&src, name, &pin, &dst, "out.bin", &mut |_| {})
+    };
+    let a = run("a.bin", pin(bytes.len() as u64, &sha)).unwrap();
+    assert_eq!(a.size(), bytes.len() as u64);
+    assert_eq!(a.sha256_hex(), sha);
+    assert_eq!(fs::read(dst.join("out.bin")).unwrap(), bytes);
+    assert_eq!(
+        fs::metadata(dst.join("out.bin"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    fs::remove_file(dst.join("out.bin")).unwrap();
+
+    for (what, name, p, want) in [
+        (
+            "digest",
+            "a.bin",
+            pin(bytes.len() as u64, &"0".repeat(64)),
+            DownloadError::DigestMismatch,
+        ),
+        (
+            "pinned smaller",
+            "a.bin",
+            pin(bytes.len() as u64 - 1, &sha),
+            DownloadError::TooLarge,
+        ),
+        (
+            "pinned larger",
+            "a.bin",
+            pin(bytes.len() as u64 + 1, &sha),
+            DownloadError::SizeMismatch,
+        ),
+        ("missing", "none.bin", pin(1, &sha), DownloadError::Io),
+        ("path in name", "../a.bin", pin(1, &sha), DownloadError::Io),
+        ("dot name", ".a.bin", pin(1, &sha), DownloadError::Io),
+    ] {
+        assert_eq!(run(name, p).unwrap_err(), want, "{what}");
+        assert_eq!(
+            fs::read_dir(&dst).unwrap().count(),
+            0,
+            "{what}: nothing may be left behind"
+        );
+    }
+    // A link, a directory and a FIFO are not read.
+    std::os::unix::fs::symlink(src.join("a.bin"), src.join("link.bin")).unwrap();
+    fs::create_dir(src.join("dir.bin")).unwrap();
+    assert!(std::process::Command::new("mkfifo")
+        .arg(src.join("fifo.bin"))
+        .status()
+        .unwrap()
+        .success());
+    for n in ["link.bin", "dir.bin", "fifo.bin"] {
+        assert_eq!(
+            run(n, pin(bytes.len() as u64, &sha)).unwrap_err(),
+            DownloadError::Io,
+            "{n}"
+        );
+    }
+    // A source directory that is itself a link is refused.
+    let linked = src.parent().unwrap().join("linked-src");
+    std::os::unix::fs::symlink(&src, &linked).unwrap();
+    let url = "http://127.0.0.1/x";
+    let p = Pin {
+        url,
+        size: bytes.len() as u64,
+        sha256: &sha,
+    };
+    assert!(verify_local(&linked, "a.bin", &p, &dst, "out.bin", &mut |_| {}).is_err());
+    // A part file that already exists is never reused.
+    fs::write(dst.join(".out.bin.part"), "stale").unwrap();
+    assert_eq!(
+        run("a.bin", pin(bytes.len() as u64, &sha)).unwrap_err(),
+        DownloadError::Io
+    );
+    assert_eq!(fs::read(dst.join(".out.bin.part")).unwrap(), b"stale");
+    let _ = fs::remove_dir_all(src.parent().unwrap());
+}
+
+#[test]
+fn a_local_npm_tarball_is_checked_against_its_sha512() {
+    use sha2::Sha512;
+    let bytes = vec![9u8; 5000];
+    let good: [u8; 64] = Sha512::digest(&bytes).into();
+    let (src, dst) = local_fixture(&bytes);
+    assert!(verify_local_sha512(&src, "a.bin", &good, 10_000, &dst, "t.tgz").is_ok());
+    assert_eq!(fs::read(dst.join("t.tgz")).unwrap(), bytes);
+    fs::remove_file(dst.join("t.tgz")).unwrap();
+    let mut bad = good;
+    bad[0] ^= 1;
+    assert_eq!(
+        verify_local_sha512(&src, "a.bin", &bad, 10_000, &dst, "t.tgz").unwrap_err(),
+        DownloadError::DigestMismatch
+    );
+    assert_eq!(
+        verify_local_sha512(&src, "a.bin", &good, 4999, &dst, "t.tgz").unwrap_err(),
+        DownloadError::TooLarge
+    );
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 0);
+    let _ = fs::remove_dir_all(src.parent().unwrap());
 }
 
 #[test]

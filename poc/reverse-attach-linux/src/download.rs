@@ -43,6 +43,8 @@ pub enum DownloadError {
     Timeout,
     Network,
     Io,
+    /// SIGINT, SIGTERM or SIGHUP arrived (L1b).
+    Cancelled,
 }
 
 impl DownloadError {
@@ -58,6 +60,7 @@ impl DownloadError {
             DownloadError::Timeout => "timeout",
             DownloadError::Network => "network",
             DownloadError::Io => "io",
+            DownloadError::Cancelled => "cancelled",
         }
     }
 }
@@ -95,6 +98,7 @@ impl DownloadPolicy {
 
     /// Same rules as the Swift `DownloadPolicy.permits`, with the strict URL splitter. An https
     /// URL may carry no port or 443 (stricter than Swift); a host must match exactly.
+    #[allow(dead_code)] // the conformance tests use it; the installer goes through `permits_parsed`
     pub fn permits(&self, url: &str) -> bool {
         parse_url(url).is_some_and(|u| self.permits_parsed(&u))
     }
@@ -172,6 +176,7 @@ impl VerifiedArtifact {
     pub(crate) fn sha256(&self) -> [u8; 32] {
         self.sha256
     }
+    #[allow(dead_code)] // reported by tests; kept as the public accessor
     pub fn sha256_hex(&self) -> String {
         hex(&self.sha256)
     }
@@ -227,7 +232,9 @@ impl Drop for PartGuard<'_> {
     }
 }
 
-fn agent(https_only: bool, limits: &Limits) -> ureq::Agent {
+/// One agent per hop. `remaining` is what is left of the operation-wide deadline, so a chain of
+/// redirects cannot each spend the whole budget.
+fn agent(https_only: bool, limits: &Limits, remaining: Duration) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .proxy(None)
         .https_only(https_only)
@@ -238,7 +245,7 @@ fn agent(https_only: bool, limits: &Limits) -> ureq::Agent {
         .accept_encoding("identity")
         .timeout_connect(Some(limits.connect))
         .timeout_per_read(Some(limits.read))
-        .timeout_global(Some(limits.total))
+        .timeout_global(Some(remaining))
         .build();
     ureq::Agent::new_with_config(config)
 }
@@ -341,9 +348,18 @@ pub fn fetch(
     let mut part = File::from(part_fd);
 
     let started = Instant::now();
-    let agent = agent(!policy.allow_loopback_http, limits);
     let mut hops = 0u8;
     let response = loop {
+        if crate::cancel::is_cancelled() {
+            return Err(DownloadError::Cancelled);
+        }
+        // One deadline for the whole operation: every hop gets only what is left of it.
+        let remaining = limits
+            .total
+            .checked_sub(started.elapsed())
+            .filter(|d| !d.is_zero())
+            .ok_or(DownloadError::Timeout)?;
+        let agent = agent(!policy.allow_loopback_http, limits, remaining);
         // Every request, the first one included, was checked against the policy just before.
         let resp = agent.get(&url.render()).call().map_err(|e| map_ureq(&e))?;
         let status = resp.status().as_u16();
@@ -396,6 +412,9 @@ pub fn fetch(
         if started.elapsed() > limits.total {
             return Err(DownloadError::Timeout);
         }
+        if crate::cancel::is_cancelled() {
+            return Err(DownloadError::Cancelled);
+        }
         let n = match body.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
@@ -428,6 +447,174 @@ pub fn fetch(
         size: received,
         sha256: digest,
     })
+}
+
+// ---- local files (`browser install --from-dir`, R2.5, D17) ---------------------------------------
+
+/// The source file for `--from-dir`: opened below the user's directory without following a link,
+/// and refused unless it is a regular file of the expected size. `O_NONBLOCK` keeps a FIFO from
+/// hanging the open.
+fn open_local(src_dir: &Path, name: &str, size_limit: u64) -> Result<(File, u64), DownloadError> {
+    if !plain_file_name(name) {
+        return Err(DownloadError::Io);
+    }
+    let dir = rustix::fs::open(
+        src_dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| DownloadError::Io)?;
+    let fd = rustix::fs::openat(
+        &dir,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| DownloadError::Io)?;
+    let st = rustix::fs::fstat(&fd).map_err(|_| DownloadError::Io)?;
+    if rustix::fs::FileType::from_raw_mode(st.st_mode as _) != rustix::fs::FileType::RegularFile {
+        return Err(DownloadError::Io);
+    }
+    let size = st.st_size as u64;
+    if size > size_limit {
+        return Err(DownloadError::TooLarge);
+    }
+    Ok((File::from(fd), size))
+}
+
+/// Copies at most `limit + 1` bytes from `src` into the private `.part` file of `dst_name` below
+/// `dst_dir`, feeding every byte to `feed`. Returns the byte count and the open `.part` file with
+/// its guard. The caller compares size and digest before the rename.
+fn copy_local<'a>(
+    src: File,
+    dstfd: &'a OwnedFd,
+    dst_name: &str,
+    limit: u64,
+    feed: &mut dyn FnMut(&[u8]),
+    progress: &mut dyn FnMut(u64),
+) -> Result<(u64, File, PartGuard<'a>), DownloadError> {
+    let part_name = format!(".{dst_name}.part");
+    let part_fd = rustix::fs::openat(
+        dstfd,
+        part_name.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )
+    .map_err(|_| DownloadError::Io)?;
+    let guard = PartGuard {
+        dir: dstfd,
+        name: part_name,
+        armed: true,
+    };
+    let mut part = File::from(part_fd);
+    let mut reader = src.take(limit + 1);
+    let mut received = 0u64;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        if crate::cancel::is_cancelled() {
+            return Err(DownloadError::Cancelled);
+        }
+        let n = reader.read(&mut buf).map_err(|_| DownloadError::Io)?;
+        if n == 0 {
+            break;
+        }
+        received += n as u64;
+        if received > limit {
+            return Err(DownloadError::TooLarge);
+        }
+        feed(&buf[..n]);
+        part.write_all(&buf[..n]).map_err(|_| DownloadError::Io)?;
+        progress(received);
+    }
+    Ok((received, part, guard))
+}
+
+/// `fetch` for a file the user copied in. The file is read once, hashed while it is copied into a
+/// private `.part` file below `dst_dir`, and only a size and SHA-256 match gives it its final
+/// name and a `VerifiedArtifact`. No network is touched.
+pub fn verify_local(
+    src_dir: &Path,
+    src_name: &str,
+    pin: &Pin<'_>,
+    dst_dir: &Path,
+    dst_name: &str,
+    progress: &mut dyn FnMut(u64),
+) -> Result<VerifiedArtifact, DownloadError> {
+    if !plain_file_name(dst_name) {
+        return Err(DownloadError::Io);
+    }
+    let (src, size) = open_local(src_dir, src_name, pin.size)?;
+    if size != pin.size {
+        return Err(DownloadError::SizeMismatch);
+    }
+    let dstfd = open_private_dir(dst_dir)?;
+    let mut hasher = Sha256::new();
+    let (received, part, mut guard) = copy_local(
+        src,
+        &dstfd,
+        dst_name,
+        pin.size,
+        &mut |b| hasher.update(b),
+        progress,
+    )?;
+    if received != pin.size {
+        return Err(DownloadError::SizeMismatch);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    if hex(&digest) != pin.sha256 {
+        return Err(DownloadError::DigestMismatch);
+    }
+    part.sync_all().map_err(|_| DownloadError::Io)?;
+    drop(part);
+    rustix::fs::renameat(&dstfd, guard.name.as_str(), &dstfd, dst_name)
+        .map_err(|_| DownloadError::Io)?;
+    guard.armed = false;
+    Ok(VerifiedArtifact {
+        path: dst_dir.join(dst_name),
+        size: received,
+        sha256: digest,
+    })
+}
+
+/// The npm tarballs of `--from-dir` are checked against the SHA-512 `integrity` of the embedded
+/// lockfile, then copied below `dst_dir` for `npm cache add`. The lockfile carries no size, so the
+/// caller passes the largest size it allows.
+pub fn verify_local_sha512(
+    src_dir: &Path,
+    src_name: &str,
+    expected: &[u8; 64],
+    max_size: u64,
+    dst_dir: &Path,
+    dst_name: &str,
+) -> Result<(), DownloadError> {
+    use sha2::Sha512;
+    if !plain_file_name(dst_name) {
+        return Err(DownloadError::Io);
+    }
+    let (src, size) = open_local(src_dir, src_name, max_size)?;
+    let dstfd = open_private_dir(dst_dir)?;
+    let mut hasher = Sha512::new();
+    let (received, part, mut guard) = copy_local(
+        src,
+        &dstfd,
+        dst_name,
+        size.min(max_size),
+        &mut |b| hasher.update(b),
+        &mut |_| {},
+    )?;
+    if received != size {
+        return Err(DownloadError::SizeMismatch);
+    }
+    let digest: [u8; 64] = hasher.finalize().into();
+    if &digest != expected {
+        return Err(DownloadError::DigestMismatch);
+    }
+    part.sync_all().map_err(|_| DownloadError::Io)?;
+    drop(part);
+    rustix::fs::renameat(&dstfd, guard.name.as_str(), &dstfd, dst_name)
+        .map_err(|_| DownloadError::Io)?;
+    guard.armed = false;
+    Ok(())
 }
 
 #[cfg(test)]
