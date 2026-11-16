@@ -127,6 +127,9 @@ pub struct Mcp {
     pub package_json_sha256: String,
     pub lockfile_sha256: String,
     pub npm_download_bytes: i64,
+    /// Space `npm ci` leaves behind. Not a validated pin field here (the vectors do not carry it),
+    /// so a manifest without it reads as 0.
+    pub npm_installed_bytes: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -467,6 +470,10 @@ impl Manifest {
                 package_json_sha256: string(mcp, "packageJsonSHA256")?,
                 lockfile_sha256: string(mcp, "lockfileSHA256")?,
                 npm_download_bytes: int(mcp, "npmDownloadBytes")?,
+                npm_installed_bytes: mcp
+                    .get("npmInstalledBytes")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
             },
             node: Node {
                 version: string(node, "version")?,
@@ -501,6 +508,7 @@ impl Manifest {
     }
 
     /// The pins for the host this binary runs on.
+    #[allow(dead_code)] // `browser_cli` selects through `select(PlatformId::host())` so it can report both
     pub fn select_for_host(&self) -> Result<Selection<'_>, SelectError> {
         self.select(PlatformId::host())
     }

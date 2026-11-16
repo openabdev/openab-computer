@@ -159,12 +159,11 @@ A `desktop` request or stored row runs as `observe` (#59), and each mapping is a
 JSON line to `MCP_AUDIT_FILE` (default `$XDG_STATE_HOME/oab-computer/audit.jsonl`, `off`
 disables), mode 600. Smoke checks the `attach` and `resume` records.
 
-## Managed Playwright tier, L1a modules (#119)
+## Managed Playwright tier, L1a and L1b (#119)
 
-Three modules the install path of the managed tier will use. Nothing calls them yet (the
-`install` subcommands land in L1b), so the linker keeps only the part the crate's own `main`
-reaches (the stripped size still grew a little through the new dependencies), and the size check
-does not measure the full modules until then. Design: `docs/adr/linux-browser-tier.md` (D3) and
+The install path of the managed tier. `oab-computer browser <plan|preflight|install|update|remove|status>`
+(L1b, below) calls the three L1a modules from `main`, so the stripped-size check in CI measures
+them. Design: `docs/adr/linux-browser-tier.md` (D3, D16, D17) and
 `docs/requirements/linux-browser-tier.md`.
 
 - `src/manifest.rs`: reads the embedded `release/playwright-pins/pins.json` (schema 2, four
@@ -182,6 +181,35 @@ does not measure the full modules until then. Design: `docs/adr/linux-browser-ti
 The new tests use a fake server on `127.0.0.1` and archives the tests generate; the one test
 that downloads the real pinned artifacts is `#[ignore]`d (`real_pins_download`, see its doc
 comment).
+
+### `oab-computer browser ...` (L1b)
+
+| Command | What it does |
+| --- | --- |
+| `plan` | Prints the consent text: what is downloaded, from where, how big, where it goes. No network, no writes. |
+| `preflight` | Reports libc, the glibc floor, user namespaces, disk needed and free, seat, and every missing shared library in one run. Installs nothing and never uses root; a root action is printed, not run. |
+| `install [--from-dir DIR]` | Installs the pinned Node.js, Playwright MCP and Chromium below `${XDG_DATA_HOME:-~/.local/share}/oab-computer/playwright/`. `--from-dir` installs from pre-fetched files in `DIR` (the basenames of the pinned URLs and of the lockfile's `resolved` URLs), hash-checked the same way, with `npm ci --offline` and no network. |
+| `update [--yes] [--from-dir DIR]` | Prompted, never silent (no terminal and no `--yes` is a refusal). Installs the new version beside the old one and keeps the old one if anything fails. |
+| `remove` | Deletes only what carries the installer's marker and prints `left in place:` for everything else. |
+| `status [--json]` | Install state, ids, platform, whether an update is available. `--json` has a fixed set of keys. |
+
+Exit codes: `0` success (including a no-op), `1` the operation failed or the preflight found a
+blocker (one `browser: <command>_failed class=<token>` line on stderr), `2` a usage error.
+
+- `src/state.rs`: the root, ownership markers (`.oab-owned`, `.oab-owned-data`, `.oab-staging`),
+  `.install.lock` (`flock`, never unlinked, no stale-lock reclaim), `install.json`,
+  `pending-cleanup.json` and the marker-gated delete walker (`openat`/`unlinkat` below directory fds,
+  links are never followed).
+- `src/install.rs`: the install, update, remove and status flows; staging, the staging guard, the
+  atomic switch-over with `install.json` written last.
+- `src/preflight.rs`, `src/elf.rs`: the host report and a bounded ELF reader. `src/health.rs`,
+  `src/npm.rs`, `src/proc.rs`: the headless health check of the staged Playwright MCP over stdio,
+  `npm ci` with the staged Node, and the child-process handling both use.
+- `src/consent.rs`, `src/catalog.rs`, `src/cancel.rs`: the consent text, the 32 tool names (checked
+  against the Swift catalog) and SIGINT/SIGTERM handling.
+
+The L1b tests install into a temp root with a stub `node`; real Chromium runs only in the
+manual end-to-end check recorded in the PR.
 
 ## Not yet (vs the Swift implementation)
 

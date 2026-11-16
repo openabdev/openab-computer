@@ -177,6 +177,8 @@ jobs:
         # The stripped release binary stays under 6 MiB on each architecture, and the dependency
         # tree is recorded so a reviewer sees what a dependency change pulls in. Raising the
         # budget is an explicit, reviewed edit of BUDGET. ring is the only rustls provider.
+        # The `browser` subcommands (L1b) are called from main, so the linker keeps the manifest,
+        # download, extract and install code and this number measures the real binary.
         run: |
           set -euo pipefail
           BUDGET=$((6 * 1024 * 1024))
