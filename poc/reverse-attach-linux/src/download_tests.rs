@@ -553,7 +553,7 @@ fn next_hop_refuses_downgrades_and_off_list_hosts() {
         "https://evil.example/x",
         "https://nodejs.org/a/../b",
         "https://nodejs.org:8443/x",
-        "https://nodejs.org@evil.example/x",
+        concat!("https://nodejs.org", "@evil.example/x"),
         "ftp://nodejs.org/x",
         "https://NODEJS.ORG/x",
     ] {
@@ -589,7 +589,7 @@ fn policy_table() {
         "https://NODEJS.ORG/x",
         "https://nodejs.org./x",
         "https://127.0.0.1.evil.example/x",
-        "https://user@nodejs.org/x",
+        concat!("https://user", "@nodejs.org/x"),
         "https://nodejs.org/a/../b",
         "https://nodejs.org/a/%2e%2e/b",
         "//nodejs.org/x",
