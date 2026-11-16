@@ -1,9 +1,15 @@
 # Requirement — browser tools in tiers (Playwright first, Apple Events fallback)
 
+> **Implementation status (0.12.0):** shipped: the macOS router and the managed Playwright. Not
+> implemented: the Apple Events tier, the CDP tier, the installed-Chrome fallback
+> ([#128](https://github.com/openabdev/openab-computer/issues/128)) and the menu preference pin.
+>
 > Implements the decision in [`docs/adr/browser-tiers.md`](../adr/browser-tiers.md) for issue
 > [#118](https://github.com/openabdev/openab-computer/issues/118). Linux is covered only by the
 > parity statement at the end; its installer is issue
-> [#119](https://github.com/openabdev/openab-computer/issues/119).
+> [#119](https://github.com/openabdev/openab-computer/issues/119), designed in
+> [`docs/adr/linux-browser-tier.md`](../adr/linux-browser-tier.md) and
+> [`linux-browser-tier.md`](linux-browser-tier.md).
 
 ## Statement
 
@@ -254,6 +260,49 @@ callers written for Playwright work unchanged. Unsupported options (for example
   the window is not completion; the page reopens from **Set up browser tools…**. Tailnet exposure
   stays reachable from the Network menu regardless. If no supported browser is installed, only the
   Playwright row shows.
+
+The states of the Playwright row on this page (R5.6, R7.2, R7.3), as the page model implements them:
+
+```mermaid
+flowchart TB
+    start(["Page opens"])
+    installedAlready["Already installed, no download offered"]
+    pre["Pre-checked, nothing installed, Continue enabled"]
+    declined["Declined, box unchecked"]
+    preflight["Preflight, free disk and install lock"]
+    downloading["Downloading, Cancel offered, Continue disabled"]
+    verifying["Verifying and installing, extract, Node signature, npm packages and health check"]
+    installed["Installed"]
+    failed["Failed, message shown, Retry and Continue without offered"]
+    without["Continued without, Playwright not installed"]
+    complete(["Page complete, the wizard advances"])
+
+    start -- "nothing installed" --> pre
+    start -- "install.json and files present" --> installedAlready
+    installedAlready --> complete
+    pre -- "user unchecks the box" --> declined
+    declined -- "user checks the box" --> pre
+    declined -- "Continue, nothing is downloaded" --> complete
+    pre -- "Continue with the box checked" --> preflight
+    preflight -- "passed" --> downloading
+    downloading -- "each file matched its size and digest" --> verifying
+    verifying -- "committed and the health check passed" --> installed
+    installed --> complete
+    preflight -- "not enough disk or lock held" --> failed
+    downloading -- "offline, interrupted, TLS or digest mismatch" --> failed
+    verifying -- "archive rejected, signature or health check failed" --> failed
+    preflight -- "Cancel" --> pre
+    downloading -- "Cancel, staging is removed once the transfer stops" --> pre
+    verifying -- "Cancel, staging is removed once the step stops" --> pre
+    failed -- "Retry" --> preflight
+    failed -- "user unchecks the box" --> declined
+    failed -- "Continue without" --> without
+    without --> complete
+```
+
+Closing the window is not completion, so the page reopens from **Set up browser tools…**. After
+Continue without or a decline, the router lists no `browser_*` tool unless another tier is ready.
+
 - R5.7 **Assisted flip of Chrome's menu item.** Next to Chrome's `jsDisabled` state, a **Turn it
   on for me** button, available only when Accessibility is granted. It is never automatic. It
   shows an alert naming the exact change, including that this is a Chrome setting for the whole

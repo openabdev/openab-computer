@@ -1,8 +1,8 @@
-# Releasing oab-computer for macOS
+# Releasing oab-computer
 
-A release is a **universal (arm64 + x86_64), Developer-ID-signed and Apple-notarized** app plus a
-signed/notarized installer package. The package is the normal download; the app zip is for advanced
-users and inspection.
+A release is a **universal (arm64 + x86_64), Developer-ID-signed and Apple-notarized** macOS app plus a
+signed/notarized installer package, and two Linux tarballs. The package is the normal macOS download;
+the app zip is for advanced users and inspection. v0.12.0 was published this way, signed and notarized.
 
 ## Artifacts
 
@@ -12,7 +12,8 @@ A `vMAJOR.MINOR.PATCH` tag publishes a GitHub Release titled `oab-computer VERSI
 |---|---|
 | `oab-computer-VERSION-universal.pkg` | Recommended. Double-click; installs/configures the app for the logged-in desktop user |
 | `oab-computer-VERSION-universal.app.zip` | Pre-signed app, no package receipt. Contains `Contents/Resources/install-prebuilt.sh` for manual installation |
-| `SHA256SUMS` | SHA-256 of both artifacts |
+| `SHA256SUMS` | SHA-256 of the two macOS artifacts |
+| `oab-computer-VERSION-linux-amd64.tar.gz`, `oab-computer-VERSION-linux-arm64.tar.gz` | The Linux node and `install-linux.sh`, each with a `.sha256` file beside it |
 
 Since 0.12.0 the asset names (`oab-computer-VERSION-*`), the binary, the bundle id and the install
 paths all use `oab-computer` (up to 0.11 they were `oab-instance-mcp`).
@@ -42,9 +43,9 @@ After the first Developer-ID release install, enable **OpenAB Computer** once un
 Privacy & Security (builds before 0.12.0 used the bundle id `dev.openab.instance-mcp`, so their
 entries do not carry over and must be granted again):
 
-- Full Disk Access
 - Screen & System Audio Recording
 - Accessibility
+- Full Disk Access (optional; the setup wizard has a Skip link for it)
 
 The first switch from the current Apple Development signature to Developer ID may require that one
 re-grant. Every later release carries the same bundle id and Developer ID team, so the grant remains.
@@ -69,10 +70,9 @@ plan supports that, then add:
 | `APPLE_NOTARY_ISSUER_ID` | API issuer id |
 
 **Use team `6LPQNY95AQ` only.** The machine still contains a deprecated team
-`UM92U863A8` Developer ID Application certificate; it must never sign these releases. As of
-2026-09-27 there is no Developer ID Application or Installer certificate for `6LPQNY95AQ` on the
-build machines and the repository has no Actions secrets, so the first signed tag is intentionally
-blocked until those assets are created and installed as secrets.
+`UM92U863A8` Developer ID Application certificate; it must never sign these releases.
+The signing and notarization secrets are set on the `release` environment (v0.12.0 shipped a signed
+and notarized `.pkg` from them), so there is no signing blocker. Only secret names are listed here.
 
 The tag workflow validates that both identity names are Developer ID identities, verifies the app's
 TeamIdentifier is exactly `6LPQNY95AQ`, submits/staples both app and pkg, and runs signature/Gatekeeper
@@ -81,20 +81,65 @@ deleted in an `always()` cleanup step.
 
 ## Cut a release
 
+The flow below is what the steps and the `Release macOS installer` workflow do. The three jobs
+run in parallel after approval. The Linux jobs wait for the release that the macOS job creates.
+
+```mermaid
+flowchart TB
+    bump["Bump version in main.swift and merge with green CI"]
+    tag["Tag the main commit vMAJOR.MINOR.PATCH and push the tag"]
+    approve["A reviewer approves the release environment, all three jobs wait for it"]
+
+    subgraph mac["macOS job on macos-15"]
+        m1["Validate the tag against main.swift and check the release secrets"]
+        m2["swift test and the Playwright pins check, offline then online"]
+        m3["Build arm64 and x86_64, lipo into one universal binary, assemble the app"]
+        m4["Import the Developer ID certificates into an ephemeral keychain"]
+        m5["Sign the app, notarize it and staple the ticket"]
+        m6["Build and sign the pkg, notarize it and staple the ticket"]
+        m7["stapler validate, spctl and verify-release.sh"]
+        m8["Write SHA256SUMS, create the GitHub Release and upload the pkg, the app zip and SHA256SUMS"]
+        m9["Always delete the keychain and the signing files"]
+        m1 --> m2 --> m3 --> m4 --> m5 --> m6 --> m7 --> m8 --> m9
+    end
+
+    subgraph lin["Linux jobs, amd64 and arm64"]
+        l1["Validate the tag against the version source"]
+        l2["cargo build and the smoke test"]
+        l3["Package the tarball and its sha256 file"]
+        l4["Wait for the release to exist, then upload both files"]
+        l1 --> l2 --> l3 --> l4
+    end
+
+    verify["Download the artifacts, run verify-release.sh and shasum -c, install the pkg on a test Mac, check sys_info and make one reverse attach call"]
+
+    bump --> tag --> approve
+    approve --> m1
+    approve --> l1
+    m8 -. "release now exists" .-> l4
+    m8 --> verify
+    l4 --> verify
+```
+
 1. Update `let version = "…"` in `Sources/oab-computer/main.swift` and merge with green CI.
    This is the only version to bump. The Linux binary takes its version from the tag at build
    time (see [Linux version](#linux-version)); do not bump `poc/reverse-attach-linux/Cargo.toml`.
-2. Ensure the matching active-team release secrets above exist.
+2. Ensure the matching active-team release secrets above exist, and that the Playwright pins are
+   current (see [Playwright pins](#playwright-pins)). The workflow runs the same check and a
+   drifted pin stops the release before anything is built.
 3. Tag the exact main commit and push:
 
    ```sh
-   git tag v0.8.4
-   git push origin v0.8.4
+   git tag v0.12.1
+   git push origin v0.12.1
    ```
 
-4. The `Release macOS installer` workflow builds/tests, signs, notarizes and publishes the macOS
-   artifacts, and (since 0.6.7, named `oab-instance-mcp-VERSION-linux-*` before 0.12.0) `oab-computer-VERSION-linux-{arm64,amd64}.tar.gz` + `.sha256`
-   from the same run. All three jobs wait on the `release` environment approval. A manual
+4. The `Release macOS installer` workflow runs the tests and the Playwright pins check, then builds,
+   signs, notarizes and publishes the macOS artifacts. From the same run it also publishes
+   `oab-computer-VERSION-linux-{arm64,amd64}.tar.gz` and a `.sha256` for each (Linux tarballs
+   exist since 0.6.5; before 0.12.0 they were named `oab-instance-mcp-VERSION-linux-*`).
+   All three jobs wait for a reviewer to approve the `release` environment, so open the run and
+   approve it, or nothing starts. A manual
    dispatch can retry an existing tag; it is not a way to release an untagged commit, and it
    **must run on the tag ref** — the environment only allows `v*` refs, so a dispatch from
    `main` is rejected before any job starts ("Branch main is not allowed to deploy to release"):
@@ -140,7 +185,7 @@ or when a version drifts between platforms. It needs about 1.1 GB of downloads.
 
 To add or refresh the Linux platforms without touching the shared and macOS pins, run
 `python3 scripts/playwright-pins.py add-linux --workdir <temp dir>`, then `render-swift`. A full
-`generate` rewrites the lockfile too. After either, run `swift test` (the macOS pins test pins the
+`python3 scripts/playwright-pins.py generate --node-version X --mcp-version Y --node-team-id TEAMID --workdir DIR` rewrites the lockfile too and refuses to run without `--node-team-id`: `TEAMID` is the `TeamIdentifier` of the Node project's macOS binary, which you read from a Node download you have checked yourself (`codesign --verify --strict <node>` must pass, then `codesign -dvv <node>` prints it on stderr). The generator repeats that check on the Node it downloads. See `python3 scripts/playwright-pins.py --help` for the other options. After either, run `swift test` (the macOS pins test pins the
 schema 1 values) and `python3 scripts/test-playwright-pins.py`.
 
 The Swift validator and the future Rust validator both satisfy `conformance/pins_vectors.json`.

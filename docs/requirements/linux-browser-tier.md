@@ -1,5 +1,8 @@
 # Requirements: Linux managed Playwright tier
 
+> **Status:** accepted design, not implemented as of v0.12.0. Today's Linux behavior is in
+> [`docs/linux-setup.md`](../linux-setup.md).
+
 - **Issues:** [#119](https://github.com/openabdev/openab-computer/issues/119), [#118](https://github.com/openabdev/openab-computer/issues/118)
 - **ADR:** [`docs/adr/linux-browser-tier.md`](../adr/linux-browser-tier.md) (decisions D1 to D17 are cited below)
 - **macOS counterparts:** [`docs/adr/browser-tiers.md`](../adr/browser-tiers.md), [`browser-tiers.md`](browser-tiers.md)
@@ -119,6 +122,40 @@ person, not a PR. Hosts fall into two classes:
 Facts such as which unit is enabled, which profile is in use and how large the old directories are
 are collected in step 0, not assumed.
 
+The order of the steps in section 2.2 is below. The managed tier is not built yet, so this is the
+procedure for when it ships. A failed check at any point leads to the rollback in section 2.4.
+
+```mermaid
+flowchart TB
+    s0["Step 0 Inventory, read only"]
+    s1["Step 1 Back up by copying, never moving"]
+    s2["Step 2 Install the new binary beside the old one under a temporary name"]
+    s3["Step 3 Preflight"]
+    s4["Step 4 Side by side install and headless health check, the old unit keeps serving port 8794"]
+    stay["Stop here, nothing was cut over, the old setup is unchanged"]
+    s5["Step 5 Cutover window"]
+    c1["5.1 Disable and stop the old browser unit"]
+    c2["5.2 Remove the MCP_UPSTREAM line or the drop-in"]
+    c3["5.3 daemon-reload and restart oab-computer.service on the new binary"]
+    c4["5.4 browser signin if a login is needed"]
+    s6["Step 6 Verify, 32 tools, no listener on 8794, backend managed, still disabled after a new login"]
+    s7["Step 7 Kill test with kill -9 on the daemon, once per class"]
+    s8["Step 8 Soak for one week, old unit disabled and not deleted"]
+    s9["Section 2.3 A person removes the leftovers"]
+    rb["Rollback, section 2.4"]
+
+    s0 --> s1 --> s2 --> s3 --> s4
+    s4 -- "health check fails" --> stay
+    s4 -- "health check passes" --> s5
+    s5 --> c1 --> c2 --> c3 --> c4 --> s6
+    s6 -- "all checks pass" --> s7
+    s6 -- "any check fails" --> rb
+    s7 -- "a process survives" --> rb
+    s7 -- "passes" --> s8
+    s8 -- "browser incident" --> rb
+    s8 -- "no incident" --> s9
+```
+
 ### 2.1 Preconditions
 
 A release containing the managed tier is installed and verified on a throwaway account, covering
@@ -186,6 +223,17 @@ sizes. Each command is documented in `docs/linux-setup.md` and marked if it need
 ### 2.4 Rollback
 
 At any point before the old units are deleted:
+
+```mermaid
+flowchart TB
+    start["A check failed, or an incident happened, and the old units are not deleted yet"]
+    r1["1 Stop the transient browser unit if present, then stop oab-computer.service"]
+    r2["2 Optional, oab-computer browser remove to free disk, it restores nothing"]
+    r3["3 Restore the backed up daemon unit and drop-in, put oab-computer.prev back as the binary, daemon-reload"]
+    r4["4 Enable and start the old browser unit, then start oab-computer.service"]
+    r5["5 Verify as in step 6, expecting a listener on 8794 and backend external"]
+    start --> r1 --> r2 --> r3 --> r4 --> r5
+```
 
 1. Stop the transient browser unit if present, then stop `oab-computer.service`.
 2. Optionally run `oab-computer browser remove` to free disk. It does not restore anything by
@@ -349,6 +397,29 @@ separately where noted. These are estimates.
 | **L5 Release and cutover** | The release smoke matrix and Debian 12 container job, the per-release manual record, pins verification for all platforms, build-provenance attestation and its documented command, `pw-mcp.sh` marked deprecated, the legacy listing in `status`, and the cutover and rollback document. | L3, L4, D10, D12, D14 | S to M |
 | **L6 PID-namespace mechanism** | The PID-namespace supervisor and its self-test for hosts without a user manager. It does not block L5. Until it lands, those hosts have no managed tier. | L2, L4 | M |
 | **Cutover** | Section 2, by a person. | L5, D9, D10, D13 | n/a |
+
+The dependencies between the PRs, from the table above:
+
+```mermaid
+flowchart LR
+    L0["L0 Shared pins"]
+    L1a["L1a Download and extract"]
+    L1b["L1b State and install"]
+    L2["L2 Managed child and router"]
+    L3["L3 Installer and docs"]
+    L4["L4 Hardening"]
+    L5["L5 Release and cutover document"]
+    L6["L6 PID namespace mechanism, does not block L5"]
+    cut["Cutover by a person, section 2"]
+    L0 --> L1a --> L1b --> L2
+    L2 --> L3
+    L2 --> L4
+    L3 --> L5
+    L4 --> L5
+    L2 --> L6
+    L4 --> L6
+    L5 --> cut
+```
 
 L0 can land with no Linux code and is the only PR that touches shipped macOS code. L1a and L1b can be
 reviewed by someone who reads only the Rust, L2 by someone who knows the daemon, and L3 and L4 by the

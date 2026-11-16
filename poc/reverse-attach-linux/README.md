@@ -2,8 +2,8 @@
 
 Step-by-step install on a fresh box: [`docs/linux-setup.md`](../../docs/linux-setup.md).
 
-Part of [#27](https://github.com/openabdev/instance-mcp/issues/27) (hands-node registry) and
-[#15](https://github.com/openabdev/instance-mcp/issues/15) (Linux-first Rust port). A single
+Part of [#27](https://github.com/openabdev/openab-computer/issues/27) (hands-node registry) and
+[#15](https://github.com/openabdev/openab-computer/issues/15) (Linux-first Rust port). A single
 self-contained binary that makes a Linux box a lendable "hands" node for an openab-pty session,
 mirroring the Swift `ReverseAttachClient` / `POST /attach` contract:
 
@@ -114,6 +114,11 @@ config. Verified from the laptop: click into a field → `type` → screenshot s
 `press Escape` clears it, ~0.3 s per call.
 
 ## Browser tools via `MCP_UPSTREAM` (added 2026-09-28)
+
+> Historical section. Current behavior: `install-linux.sh --no-browser` skips this unit, and the
+> `127.0.0.1:8794` listener has no authentication, so any local user on the node can call every
+> browser tool. See [`docs/linux-setup.md`](../../docs/linux-setup.md) and
+> [`docs/adr/linux-browser-tier.md`](../../docs/adr/linux-browser-tier.md).
 
 Same pattern as the Mac: `@playwright/mcp` runs beside the daemon on loopback and the daemon
 re-serves its tools under its own `tools/list`, filtered by the connection's profile.

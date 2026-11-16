@@ -2,7 +2,7 @@
 
 **Renamed** from `oab-instance-mcp` to `oab-computer` in 0.12.0 (the product name is OpenAB Computer). This is a dated record: paths, unit, label and artifact names below are the 0.8–0.11 names (`oab-instance-mcp`, `dev.openab.instance-mcp`, `oab-pw-mcp.service`).
 
-- **Status:** Proposed
+- **Status:** Accepted. Implemented and shipped in every release (0.6.0 and later) (reverse attach, tool profiles, `/attach`).
 - **Date:** 2026-09-25
 - **Requirement:** [`docs/requirements/reverse-attach.md`](../requirements/reverse-attach.md) (full design, threat model, phasing)
 - **Related:** [openabdev/openab#1544](https://github.com/openabdev/openab/issues/1544) (brain/hands split), [`connect-closed-loop.md`](../requirements/connect-closed-loop.md) Phase 4, [`sandbox-adapter.md`](sandbox-adapter.md)
@@ -63,7 +63,7 @@ allowlist), not something this design provides.
    a per-connection tool list in `MCPServer` (today `owner` = everything, `observe` =
    `sys_info` + `screenshot`; see the 2026-11 amendment below for the history). No MCP parsing
    in a proxy.
-   **Amended 2026-09-30 ([#45](https://github.com/openabdev/instance-mcp/issues/45)):** a tool
+   **Amended 2026-09-30 ([#45](https://github.com/openabdev/openab-computer/issues/45)):** a tool
    list over one desktop session is not a privilege boundary. `osascript` (`do shell script`),
    `key` and `mouse` each reach the desktop user's shell, so `desktop` is shell-equivalent and the
    earlier rationale — "no `exec` because the agent already has a shell" — described a

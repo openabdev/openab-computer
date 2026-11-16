@@ -18,44 +18,53 @@ the intelligence stays in the caller.
 > a per-caller allow-list. `owner` is not a security boundary
 > ([#45](https://github.com/openabdev/openab-computer/issues/45)). Run this only on a Mac you own,
 > for callers you would trust with your keyboard.
+>
+> Installing the `.pkg` (or `install-prebuilt.sh`) runs `tailscale serve --bg --https=8444`, so the
+> Mac is reachable on your tailnet at `:8444` right after the install. A caller still needs the
+> bearer token and an allowed Tailscale login. A plain app launch without the installer creates no
+> mapping until you turn tailnet access on, but it leaves an existing `:8444` mapping in place. See [Download and install](#download-and-install).
 
 ```mermaid
 flowchart LR
-    subgraph callers["Callers — the brain (anywhere on the tailnet)"]
-        cli["Coding CLI / agent<br/>kiro-cli · claude · openab<br/><i>mcp.json: mac-mcp, mac-browser</i>"]
-        connect["OpenAB Connect<br/>(Mac app, Screens pane)"]
+    subgraph callers["Callers, where the model runs"]
+        cli["Coding CLI or agent with an MCP client"]
+        connect["OpenAB Connect"]
     end
 
-    sb["<b>Switchboard</b> (openab-sb)<br/>/mcp/computer · bearer token per caller<br/>routes calls down the computer's open socket"]
+    sb["Switchboard openab-sb, one bearer token per caller"]
+    rt["Agent runtime that was lent this Mac, reverse attach"]
 
-    subgraph mac["The instance — a Mac with someone logged in"]
-        subgraph ts["tailscale serve (TLS + identity)"]
-            s8444[":8444 → 127.0.0.1:8795<br/>injects Tailscale-User-Login"]
+    subgraph mac["The Mac, with a desktop user logged in"]
+        ts["tailscale serve, https port 8444, TLS and the Tailscale login header"]
+        subgraph app["oab-computer, LaunchAgent dev.openab.computer"]
+            ep["HTTP endpoint 127.0.0.1 port 8795, paths mcp and attach and healthz. Callers are checked as described under Auth"]
+            mcp["MCP server, shared by the HTTP endpoint and both dial-out clients"]
+            tools["Local tools, sys_info exec screenshot ui_snapshot ui_action mouse key osascript"]
+            router["BrowserRouter, one Playwright slot, 32 browser tools, owner profile only"]
+            dial["Dial-out clients, switchboard and reverse attach"]
         end
-        subgraph gui["Aqua session · LaunchAgents in gui/501"]
-            mcp["<b>oab-computer</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · ui_action · mouse · key · osascript"]
-            pw["@playwright/mcp<br/>headed Chromium, persistent profile"]
-        end
-        dial["<b>--switchboard</b> client<br/>dials out to /vm/attach"]
-        subgraph hands["What the daemon touches — nothing a logged-in user could not"]
-            shell["Shell<br/>zsh as the desktop user<br/>Xcode · xcodebuild · simulators · git"]
-            screen["Display<br/>ScreenCaptureKit"]
-            input["Input<br/>CGEvent mouse / keyboard"]
-            apps["Apps<br/>osascript / JXA"]
-        end
-        tcc{{"TCC grants, once, on the Mac's own screen<br/>Screen Recording · Accessibility · Full Disk Access<br/>bound to bundle id dev.openab.computer"}}
+        managed["Managed Playwright when installed, a node child over stdio with no port. Used when --upstream browser is not given"]
+        ext["External Playwright MCP, 127.0.0.1 port 8794, a separate process. Used instead when --upstream browser is given"]
+        ae["Apple Events tier, planned and not built"]
+        os["Shell, display, input and apps of the logged-in user, gated by TCC grants"]
     end
 
-    cli -- "HTTPS · MCP Streamable HTTP" --> s8444
-    connect -- "screenshot loop" --> s8444
-    cli -- "HTTPS · MCP via /mcp/computer" --> sb
-    dial -- "WSS · dialed out, /vm/attach" --> sb
-    sb -- "tool calls over that socket" --> dial
+    cli -- "HTTPS, MCP over HTTP" --> ts
+    connect --> ts
+    ts --> ep
+    cli -- "HTTPS, MCP through the switchboard" --> sb
+    dial -- "WSS dialed out to vm attach" --> sb
+    sb -- "tool calls down that socket" --> dial
+    dial -- "WS dialed out after POST attach" --> rt
+    rt -- "tool calls back down the same socket" --> dial
+    ep --> mcp
     dial --> mcp
-    s8444 --> mcp
-    mcp -- "--upstream, loopback only" --> pw
-    mcp --> hands
-    tcc -. "gates screen / input / apps" .-> hands
+    mcp --> tools
+    mcp --> router
+    router --> managed
+    router --> ext
+    router -.-> ae
+    tools --> os
 ```
 
 Read it left to right: the model and its reasoning live in the caller; the machine only receives
@@ -69,17 +78,23 @@ The loop the tools are built for: `screenshot` → decide →
 `mouse` / `key` / `osascript` / `exec` → `screenshot` to confirm. SSH already gives you a shell;
 this exists for what SSH cannot reach.
 
+The browser part of the diagram is covered in [Browser tools](#browser-tools). The
+Apple Events tier is drawn with a dotted arrow because it is planned and not built. The diagram shows
+the macOS app. The Linux node is described in [`docs/linux-setup.md`](docs/linux-setup.md).
+
 ## Contents
 
 - [Goal](#goal) · [Features](#features) · [Status and known limits](#status-and-known-limits) · [Quick start](#quick-start) · [Platforms](#platforms)
 - [Tools](#tools) · [Auth](#auth) · [Network interfaces and ports](#network-interfaces-and-ports)
-- [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) · [Switchboard](#serving-a-switchboard---switchboard) · [Browser tools](#browser-tools-for-lent-sessions---upstream)
+- [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) · [Switchboard](#serving-a-switchboard---switchboard) · [Browser tools](#browser-tools)
 - Deploy & operate: [Download and install](#download-and-install) · [Upgrading from 0.11](#upgrading-from-011-or-earlier) · [Build & test](#build--test-on-the-build-mac-the-laptop-never-compiles-swift) · [Deploy](#deploy-run-on-the-target) · [Menu bar](#menu-bar) · [Operate](#operate)
 - Operator notes: [TCC & signing](#tcc-grants-survive-re-deploys-only-if-the-signature-does) · [Gotchas](#gotchas)
-- Detail: [UI tools](docs/ui-tools.md) · [Operator notes and gotchas](docs/operators.md)
+- Detail: [Docs index](docs/README.md) · [Upgrade guide](docs/upgrade-0.12.md) · [Browser tools guide](docs/browser-tools.md) · [UI tools](docs/ui-tools.md) · [Operator notes and gotchas](docs/operators.md)
 
-Components: `oab-computer` is this package (Swift on macOS, zero deps; Rust on Linux). The
-browser server is `@playwright/mcp`, not ours ([`poc/pw-mcp/README.md`](poc/pw-mcp/README.md)).
+Components: `oab-computer` is this package (Swift on macOS, zero deps; Rust on Linux). Browser
+tools come from `@playwright/mcp`, which is not our code. On macOS the app installs, runs and
+removes it for you (see [Browser tools](#browser-tools)); an
+external one is the advanced option ([`poc/pw-mcp/README.md`](poc/pw-mcp/README.md)).
 Design notes: [`docs/requirements/connect-closed-loop.md`](docs/requirements/connect-closed-loop.md).
 
 ## Goal
@@ -121,6 +136,14 @@ The accessibility-tree tools are macOS only for now; Linux is deferred
   later is in use ([#14](https://github.com/openabdev/openab-sb/issues/14),
   [#16](https://github.com/openabdev/openab-sb/pull/16)).
 - Browser tools use one persistent browser profile per computer, with its cookies and logins.
+- The browser router in 0.12.0 has only the Playwright backend. The Apple Events tier is not built,
+  and neither is the "use my installed Chrome" fallback if macOS refuses the downloaded Chromium
+  ([#128](https://github.com/openabdev/openab-computer/issues/128)).
+- Linux has no managed browser tier (designed in [#119](https://github.com/openabdev/openab-computer/issues/119),
+  not built; [ADR](docs/adr/linux-browser-tier.md)). Playwright there is an external unit on `127.0.0.1:8794`.
+- The Linux installer still requires `wlrctl`, which Ubuntu 24.04 packages only for amd64 (universe).
+  On Ubuntu arm64 the installer exits 78, so install the units by hand ([Linux setup](docs/linux-setup.md), steps 3-5)
+  ([#130](https://github.com/openabdev/openab-computer/issues/130)).
 
 ## Quick start
 
@@ -169,7 +192,8 @@ The URL is `https://<host>.<tailnet>.ts.net:8444/mcp` and the bearer token is in
 | Shell | `exec` / `exec_start*` (`zsh -f`) | `bash` / `exec_start*` (`bash -c`) |
 | Apps | `osascript` / JXA | — (use `bash`: `gdbus`, `xdg-open`) |
 | Accessibility tree (`ui_snapshot` / `ui_action`) | ✅ (0.9.0 / 0.10.0) | deferred ([#102](https://github.com/openabdev/openab-computer/issues/102)) |
-| Reverse attach · browser upstream | ✅ | ✅ |
+| Browser tools | managed Playwright (installed from the wizard, stdio child, no port) or external via `--upstream` | external Playwright unit on loopback `8794`; a managed tier is designed ([#119](https://github.com/openabdev/openab-computer/issues/119)) and not built |
+| Reverse attach | ✅ | ✅ |
 | Install | signed/notarized `.pkg` | `-linux-{arm64,amd64}.tar.gz` + `install-linux.sh` |
 | Guide | this README | [`docs/linux-setup.md`](docs/linux-setup.md) |
 
@@ -196,6 +220,17 @@ same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-computer/job
 | `mouse` | CGEvent: `move` `click` `double_click` `right_click` `drag` `scroll` | coordinates in display points = screenshot pixels at scale 1. `modifiers`. Needs Accessibility TCC |
 | `key` | CGEvent: `type` (unicode, layout-independent) / `press` combos (`cmd+shift+4`) | Needs Accessibility TCC |
 | `osascript` | AppleScript / JXA via `/usr/bin/osascript` in the GUI session | `timeout_secs` (default 15). First script against an app raises an Automation consent dialog on the Mac — screenshot, then `mouse` click Allow |
+| `browser_*` (32) | Playwright browser tools, `owner` only (`observe` sees none) | On macOS they go through the browser router to the managed or external Playwright; on Linux they come from the external Playwright (`MCP_UPSTREAM`). Names are listed below the table. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary JavaScript in the computer's persistent profile. See [Browser tools](#browser-tools) and [docs/tool-profiles.md](docs/tool-profiles.md) |
+
+The 32 `browser_*` names, grouped by how well the planned Apple Events tier could serve them
+(`BrowserToolCatalog`). That tier is not built in 0.12.0, so today every call goes to Playwright and the
+grouping only shows what a later tier could cover:
+
+| Planned Apple Events support | Tools |
+|---|---|
+| full | `browser_navigate`, `browser_navigate_back`, `browser_fill_form`, `browser_select_option`, `browser_wait_for`, `browser_close` |
+| limited | `browser_snapshot`, `browser_find`, `browser_click`, `browser_type`, `browser_press_key`, `browser_hover`, `browser_tabs`, `browser_resize`, `browser_evaluate`, `browser_mouse_wheel` |
+| none | `browser_take_screenshot`, `browser_console_messages`, `browser_run_code_unsafe`, `browser_file_upload`, `browser_drop`, `browser_pdf_save`, `browser_network_requests`, `browser_network_request`, `browser_handle_dialog`, `browser_emulate_media`, `browser_drag`, `browser_mouse_move_xy`, `browser_mouse_click_xy`, `browser_mouse_drag_xy`, `browser_mouse_down`, `browser_mouse_up` |
 
 Which tool reads the screen: `browser_snapshot` for web pages, `ui_snapshot` for native apps
 (exact roles, titles and frames, cheaper than reading an image), and `screenshot` + `mouse` for
@@ -243,8 +278,7 @@ profile (below).
 
 ## Network interfaces and ports
 
-This section describes `main` (app version 0.12.0). The latest release is v0.11.0, so a released
-build may differ. Checked by reading the code and by a read-only look at a running agent
+This section describes v0.12.0 (and `main` at the time of writing). Checked by reading the code and by a read-only look at a running agent
 (an older 0.10.1 install) and a bare 0.12.0 launch. The menu bar item's Network section shows the
 same facts (see [What the menu shows](#what-the-menu-shows)).
 
@@ -261,7 +295,7 @@ read-only.
 |---|---|---|---|---|---|
 | `127.0.0.1:8795` (`--host`, `--port`; `--path` for the `/mcp` route) | TCP, plain HTTP/1.1 | Processes on this Mac only | `/mcp` (POST, DELETE), `/attach` (reverse attach; off with `--no-attach`), `/healthz`. Anything else is 404 | Always, on IPv4 loopback by default. No-flag launch from Finder, the installer's LaunchAgent, or a manual launch. A no-flag launch also briefly binds the port to test it is free, without listening | `/mcp` and `/attach`: [Auth](#auth). `/healthz`: none |
 | `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. The app runs the same command only after you turn tailnet access on, from the wizard's tailnet page or the menu's "Allow tailnet access…", and removes it with "Turn Off Tailnet Access". A launch with no stored opt-in does not create it. A launch with a stored opt-in re-applies it when it is missing. A mapping that already exists is shown as "On (existing mapping, not managed by this app)" and left alone until you choose "Manage with this app" | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
-| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac only. Other machines reach the browser tools only through the app's `--upstream` | Playwright MCP, a **separate process** the app only connects to (`--upstream`). It has no `:8443` or other tailnet access path | Its own LaunchAgent (`poc/pw-mcp/install.sh`), which binds `--host 127.0.0.1` and creates no `tailscale serve` mapping. The app never starts this one. The *managed* Playwright (see [Browser tools](#browser-tools-for-lent-sessions---upstream)) is a different thing: a child over stdio that listens on nothing | None in Playwright. The app's [Auth](#auth) applies to callers before it relays browser tools |
+| `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac only. Other machines reach the browser tools only through the app's `--upstream` | Playwright MCP, a **separate process** the app only connects to (`--upstream`). It has no `:8443` or other tailnet access path | Its own LaunchAgent (`poc/pw-mcp/install.sh`), which binds `--host 127.0.0.1` and creates no `tailscale serve` mapping. The app never starts this one. The *managed* Playwright (see [Browser tools](#browser-tools)) is a different thing: a child over stdio that listens on nothing | None in Playwright. The app's [Auth](#auth) applies to callers before it relays browser tools |
 
 The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The `:8444`
 mapping is made by the installer, by the app after you turn tailnet access on, or by the app's launch
@@ -306,8 +340,10 @@ the app bundle), for the architecture of this Mac:
 | `@playwright/mcp` and its dependencies (3 npm packages) | `https://registry.npmjs.org/`, fetched by the downloaded Node's `npm ci --ignore-scripts` | 0.0.82 (with `playwright-core` 1.64.0-alpha-1789764292000) |
 | Chromium (Chrome for Testing) | `https://storage.googleapis.com/chrome-for-testing-public/154.0.8037.0/` | 154.0.8037.0 |
 
-Download: about 249 MB (Apple silicon) or 260 MB (Intel). On disk once installed: about 593 MB (Apple silicon) or 606 MB (Intel). The install needs free space of at least three times
-the download (and never less than the on-disk size) while it runs and an internet connection.
+Download: about 249 MB (Apple silicon) or 260 MB (Intel). On disk once installed: about 593 MB (Apple silicon) or 606 MB (Intel).
+While it runs, the install needs the downloads plus the unpacked files, so about 842 MB of free space on Apple silicon
+(about 867 MB on Intel), and an internet connection. The check is the larger of three times the download and the download plus the
+unpacked size. It is not the 593 MB figure: that is what remains afterwards.
 
 - Every file is checked against sizes and SHA-256 digests built into the signed app, **before** it is
   extracted. The npm packages are checked against a lockfile built into the app (`sha512` integrity
@@ -385,16 +421,18 @@ the app's own `--upstream` address. Playwright has no tailnet mapping; the note 
 
 Clicking the Local MCP row or the Tailnet URL copies it. Tailnet can also read "Off", "On (existing
 mapping, not managed by this app), <url>" or "opted in, not applied (see the log)". Browser tools
-appears only when an `--upstream` named `browser` is configured, and says "(remote)" for a
-non-loopback host. Reverse attach reads "off" with `--no-attach`. The tailnet actions (Allow, Turn
+shows the external `--upstream browser` address (and says "(remote)" for a
+non-loopback host), or, with no such upstream, the managed Playwright state ("Playwright ready", "Playwright not installed", "Playwright install not usable" or "Playwright unavailable"),
+for example `Browser tools: Playwright ready`. Reverse attach reads "off" with `--no-attach`. The tailnet actions (Allow, Turn
 Off, Manage with this app) and the Switchboard actions (Configure, Reconnect, Disconnect & forget)
 stay in the menu: the tailnet actions right after the Tailnet row, the Switchboard actions after the
 permissions block.
 
 ### macOS app and Linux node
 
-The Linux node (`poc/reverse-attach-linux/`) has the same single loopback listener, with these
-differences:
+The Linux node (`poc/reverse-attach-linux/`) has one daemon listener (`127.0.0.1:8795` when installed
+by `install-linux.sh`) and, unless you pass `--no-browser`, a second loopback listener for
+Playwright (`8794`, no authentication). The differences from macOS:
 
 - It reads `BIND` from the environment, not flags. A bare binary listens on `127.0.0.1:8790`.
   `scripts/install-linux.sh` sets `127.0.0.1:8795`.
@@ -405,12 +443,13 @@ differences:
 - `install-linux.sh` also starts Playwright MCP on `127.0.0.1:8794` (user unit `oab-computer-pw-mcp.service`)
   when `node` and `npm` are present, and sets `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp`. Skip
   it with `--no-browser`. It makes no tailnet mapping for 8794. `MCP_UPSTREAM` takes plain `http://`
-  URLs only.
+  URLs only. **Port 8794 is unauthenticated:** any local user on this node can call every browser
+  tool there, including `browser_run_code_unsafe` (arbitrary Node code). On a shared host use
+  `--no-browser`. A managed Linux tier that removes the listener is designed
+  ([ADR](docs/adr/linux-browser-tier.md)) and not built.
 - The Linux node does use a Unix domain socket: it connects, as a client, to the Wayland socket for
   display and pointer control. It does not listen on one.
 - The mint call is plain `http://` only. A `wss://` runtime with `admin_credential` is refused.
-
-Not verified: the Linux node was not run.
 
 ## Lending this Mac to a sandboxed agent (reverse attach)
 
@@ -528,11 +567,55 @@ oab-computer --token-file ~/.config/oab-computer/token \
 - **Exiting:** the HTTP endpoint keeps serving after the switchboard attach stops. To dial again
   after a `4002` or `4003`, choose **Reconnect** in the menu bar, or restart the process.
 
-### Browser tools for lent sessions (`--upstream`)
+### Browser tools
+
+On macOS the app installs, runs and removes its own Playwright (the managed tier; see
+[What the app downloads](#what-the-app-downloads)), and serves the 32 `browser_*` tools to every
+caller with the `owner` profile: direct `/mcp`, a switchboard, or a lent session. An external
+Playwright is the other option (`--upstream`, below). Both feed the same router.
+
+The router reads an `OAB-Browser-Backend` request header (direct `/mcp` requests only; switchboard
+and reverse-attach callers use the stored preference, or `auto`) with the values `auto`, `playwright` or
+`appleEvents`. Only the Playwright backend exists in 0.12.0, so `appleEvents` answers "not set up".
+The Apple Events tier is not built. Design: [ADR](docs/adr/browser-tiers.md).
+
+```mermaid
+flowchart TB
+    caller["Caller with the owner profile, observe sees no browser tools"]
+    pref{"Which backend. The OAB-Browser-Backend header first, else the stored preference (no menu control sets it in 0.12.0), else auto"}
+    pready{"Playwright ready"}
+    aready{"Apple Events ready"}
+    noBackend["No backend. No browser tools are listed and a call says browser tools are not set up"]
+    subgraph tierp["Playwright tier, shipped in 0.12.0"]
+        which{"Was --upstream browser given"}
+        ext["External Playwright, 127.0.0.1 port 8794, a separate process you started. The managed child is not used"]
+        man["Managed Playwright, a stdio child of the app with no listener"]
+    end
+    tiera["Apple Events tier, NOT BUILT, so it is never ready in 0.12.0"]
+    caller --> pref
+    pref -- "auto or playwright" --> pready
+    pref -- "appleEvents" --> aready
+    pready -- "yes" --> which
+    pready -- "no, and auto" --> aready
+    pready -- "no, and pinned to playwright" --> noBackend
+    aready -- "yes" --> tiera
+    aready -- "no" --> noBackend
+    which -- "yes" --> ext
+    which -- "no" --> man
+```
+
+Under `auto` Playwright wins whenever it is ready. A named backend that is not ready is never
+replaced silently. Every result from a selected backend carries `structuredContent.backend`; the
+"not set up" and guarded-selection errors come before a backend is chosen and carry none.
+
+User guide for both platforms: [`docs/browser-tools.md`](docs/browser-tools.md).
+
+#### Lent sessions and `--upstream`
 
 The sandbox has no path to any browser, so browser control is served **from this Mac**: with
-`--upstream browser=http://127.0.0.1:8794/mcp` (the installer adds it when the Playwright MCP
-LaunchAgent from [`poc/pw-mcp`](poc/pw-mcp/README.md) is installed) the daemon re-serves
+`--upstream browser=http://127.0.0.1:8794/mcp` (the installer adds it when the external Playwright MCP
+LaunchAgent from [`poc/pw-mcp`](poc/pw-mcp/README.md) is installed; most Macs use the managed Playwright from the
+wizard instead and need no `--upstream`) the daemon re-serves
 Playwright's tools under its own `tools/list`, filtered by the connection's profile:
 
 - `owner` sees the 32 `browser_*` tools the catalog lists; `observe` sees none (#59). On macOS the
@@ -592,14 +675,20 @@ Tagged releases publish a universal, Developer-ID-signed and Apple-notarized ins
    [GitHub Releases](https://github.com/openabdev/openab-computer/releases).
 2. Sign into Tailscale and keep a desktop user logged in.
 3. Double-click the package. It auto-detects your Tailscale login/name, preserves or creates the
-   bearer token, installs the LaunchAgent, detects the Playwright upstream, and configures
-   `tailscale serve :8444`.
+   bearer token, installs the LaunchAgent, detects the Playwright upstream, and runs
+   `tailscale serve --bg --https=8444`. **So the Mac is reachable on your tailnet at `:8444` as soon as
+   the package finishes, before the wizard asks.** A caller still needs the bearer token and an allowed
+   Tailscale login. The "opt-in" for tailnet access applies to launching the app without the installer
+   (for example a plain app launch): then the app creates no mapping until you turn tailnet access on,
+   but it leaves an existing `:8444` mapping in place (for example one from an earlier install; the menu
+   shows it as an existing mapping) and never overwrites a mapping it does not own. After an install, the wizard's tailnet page and the menu item
+   **Turn Off Tailnet Access** control the mapping.
 4. On first launch, the **Set Up Mac Permissions** window opens if a required permission is missing. It
    has three pages. Page 1 asks for Screen Recording and Accessibility, and you cannot finish it until
    both are on. Click Allow on each row, turn the switch on in System Settings, and return to the
    wizard, which re-tests on its own. Use Check Again if the row does not update. Page 2 is optional
    Full Disk Access, which has a Skip link. Page 3 offers to install Playwright (pre-checked; uncheck it
-   to skip; see [Browser tools](#browser-tools-for-lent-sessions---upstream)), and the wizard completes
+   to skip; see [Browser tools](#browser-tools)), and the wizard completes
    with or without it. A fourth page, tailnet access, appears only when a Tailscale login is detected.
    Browser tools work without Full Disk Access. Future releases
    keep the same Developer ID + bundle id, so grants survive (the 0.12 rename changed the bundle id once; see [Upgrading from 0.11 or earlier](#upgrading-from-011-or-earlier)).
@@ -616,10 +705,12 @@ The `.app.zip` beside the package is an advanced/manual artifact. After unzippin
 ```
 
 The installer never re-signs the app: doing so would change the identity TCC grants are bound to.
-See [`docs/releasing.md`](docs/releasing.md) for artifacts, signing/notarization, required secrets,
-local packaging smoke, and the current first-release signing blocker.
+See [`docs/releasing.md`](docs/releasing.md) for artifacts, signing/notarization, required secrets and
+local packaging smoke.
 
 ## Upgrading from 0.11 or earlier
+
+A step-by-step guide with backup and rollback is in [`docs/upgrade-0.12.md`](docs/upgrade-0.12.md). The summary follows.
 
 0.12.0 renames the product's technical names from `oab-instance-mcp` to `oab-computer`. This is a
 breaking change with no compatibility layer: nothing is read from or written to the old names, except
@@ -668,7 +759,9 @@ To upgrade:
    launchctl kickstart -k gui/$(id -u)/dev.openab.computer
    ```
 
-   If you used the Playwright agent, install the new one from a clone of this repo (`poc/pw-mcp/install.sh`),
+   If you used the Playwright agent, you can instead install the managed Playwright from the wizard
+   (menu: **Set up browser tools…**) and not reinstall the external agent. To keep the external agent, install the new one
+   from a clone of this repo (`poc/pw-mcp/install.sh`),
    then run the main installer (the `.pkg` or `install-prebuilt.sh`) again. The installer adds the browser
    upstream to the agent only when the new Playwright agent is already loaded, and a restart alone does not.
 
@@ -732,7 +825,7 @@ With `--menu-bar` (deploy.sh sets it) the agent shows a status item: the name "O
 (click to copy), a masked bearer token line (click to copy the full token), live ✓/✗/? rows for
 Screen Recording, Accessibility, and Full Disk Access, **Set Up Permissions…** (the same window, which opens on launch when a permission is missing and
 reopens while Screen Recording or Accessibility is still off), session / call counters with the
-last tool call, the Playwright items (install, update, remove, sign in; see [Browser tools](#browser-tools-for-lent-sessions---upstream)), Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
+last tool call, the Playwright items (install, update, remove, sign in; see [Browser tools](#browser-tools)), Open Log, Restart, and Quit. The setup window opens the exact System Settings pane
 for each permission. Its Allow button calls the system permission request and re-tests, and it
 opens the pane only if the permission is still off. The window re-tests when the app becomes
 active or the user clicks Check Again. The menu bar checks Screen Recording and Accessibility every

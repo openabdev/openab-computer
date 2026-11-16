@@ -1,9 +1,11 @@
 # ADR: Browser tools in tiers — Playwright first, Apple Events as the fallback
 
-- **Status:** Accepted
+- **Status:** Accepted. Partly implemented in 0.12.0.
+  - **Shipped in 0.12.0:** the macOS router (`BrowserRouter`, `OAB-Browser-Backend` header) and the managed Playwright (on-demand install, supervision, removal, wizard page, menu items; #121, #123, #126, #127).
+  - **Not implemented:** the Apple Events tier (Tier A), the CDP tier (Tier C), the "use my installed Chrome" fallback ([#128](https://github.com/openabdev/openab-computer/issues/128)) and the menu preference pin. The router has only the Playwright slot, so `appleEvents` answers "not set up".
 - **Issue:** [#118](https://github.com/openabdev/openab-computer/issues/118)
 - **Requirement:** [`docs/requirements/browser-tiers.md`](../requirements/browser-tiers.md) (tool-to-tier table, wizard states, install flows, test plan)
-- **Related:** [`reverse-attach.md`](reverse-attach.md) (profiles and the shell-equivalence of `owner`), [`docs/tool-profiles.md`](../tool-profiles.md), [#119](https://github.com/openabdev/openab-computer/issues/119) (Linux installer, design later)
+- **Related:** [`reverse-attach.md`](reverse-attach.md) (profiles and the shell-equivalence of `owner`), [`docs/tool-profiles.md`](../tool-profiles.md), [#119](https://github.com/openabdev/openab-computer/issues/119) (Linux installer; designed in [`linux-browser-tier.md`](linux-browser-tier.md))
 
 ## Context
 
@@ -61,7 +63,7 @@ The preference is `auto` (default), `appleEvents` or `playwright`, stored per us
 overridable per connection with the `OAB-Browser-Backend` request header. Under `auto`,
 Playwright is chosen when ready, else Apple Events.
 
-- **No silent fallback to a named backend.** If the header or menu pin names a backend that is
+- **No silent fallback to a named backend.** If the header or stored preference names a backend that is
   not ready, `tools/list` shows no `browser_*` names and a call returns a setup message naming
   that backend.
 - **Identity guard.** Tier A and Tier P are different identities (the real signed-in sessions
@@ -69,11 +71,72 @@ Playwright is chosen when ready, else Apple Events.
   the last browser call, and within 30 minutes it does not switch to the other backend by
   itself, in either direction. If the last backend is no longer ready, the caller gets a
   message saying the other tier is ready but is not used automatically mid-task. After 30
-  minutes without a browser call, or when a header or menu pin names a backend, the choice is
+  minutes without a browser call, or when a header or a stored preference names a backend, the choice is
   recomputed. The window is a design value and can change without changing any interface.
 - **No retry on the other backend.** A call is never repeated on a different tier, because that
   would move the caller between the real browser and the Playwright profile.
-- Every browser result carries `structuredContent.backend`.
+- Every result from a selected backend carries `structuredContent.backend`. Errors raised before a
+  backend is chosen (no backend ready, a guarded selection) carry none.
+
+The diagram shows how a call reaches a backend. Marked parts are designed and not built in 0.12.0. The identity guard
+needs two ready backends, so it has no effect until Tier A exists.
+
+```mermaid
+flowchart TB
+    caller["Caller with the owner profile, observe sees no browser tools"]
+    pref{"Which backend. The OAB-Browser-Backend header first, else the stored preference (no menu control sets it in 0.12.0), else auto"}
+    pready{"Tier P Playwright ready"}
+    aready{"Tier A Apple Events ready"}
+    noBackend["No backend. No browser tools are listed and a call says browser tools are not set up"]
+    subgraph tierp["Tier P Playwright, shipped in 0.12.0"]
+        which{"Was --upstream browser given"}
+        ext["External Playwright, 127.0.0.1 port 8794, started by the operator. The managed child is not used"]
+        man["Managed Playwright, a stdio child of the app with no listener"]
+    end
+    tiera["Tier A Apple Events, NOT BUILT, designed as the fallback and as the real signed-in browser"]
+    caller --> pref
+    pref -- "auto or playwright" --> pready
+    pref -- "appleEvents" --> aready
+    pready -- "yes" --> which
+    pready -- "no, and auto" --> aready
+    pready -- "no, and pinned to playwright" --> noBackend
+    aready -- "yes" --> tiera
+    aready -- "no" --> noBackend
+    which -- "yes" --> ext
+    which -- "no" --> man
+```
+
+Tier C (Chrome remote debugging) is reserved, not built, and never chosen by `auto`, so it is not drawn.
+
+### Process tree and stop (managed Playwright, macOS)
+
+The app starts the managed Playwright as a child with stdin and stdout as the protocol pipes and
+no listening socket. The child leads its own process group. Chromium may leave that group and
+session, so a stop finds it by walking parent pids as well as by signalling the group.
+
+```mermaid
+flowchart TB
+    app["oab-computer app"]
+    nodeProc["node running the Playwright MCP entry, leads its own process group"]
+    chromium["Chromium and its helpers, can detach into their own session"]
+    app -- "stdin and stdout pipes, no port" --> nodeProc
+    nodeProc --> chromium
+
+    stopOne["Stop of the backend, an update, a removal or a restart"]
+    s1["Close stdin and wait 1 s"]
+    s2["SIGTERM to the group and to every descendant, wait 3 s"]
+    s3["SIGKILL to the group and the descendants, then sweep survivors"]
+    stopOne --> s1 -- "child still alive" --> s2 -- "still alive" --> s3
+
+    quit["App quit, menu Quit or SIGTERM or SIGINT or SIGHUP"]
+    q1["Snapshot the descendants, SIGTERM the groups and the tree, poll up to 2 s"]
+    q2["SIGKILL for what is still alive, poll up to 1 s more"]
+    quit --> q1 -- "survivors" --> q2
+
+    killed["App killed with SIGKILL or a crash, no cleanup code runs"]
+    orphan["Chromium is not killed because the app cannot prove it is ours. It normally ends when stdin closes, to be confirmed by V12. Meanwhile the profile can be locked and the next start reports profile_locked"]
+    killed -.-> orphan
+```
 
 ### Decided questions
 

@@ -1,6 +1,6 @@
 # ADR: Linux managed Playwright tier
 
-- **Status:** Accepted
+- **Status:** Accepted, not implemented as of v0.12.0. There is no `oab-computer browser` subcommand and no managed Linux Playwright; today's Linux behavior (an external unit on `127.0.0.1:8794`) is in [`docs/linux-setup.md`](../linux-setup.md).
 - **Issues:** [#119](https://github.com/openabdev/openab-computer/issues/119) (this work), [#118](https://github.com/openabdev/openab-computer/issues/118) (macOS tiers)
 - **Requirement:** [`docs/requirements/linux-browser-tier.md`](../requirements/linux-browser-tier.md) (requirements, cutover runbook, test plan, PR split)
 - **Related:** [`browser-tiers.md`](browser-tiers.md) (the macOS ADR; its questions are cited here as "macOS Q*n*"), [`reverse-attach.md`](reverse-attach.md), [`docs/linux-setup.md`](../linux-setup.md), [`docs/tool-profiles.md`](../tool-profiles.md)
@@ -118,6 +118,35 @@ tool survive a daemon restart.
 The child's environment is cleared inside the unit with `env -i` and rebuilt from an allow-list.
 Without that, a user service inherits the user manager's environment, which can contain bearer,
 cloud or `GH_*` values.
+
+The diagram shows the planned layout and what ends the managed processes. None of it is built yet.
+
+```mermaid
+flowchart TB
+    subgraph du["oab-computer.service, the daemon is its main process, KillMode process"]
+        daemon["oab-computer daemon"]
+    end
+    subgraph cg["Transient user service, KillMode control-group, BindsTo the daemon unit, environment rebuilt with env -i"]
+        nodeProc["node running the Playwright MCP entry"]
+        chromium["Chromium and its helpers, detached ones included"]
+    end
+    daemon -- "stdin and stdout pipes, no listening socket" --> nodeProc
+    nodeProc --> chromium
+
+    stop["Daemon stop or restart"]
+    kill9["Daemon killed with SIGKILL or by the out of memory killer"]
+    stop -- "systemd stops the bound unit" --> cg
+    kill9 -- "the BindsTo reaction, checked by a self-test" --> cg
+    cg -- "the kernel kills every process in the control group, SIGKILL after TimeoutStopSec 10 s" --> gone["No managed process is left"]
+
+    nouser["Host with no user manager"]
+    unavailable["Managed tier unavailable on that host until the PID namespace supervisor lands"]
+    nouser -.-> unavailable
+```
+
+The session and process group, `PR_SET_PDEATHSIG`, closing stdin, the `/proc` tree walk and the
+sweep before every start are extra layers. They are not drawn because none of them is the
+guarantee. A CLI child (sign-in, health check) is bound to its own scope, not to the daemon.
 
 ### Router
 
