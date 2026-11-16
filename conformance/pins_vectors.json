@@ -10,6 +10,11 @@
     },
     {
       "os": "darwin",
+      "arch": "aarch64",
+      "platform": "darwin-arm64"
+    },
+    {
+      "os": "darwin",
       "arch": "x86_64",
       "platform": "darwin-x64"
     },

@@ -14,6 +14,10 @@ mod http;
 #[cfg(test)]
 mod http_conformance;
 mod jobs;
+#[allow(dead_code)]
+mod manifest;
+#[cfg(test)]
+mod manifest_conformance;
 mod mcp;
 mod platform;
 #[cfg(test)]
