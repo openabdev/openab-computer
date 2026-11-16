@@ -452,5 +452,6 @@ systemctl --user disable --now oab-pw-mcp.service      # only if you used the Pl
 systemctl --user restart oab-computer.service
 ```
 
-Full steps, with the old and new names: the README section
+Full steps, with backup and rollback: [Upgrading from 0.11 or earlier](upgrade-0.12.md). The README
+has the table of old and new names:
 [Upgrading from 0.11 or earlier](../README.md#upgrading-from-011-or-earlier).

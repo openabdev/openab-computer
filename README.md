@@ -81,7 +81,7 @@ this exists for what SSH cannot reach.
 - [Reverse attach](#lending-this-mac-to-a-sandboxed-agent-reverse-attach) · [Switchboard](#serving-a-switchboard---switchboard) · [Browser tools](#browser-tools)
 - Deploy & operate: [Download and install](#download-and-install) · [Upgrading from 0.11](#upgrading-from-011-or-earlier) · [Build & test](#build--test-on-the-build-mac-the-laptop-never-compiles-swift) · [Deploy](#deploy-run-on-the-target) · [Menu bar](#menu-bar) · [Operate](#operate)
 - Operator notes: [TCC & signing](#tcc-grants-survive-re-deploys-only-if-the-signature-does) · [Gotchas](#gotchas)
-- Detail: [UI tools](docs/ui-tools.md) · [Operator notes and gotchas](docs/operators.md)
+- Detail: [Docs index](docs/README.md) · [Upgrade guide](docs/upgrade-0.12.md) · [Browser tools guide](docs/browser-tools.md) · [UI tools](docs/ui-tools.md) · [Operator notes and gotchas](docs/operators.md)
 
 Components: `oab-computer` is this package (Swift on macOS, zero deps; Rust on Linux). Browser
 tools come from `@playwright/mcp`, which is not our code. On macOS the app installs, runs and
@@ -570,6 +570,8 @@ The router reads an `OAB-Browser-Backend` request header with the values `auto`,
 `appleEvents`. Only the Playwright backend exists in 0.12.0, so `appleEvents` answers "not set up".
 The Apple Events tier is not built. Design: [ADR](docs/adr/browser-tiers.md).
 
+User guide for both platforms: [`docs/browser-tools.md`](docs/browser-tools.md).
+
 #### Lent sessions and `--upstream`
 
 The sandbox has no path to any browser, so browser control is served **from this Mac**: with
@@ -668,6 +670,8 @@ See [`docs/releasing.md`](docs/releasing.md) for artifacts, signing/notarization
 local packaging smoke.
 
 ## Upgrading from 0.11 or earlier
+
+A step-by-step guide with backup and rollback is in [`docs/upgrade-0.12.md`](docs/upgrade-0.12.md). The summary follows.
 
 0.12.0 renames the product's technical names from `oab-instance-mcp` to `oab-computer`. This is a
 breaking change with no compatibility layer: nothing is read from or written to the old names, except
