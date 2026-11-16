@@ -21,6 +21,7 @@ use std::path::Path;
 
 use flate2::Crc;
 use rustix::fs::{Mode, OFlags};
+use sha2::{Digest, Sha256};
 
 use crate::download::VerifiedArtifact;
 use crate::manifest::Artifact;
@@ -179,7 +180,7 @@ pub struct Plan {
     entries: Vec<PlannedEntry>,
     total_bytes: u64,
     limits: Limits,
-    identity: (u64, u64, u64, i64, i64),
+    identity: Identity,
 }
 
 impl Plan {
@@ -425,25 +426,70 @@ fn open_archive(path: &Path) -> Res<File> {
     Ok(f)
 }
 
-fn identity(f: &File) -> Res<(u64, u64, u64, i64, i64)> {
+/// Device, inode, size, mtime and ctime. ctime moves on every write and cannot be set from user
+/// space, so a same-size in-place edit with restored timestamps still changes the identity.
+type Identity = (u64, u64, u64, i64, i64, i64, i64);
+
+fn identity(f: &File) -> Res<Identity> {
     let m = f.metadata().map_err(map_io)?;
-    Ok((m.dev(), m.ino(), m.size(), m.mtime(), m.mtime_nsec()))
+    Ok((
+        m.dev(),
+        m.ino(),
+        m.size(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ctime(),
+        m.ctime_nsec(),
+    ))
+}
+
+/// SHA-256 of the open descriptor's bytes, read with `pread` so the cursor stays at 0.
+fn hash_fd(f: &File) -> Res<[u8; 32]> {
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut off = 0u64;
+    loop {
+        let n = f.read_at(&mut buf, off).map_err(map_io)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+        off += n as u64;
+    }
+    Ok(h.finalize().into())
+}
+
+/// Opens the artifact and proves that the descriptor we are about to parse holds the bytes the
+/// download step verified: the digest is recomputed over this very descriptor, and the identity
+/// is re-read after the stage so a later in-place write is caught too.
+fn open_verified(file: &VerifiedArtifact) -> Res<(File, Identity)> {
+    let f = open_archive(file.path())?;
+    let id = identity(&f)?;
+    if hash_fd(&f)? != file.sha256() {
+        return rej(Reason::Changed);
+    }
+    if identity(&f)? != id {
+        return rej(Reason::Changed);
+    }
+    Ok((f, id))
 }
 
 /// Stage 1: reads the whole archive, applies every path and size rule, writes nothing.
 pub fn validate(file: &VerifiedArtifact, format: Format, limits: &Limits) -> Res<Plan> {
-    let f = open_archive(file.path())?;
-    let id = identity(&f)?;
+    let (f, id) = open_verified(file)?;
     let mut planner = EntryPlanner::new(limits.clone());
     match format {
         Format::TarGz => run_tar_gz(
-            f,
+            f.try_clone().map_err(map_io)?,
             limits,
             &mut PlanningSink {
                 planner: &mut planner,
             },
         )?,
         Format::Zip => zip_plan(&f, &mut planner)?,
+    }
+    if identity(&f)? != id {
+        return rej(Reason::Changed);
     }
     Ok(Plan {
         format,
@@ -466,28 +512,41 @@ fn extract_with_hook(
     into: &Path,
     before: &mut dyn FnMut(usize, &PlannedEntry),
 ) -> Res<()> {
-    let f = open_archive(file.path())?;
-    if identity(&f)? != plan.identity {
+    let (f, id) = open_verified(file)?;
+    if id != plan.identity {
         return rej(Reason::Changed);
     }
     let mut writer = TreeWriter::open(into)?;
+    extract_body(plan, &f, &mut writer, before)?;
+    if identity(&f)? != id {
+        return rej(Reason::Changed);
+    }
+    Ok(())
+}
+
+fn extract_body(
+    plan: &Plan,
+    f: &File,
+    writer: &mut TreeWriter,
+    before: &mut dyn FnMut(usize, &PlannedEntry),
+) -> Res<()> {
     match plan.format {
         Format::TarGz => {
             let mut sink = ExtractingSink {
                 planner: EntryPlanner::new(plan.limits.clone()),
                 plan,
-                writer: &mut writer,
+                writer,
                 index: 0,
                 mode: 0,
                 before,
             };
-            run_tar_gz(f, &plan.limits, &mut sink)?;
+            run_tar_gz(f.try_clone().map_err(map_io)?, &plan.limits, &mut sink)?;
             if sink.index != plan.entries.len() {
                 return rej(Reason::Changed);
             }
             Ok(())
         }
-        Format::Zip => zip_extract(plan, &f, &mut writer, before),
+        Format::Zip => zip_extract(plan, f, writer, before),
     }
 }
 
@@ -989,6 +1048,7 @@ fn zip_plan(f: &File, planner: &mut EntryPlanner) -> Res<()> {
     let size = f.metadata().map_err(map_io)?.len();
     let entries = read_central(f, size, planner.limits.max_entries)?;
     let mut ranges: Vec<(u64, u64)> = Vec::new();
+    let mut scratch = vec![0u8; 64 * 1024];
     for c in &entries {
         let data_start = local_data(f, size, c)?;
         ranges.push((c.local_offset, data_start + c.csize));
@@ -1048,6 +1108,20 @@ fn zip_plan(f: &File, planner: &mut EntryPlanner) -> Res<()> {
             method: c.method,
             crc: c.crc,
         })?;
+        if kind == Kind::File {
+            // Inflate and check the whole payload now, writing nothing, so a wrong CRC or a
+            // lying length is refused before stage 2 creates anything.
+            zip_stream(
+                f,
+                data_start,
+                c.csize,
+                c.method,
+                c.usize,
+                c.crc,
+                &mut scratch,
+                &mut |_| Ok(()),
+            )?;
+        }
     }
     ranges.sort();
     for w in ranges.windows(2) {
@@ -1247,6 +1321,65 @@ impl Read for Window<'_> {
     }
 }
 
+/// Streams one entry's data through `sink`, bounded by the declared size, and checks the real
+/// length, the CRC and that the deflate stream ends where the entry's data ends. Stage 1 runs it
+/// with a sink that discards, so a lying header is refused before anything is created.
+#[allow(clippy::too_many_arguments)]
+fn zip_stream(
+    f: &File,
+    start: u64,
+    csize: u64,
+    method: u16,
+    usize_: u64,
+    want_crc: u32,
+    buf: &mut [u8],
+    sink: &mut dyn FnMut(&[u8]) -> Res<()>,
+) -> Res<()> {
+    let win = Window {
+        f,
+        off: start,
+        left: csize,
+    };
+    let mut crc = Crc::new();
+    let mut written = 0u64;
+    let mut emit = |piece: &[u8]| -> Res<()> {
+        written += piece.len() as u64;
+        if written > usize_ {
+            return rej(Reason::TooLarge);
+        }
+        crc.update(piece);
+        sink(piece)
+    };
+    if method == 8 {
+        let mut dec =
+            flate2::bufread::DeflateDecoder::new(BufReader::with_capacity(64 * 1024, win));
+        loop {
+            let n = dec.read(buf).map_err(map_io)?;
+            if n == 0 {
+                break;
+            }
+            emit(&buf[..n])?;
+        }
+        let mut rest = dec.into_inner();
+        if !rest.fill_buf().map_err(map_io)?.is_empty() {
+            return rej(Reason::Malformed);
+        }
+    } else {
+        let mut win = win;
+        loop {
+            let n = win.read(buf).map_err(map_io)?;
+            if n == 0 {
+                break;
+            }
+            emit(&buf[..n])?;
+        }
+    }
+    if written != usize_ || crc.sum() != want_crc {
+        return rej(Reason::Malformed);
+    }
+    Ok(())
+}
+
 fn zip_extract(
     plan: &Plan,
     f: &File,
@@ -1278,51 +1411,16 @@ fn zip_extract(
                 let start =
                     e.local_offset + 30 + u64::from(u16le(&h, 26)) + u64::from(u16le(&h, 28));
                 writer.begin_file(&e.path)?;
-                let win = Window {
+                zip_stream(
                     f,
-                    off: start,
-                    left: e.compressed_size,
-                };
-                let mut crc = Crc::new();
-                let mut written = 0u64;
-                let mut emit = |piece: &[u8], writer: &mut TreeWriter| -> Res<()> {
-                    written += piece.len() as u64;
-                    if written > e.size {
-                        return rej(Reason::TooLarge);
-                    }
-                    crc.update(piece);
-                    writer.write(piece)
-                };
-                if e.method == 8 {
-                    let mut dec = flate2::bufread::DeflateDecoder::new(BufReader::with_capacity(
-                        64 * 1024,
-                        win,
-                    ));
-                    loop {
-                        let n = dec.read(&mut buf).map_err(map_io)?;
-                        if n == 0 {
-                            break;
-                        }
-                        emit(&buf[..n], writer)?;
-                    }
-                    // The deflate stream must end exactly where the entry's data ends.
-                    let mut rest = dec.into_inner();
-                    if !rest.fill_buf().map_err(map_io)?.is_empty() {
-                        return rej(Reason::Malformed);
-                    }
-                } else {
-                    let mut win = win;
-                    loop {
-                        let n = win.read(&mut buf).map_err(map_io)?;
-                        if n == 0 {
-                            break;
-                        }
-                        emit(&buf[..n], writer)?;
-                    }
-                }
-                if written != e.size || crc.sum() != e.crc {
-                    return rej(Reason::Malformed);
-                }
+                    start,
+                    e.compressed_size,
+                    e.method,
+                    e.size,
+                    e.crc,
+                    &mut buf,
+                    &mut |piece| writer.write(piece),
+                )?;
                 writer.end_file(e.mode)?;
             }
         }

@@ -1023,18 +1023,20 @@ fn zip_headers_must_agree() {
 }
 
 #[test]
-fn zip_stage_two_catches_lying_headers() {
-    // Wrong CRC: planning accepts it, extraction refuses and the file never gets its mode.
+fn zip_stage_one_catches_lying_headers() {
+    // Wrong CRC: refused while planning, so stage 2 never runs and staging stays empty.
     let e = ZEntry {
         lie_crc: Some(0x1234_5678),
         ..ZEntry::file("a", b"hello world", true, 0o755)
     };
     let fx = Fx::new(&zip_build(&[e]));
-    let plan = validate(&fx.art(), Format::Zip, &lim()).unwrap();
     assert_eq!(
-        extract(&plan, &fx.art(), &fx.stage).unwrap_err().reason(),
+        validate(&fx.art(), Format::Zip, &lim())
+            .unwrap_err()
+            .reason(),
         Reason::Malformed
     );
+    assert!(fx.stage_is_empty());
     assert!(fx.outside_untouched());
     // The central directory claims more than the stream holds.
     let e = ZEntry {
@@ -1042,11 +1044,13 @@ fn zip_stage_two_catches_lying_headers() {
         ..ZEntry::file("a", b"hello world", true, 0o644)
     };
     let fx = Fx::new(&zip_build(&[e]));
-    let plan = validate(&fx.art(), Format::Zip, &lim()).unwrap();
     assert_eq!(
-        extract(&plan, &fx.art(), &fx.stage).unwrap_err().reason(),
+        validate(&fx.art(), Format::Zip, &lim())
+            .unwrap_err()
+            .reason(),
         Reason::Malformed
     );
+    assert!(fx.stage_is_empty());
     // Stored entry whose compressed size differs from the real one.
     let e = ZEntry {
         method: Some(0),
@@ -1062,7 +1066,7 @@ fn zip_stage_two_catches_lying_headers() {
 }
 
 #[test]
-fn a_zip_bomb_is_stopped_by_the_ratio_or_by_the_written_bytes() {
+fn a_zip_bomb_is_stopped_by_the_ratio_or_by_the_declared_size() {
     let zeros = vec![0u8; 64 << 20];
     let honest = ZEntry::file("bomb", &zeros, true, 0o644);
     let big = Limits {
@@ -1077,20 +1081,20 @@ fn a_zip_bomb_is_stopped_by_the_ratio_or_by_the_written_bytes() {
         Reason::Ratio,
         "declared ratio",
     );
-    // The header claims 1000 bytes; the stream inflates to 64 MiB. Stage 1 cannot see that, stage 2
-    // stops writing at the declared size.
+    // The header claims 1000 bytes; the stream inflates to 64 MiB. Stage 1 inflates with a
+    // discarding sink and stops at the declared size, so nothing is ever written.
     let lying = ZEntry {
         lie_usize: Some(1000),
         ..honest
     };
     let fx = Fx::new(&zip_build(&[lying]));
-    let plan = validate(&fx.art(), Format::Zip, &lim()).expect("stage 1 trusts the declared size");
-    let err = extract(&plan, &fx.art(), &fx.stage).unwrap_err();
-    assert_eq!(err.reason(), Reason::TooLarge);
-    let written = fs::metadata(fx.stage.join("bomb"))
-        .map(|m| m.len())
-        .unwrap_or(0);
-    assert!(written <= 1000 + 64 * 1024, "wrote {written} bytes");
+    assert_eq!(
+        validate(&fx.art(), Format::Zip, &lim())
+            .unwrap_err()
+            .reason(),
+        Reason::TooLarge
+    );
+    assert!(fx.stage_is_empty());
     assert!(fx.outside_untouched());
 }
 
@@ -1125,6 +1129,39 @@ fn an_archive_that_changed_between_the_stages_is_refused() {
             Reason::Changed,
             "{f:?} new inode"
         );
+    }
+}
+
+#[test]
+fn a_same_size_in_place_edit_with_restored_mtime_is_refused() {
+    use std::os::unix::fs::MetadataExt;
+    for (f, b) in both(&[E::F("a", b"one", 0o644)]) {
+        let fx = Fx::new(&b);
+        let art = fx.art();
+        let plan = validate(&art, f, &lim()).unwrap();
+        let before = fs::metadata(&fx.archive).unwrap();
+        let mut edited = b.clone();
+        let last = edited.len() - 30;
+        edited[last] ^= 0x01;
+        {
+            use std::io::Write;
+            let mut h = fs::OpenOptions::new()
+                .write(true)
+                .open(&fx.archive)
+                .unwrap();
+            h.write_all(&edited).unwrap();
+            let t = std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH
+                    + std::time::Duration::new(before.mtime() as u64, before.mtime_nsec() as u32),
+            );
+            h.set_times(t).unwrap();
+        }
+        assert_eq!(
+            extract(&plan, &art, &fx.stage).unwrap_err().reason(),
+            Reason::Changed,
+            "{f:?}"
+        );
+        assert!(fx.stage_is_empty());
     }
 }
 

@@ -169,6 +169,9 @@ impl VerifiedArtifact {
     pub fn size(&self) -> u64 {
         self.size
     }
+    pub(crate) fn sha256(&self) -> [u8; 32] {
+        self.sha256
+    }
     pub fn sha256_hex(&self) -> String {
         hex(&self.sha256)
     }
@@ -176,11 +179,11 @@ impl VerifiedArtifact {
     /// Tests only: wraps a file the test wrote, without a download.
     #[cfg(test)]
     pub fn unchecked_for_tests(path: &Path) -> VerifiedArtifact {
-        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let bytes = std::fs::read(path).unwrap_or_default();
         VerifiedArtifact {
             path: path.to_path_buf(),
-            size,
-            sha256: [0; 32],
+            size: bytes.len() as u64,
+            sha256: Sha256::digest(&bytes).into(),
         }
     }
 }
