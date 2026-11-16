@@ -159,6 +159,29 @@ A `desktop` request or stored row runs as `observe` (#59), and each mapping is a
 JSON line to `MCP_AUDIT_FILE` (default `$XDG_STATE_HOME/oab-computer/audit.jsonl`, `off`
 disables), mode 600. Smoke checks the `attach` and `resume` records.
 
+## Managed Playwright tier, L1a modules (#119)
+
+Three modules the install path of the managed tier will use. Nothing calls them yet (the
+`install` subcommands land in L1b), so the linker drops them from the release binary and the
+size check does not measure them until then. Design: `docs/adr/linux-browser-tier.md` (D3) and
+`docs/requirements/linux-browser-tier.md`.
+
+- `src/manifest.rs`: reads the embedded `release/playwright-pins/pins.json` (schema 2, four
+  platforms), validates it by the same rules as the Swift validator (the shared
+  `conformance/pins_vectors.json` runs in `cargo test`), and selects the pin for the host.
+  Darwin ids parse; only `linux-x64` and `linux-arm64` are selectable here.
+- `src/download.rs`: bounded synchronous HTTPS download. https only, hosts from the manifest,
+  every redirect hop re-checked, proxy variables ignored, size and time caps, SHA-256 computed
+  while streaming into a private `.part` file and compared to the pin before the file gets its
+  name. The result is a `VerifiedArtifact`, the only input `extract` accepts.
+- `src/extract.rs`: `tar.gz` and `zip` extraction in two stages (validate every entry, then
+  write below a directory fd with `openat` and `O_NOFOLLOW`/`O_EXCL`). No `tar`, `unzip` or other
+  subprocess.
+
+The new tests use a fake server on `127.0.0.1` and archives the tests generate; the one test
+that downloads the real pinned artifacts is `#[ignore]`d (`real_pins_download`, see its doc
+comment).
+
 ## Not yet (vs the Swift implementation)
 
 - `/mcp` has no SSE stream (`GET /mcp` is 405, as in Swift).

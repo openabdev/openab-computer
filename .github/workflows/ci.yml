@@ -173,8 +173,40 @@ jobs:
         run: cargo clippy --release -- -D warnings
       - name: Build
         run: cargo build --release
+      - name: Binary size and dependency tree (D3, R2.6)
+        # The stripped release binary stays under 6 MiB on each architecture, and the dependency
+        # tree is recorded so a reviewer sees what a dependency change pulls in. Raising the
+        # budget is an explicit, reviewed edit of BUDGET. ring is the only rustls provider.
+        run: |
+          set -euo pipefail
+          BUDGET=$((6 * 1024 * 1024))
+          cp target/release/oab-computer "$RUNNER_TEMP/oab-computer.stripped"
+          strip "$RUNNER_TEMP/oab-computer.stripped"
+          SIZE=$(stat -c %s "$RUNNER_TEMP/oab-computer.stripped")
+          echo "stripped release binary (${{ matrix.arch }}): $SIZE bytes, budget $BUDGET"
+          {
+            echo "### Linux hands node (${{ matrix.arch }}): stripped binary $SIZE bytes of $BUDGET"
+            echo
+            echo '```text'
+            cargo tree --locked --prefix none --edges normal | sed -e 's/ (\*)$//' -e 's/ (\/.*)$//' | sort -u
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cargo tree --locked > "$RUNNER_TEMP/cargo-tree-${{ matrix.arch }}.txt"
+          for banned in aws-lc-rs openssl-sys; do
+            if cargo tree --locked -i "$banned" >/dev/null 2>&1; then
+              echo "$banned is in the dependency tree" >&2
+              exit 1
+            fi
+          done
+          test "$SIZE" -le "$BUDGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-tree-${{ matrix.arch }}
+          path: ${{ runner.temp }}/cargo-tree-${{ matrix.arch }}.txt
       - name: Unit + conformance tests
-        # Includes conformance/*.json, shared with the Swift test target (oracle).
+        # Includes conformance/*.json, shared with the Swift test target (oracle): profile, wire,
+        # http and pins_vectors.json (the manifest validator, L1a). The download and extraction
+        # tests run here too, against a fake server on 127.0.0.1 and generated hostile archives.
         run: cargo test --release
       - name: Smoke (mock runtime, loopback)
         # Exercises /attach, mint, disposition, MCP dispatch and bash; the
