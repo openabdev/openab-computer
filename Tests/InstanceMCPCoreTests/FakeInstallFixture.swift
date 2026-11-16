@@ -140,17 +140,31 @@ final class FakeInstallFixture {
             if let exe { a["executable"] = exe }
             return a
         }
-        let both: ([String: Any]) -> [String: Any] = { ["arm64": $0, "x86_64": $0] }
+        // Schema 2: every platform is present. The Linux entries carry the Linux-only fields.
+        let linux: [String: Any] = ["minGlibc": "2.28", "needed": ["libc.so.6"], "packageHints": ["apt": ["libc6"]]]
+        let all: (String, [String: Any]) -> [String: Any] = { label, a in
+            var out: [String: Any] = [:]
+            for p in PlatformID.allCases {
+                var e = a
+                if label == "chromium" { e["source"] = "chrome-for-testing" }
+                if p.isLinux {
+                    for (k, v) in linux { e[k] = v }
+                    if label == "chromium" { e["executable"] = "chrome-linux64/chrome" }
+                }
+                out[p.rawValue] = e
+            }
+            return out
+        }
         let obj: [String: Any] = [
-            "schema": 1, "id": id,
+            "schema": 2, "id": id,
             "mcp": ["package": "@playwright/mcp", "version": "0.0.1", "playwrightCoreVersion": "0.0.1",
                     "packageJsonSHA256": PlaywrightManifest.sha256Hex(Data(packageJSON.utf8)),
                     "lockfileSHA256": PlaywrightManifest.sha256Hex(Data(lockfileJSON.utf8)),
                     "npmDownloadBytes": 1000, "npmInstalledBytes": 2000, "npmPackageCount": 1],
             "node": ["version": "1.0.0", "teamIdentifier": "ABCDE12345",
-                     "artifacts": both(art("node.tgz", node, "tar.gz", nb, nc, nm, strip: 1, exe: nil))],
+                     "artifacts": all("node", art("node.tgz", node, "tar.gz", nb, nc, nm, strip: 1, exe: nil))],
             "chromium": ["revision": "1", "browserVersion": "1.0.0.0", "releasedAt": "2026-09-01", "host": "127.0.0.1",
-                         "artifacts": both(art("chromium.zip", chromium, "zip", cb, cc, cm, strip: 0, exe: exe))],
+                         "artifacts": all("chromium", art("chromium.zip", chromium, "zip", cb, cc, cm, strip: 0, exe: exe))],
             "hosts": ["nodejs.org", "registry.npmjs.org", "127.0.0.1"],
             "staleAfterDays": 180, "freeDiskFactor": 3,
         ]

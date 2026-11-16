@@ -1,0 +1,1067 @@
+{
+  "description": "Both pins validators (Swift PlaywrightManifest.validate, Rust manifest) must give these answers on the tracked release/playwright-pins/pins.json after each case's ops. `problems` is the exact sorted list of problem names the Swift and Rust validators return. The Python release check (scripts/playwright-pins.py) answers only valid or not valid, because its messages are prose.",
+  "pins": "release/playwright-pins/pins.json",
+  "ops": "set (path, value), remove (path), copy (from, path) and replace (path, from, to: substring replace in the string at path). String values may use {browserVersion}, {revision} and {nodeVersion}, taken from the pins being mutated.",
+  "selection": [
+    {
+      "os": "darwin",
+      "arch": "arm64",
+      "platform": "darwin-arm64"
+    },
+    {
+      "os": "darwin",
+      "arch": "x86_64",
+      "platform": "darwin-x64"
+    },
+    {
+      "os": "linux",
+      "arch": "x86_64",
+      "platform": "linux-x64"
+    },
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "platform": "linux-x64"
+    },
+    {
+      "os": "linux",
+      "arch": "aarch64",
+      "platform": "linux-arm64"
+    },
+    {
+      "os": "linux",
+      "arch": "arm64",
+      "platform": "linux-arm64"
+    },
+    {
+      "os": "linux",
+      "arch": "riscv64",
+      "platform": null
+    },
+    {
+      "os": "linux",
+      "arch": "i686",
+      "platform": null
+    },
+    {
+      "os": "windows",
+      "arch": "x86_64",
+      "platform": null
+    },
+    {
+      "os": "freebsd",
+      "arch": "amd64",
+      "platform": null
+    }
+  ],
+  "cases": [
+    {
+      "name": "as-shipped",
+      "ops": [],
+      "valid": true,
+      "problems": []
+    },
+    {
+      "name": "schema-1-is-rejected",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "schema"
+          ],
+          "value": 1
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "schema"
+      ]
+    },
+    {
+      "name": "schema-3-is-rejected",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "schema"
+          ],
+          "value": 3
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "schema"
+      ]
+    },
+    {
+      "name": "node-missing-linux-arm64",
+      "ops": [
+        {
+          "op": "remove",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-arm64"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node platforms"
+      ]
+    },
+    {
+      "name": "chromium-missing-darwin-x64",
+      "ops": [
+        {
+          "op": "remove",
+          "path": [
+            "chromium",
+            "artifacts",
+            "darwin-x64"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium platforms"
+      ]
+    },
+    {
+      "name": "node-missing-every-linux-platform",
+      "ops": [
+        {
+          "op": "remove",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-arm64"
+          ]
+        },
+        {
+          "op": "remove",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-x64"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node platforms"
+      ]
+    },
+    {
+      "name": "node-unknown-platform-key",
+      "ops": [
+        {
+          "op": "copy",
+          "from": [
+            "node",
+            "artifacts",
+            "linux-x64"
+          ],
+          "path": [
+            "node",
+            "artifacts",
+            "linux-riscv64"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node platforms"
+      ]
+    },
+    {
+      "name": "node-old-arch-keys-are-not-platform-ids",
+      "ops": [
+        {
+          "op": "copy",
+          "from": [
+            "node",
+            "artifacts",
+            "darwin-arm64"
+          ],
+          "path": [
+            "node",
+            "artifacts",
+            "arm64"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node platforms"
+      ]
+    },
+    {
+      "name": "chromium-bad-sha256-on-linux-x64",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "sha256"
+          ],
+          "value": "ABC"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 sha256"
+      ]
+    },
+    {
+      "name": "node-uppercase-sha256-on-linux-arm64",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-arm64",
+            "sha256"
+          ],
+          "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/linux-arm64 sha256"
+      ]
+    },
+    {
+      "name": "node-http-url-on-linux-x64",
+      "ops": [
+        {
+          "op": "replace",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-x64",
+            "url"
+          ],
+          "from": "https://",
+          "to": "http://"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/linux-x64 url"
+      ]
+    },
+    {
+      "name": "chromium-host-outside-the-list",
+      "ops": [
+        {
+          "op": "replace",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "url"
+          ],
+          "from": "storage.googleapis.com",
+          "to": "evil.example"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 url",
+        "hosts"
+      ]
+    },
+    {
+      "name": "chromium-path-traversal",
+      "ops": [
+        {
+          "op": "replace",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "url"
+          ],
+          "from": "/chrome-for-testing-public/",
+          "to": "/chrome-for-testing-public/../"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 url"
+      ]
+    },
+    {
+      "name": "node-url-names-another-version",
+      "ops": [
+        {
+          "op": "replace",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-x64",
+            "url"
+          ],
+          "from": "/node-v",
+          "to": "/node-vX"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/linux-x64 url"
+      ]
+    },
+    {
+      "name": "node-format-is-zip",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-x64",
+            "format"
+          ],
+          "value": "zip"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/linux-x64 format"
+      ]
+    },
+    {
+      "name": "chromium-format-is-tar-gz",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "format"
+          ],
+          "value": "tar.gz"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 format"
+      ]
+    },
+    {
+      "name": "node-zero-limit",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-arm64",
+            "expandedBytes"
+          ],
+          "value": 0
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/linux-arm64 limits"
+      ]
+    },
+    {
+      "name": "chromium-strip-components-out-of-range",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "stripComponents"
+          ],
+          "value": 9
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 stripComponents"
+      ]
+    },
+    {
+      "name": "chromium-linux-executable-escapes",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "executable"
+          ],
+          "value": "../chrome"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 executable"
+      ]
+    },
+    {
+      "name": "chromium-linux-executable-is-not-chrome",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "executable"
+          ],
+          "value": "chrome-linux-arm64/other"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 executable"
+      ]
+    },
+    {
+      "name": "chromium-darwin-executable-is-absolute",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "darwin-x64",
+            "executable"
+          ],
+          "value": "/x"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/darwin-x64 executable"
+      ]
+    },
+    {
+      "name": "chromium-executable-missing-on-linux",
+      "ops": [
+        {
+          "op": "remove",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "executable"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 executable"
+      ]
+    },
+    {
+      "name": "chromium-source-missing",
+      "ops": [
+        {
+          "op": "remove",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "source"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 source"
+      ]
+    },
+    {
+      "name": "chromium-source-unknown",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "source"
+          ],
+          "value": "mirror"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 source"
+      ]
+    },
+    {
+      "name": "chromium-source-does-not-match-the-url-host",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "source"
+          ],
+          "value": "playwright-cdn"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 source"
+      ]
+    },
+    {
+      "name": "chromium-playwright-cdn-fallback-is-accepted",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "source"
+          ],
+          "value": "playwright-cdn"
+        },
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "url"
+          ],
+          "value": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/{revision}/chromium-linux-arm64.zip"
+        },
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "executable"
+          ],
+          "value": "chrome-linux/chrome"
+        },
+        {
+          "op": "set",
+          "path": [
+            "hosts"
+          ],
+          "value": [
+            "nodejs.org",
+            "registry.npmjs.org",
+            "storage.googleapis.com",
+            "cdn.playwright.dev"
+          ]
+        }
+      ],
+      "valid": true,
+      "problems": []
+    },
+    {
+      "name": "chromium-playwright-cdn-host-not-listed",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "source"
+          ],
+          "value": "playwright-cdn"
+        },
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "url"
+          ],
+          "value": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/{revision}/chromium-linux-arm64.zip"
+        },
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "executable"
+          ],
+          "value": "chrome-linux/chrome"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 url",
+        "hosts"
+      ]
+    },
+    {
+      "name": "chromium-playwright-cdn-url-names-another-revision",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "source"
+          ],
+          "value": "playwright-cdn"
+        },
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "url"
+          ],
+          "value": "https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/0/chromium-linux-arm64.zip"
+        },
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "executable"
+          ],
+          "value": "chrome-linux/chrome"
+        },
+        {
+          "op": "set",
+          "path": [
+            "hosts"
+          ],
+          "value": [
+            "nodejs.org",
+            "registry.npmjs.org",
+            "storage.googleapis.com",
+            "cdn.playwright.dev"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 url"
+      ]
+    },
+    {
+      "name": "chromium-version-drift-between-platforms",
+      "ops": [
+        {
+          "op": "replace",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "url"
+          ],
+          "from": "/{browserVersion}/",
+          "to": "/1.2.3.4/"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 url"
+      ]
+    },
+    {
+      "name": "chromium-version-field-drifts-from-every-url",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "browserVersion"
+          ],
+          "value": "1.2.3.4"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/darwin-arm64 url",
+        "chromium/darwin-x64 url",
+        "chromium/linux-arm64 url",
+        "chromium/linux-x64 url"
+      ]
+    },
+    {
+      "name": "node-version-field-drifts-from-every-url",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "node",
+            "version"
+          ],
+          "value": "1.2.3"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/darwin-arm64 url",
+        "node/darwin-x64 url",
+        "node/linux-arm64 url",
+        "node/linux-x64 url"
+      ]
+    },
+    {
+      "name": "linux-minGlibc-missing",
+      "ops": [
+        {
+          "op": "remove",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "minGlibc"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 minGlibc"
+      ]
+    },
+    {
+      "name": "linux-minGlibc-malformed",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-x64",
+            "minGlibc"
+          ],
+          "value": "two"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/linux-x64 minGlibc"
+      ]
+    },
+    {
+      "name": "linux-needed-empty",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "needed"
+          ],
+          "value": []
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 needed"
+      ]
+    },
+    {
+      "name": "linux-needed-not-sorted",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "needed"
+          ],
+          "value": [
+            "libm.so.6",
+            "libc.so.6"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 needed"
+      ]
+    },
+    {
+      "name": "linux-needed-has-a-duplicate",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "node",
+            "artifacts",
+            "linux-arm64",
+            "needed"
+          ],
+          "value": [
+            "libc.so.6",
+            "libc.so.6"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/linux-arm64 needed"
+      ]
+    },
+    {
+      "name": "linux-needed-has-a-path",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "needed"
+          ],
+          "value": [
+            "../libc.so.6"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 needed"
+      ]
+    },
+    {
+      "name": "linux-packageHints-missing",
+      "ops": [
+        {
+          "op": "remove",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-arm64",
+            "packageHints"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-arm64 packageHints"
+      ]
+    },
+    {
+      "name": "linux-packageHints-bad-name",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "linux-x64",
+            "packageHints"
+          ],
+          "value": {
+            "apt": [
+              "bad name;x"
+            ]
+          }
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/linux-x64 packageHints"
+      ]
+    },
+    {
+      "name": "darwin-must-not-carry-minGlibc",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "artifacts",
+            "darwin-arm64",
+            "minGlibc"
+          ],
+          "value": "2.25"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium/darwin-arm64 minGlibc"
+      ]
+    },
+    {
+      "name": "darwin-must-not-carry-needed",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "node",
+            "artifacts",
+            "darwin-x64",
+            "needed"
+          ],
+          "value": [
+            "libc.so.6"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node/darwin-x64 needed"
+      ]
+    },
+    {
+      "name": "hosts-has-an-extra-host",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "hosts"
+          ],
+          "value": [
+            "nodejs.org",
+            "registry.npmjs.org",
+            "storage.googleapis.com",
+            "extra.example"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "hosts"
+      ]
+    },
+    {
+      "name": "hosts-is-missing-the-registry",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "hosts"
+          ],
+          "value": [
+            "nodejs.org",
+            "storage.googleapis.com"
+          ]
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "hosts"
+      ]
+    },
+    {
+      "name": "id-is-a-path",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "id"
+          ],
+          "value": "../x"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "id"
+      ]
+    },
+    {
+      "name": "id-has-a-leading-dot",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "id"
+          ],
+          "value": ".x"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "id"
+      ]
+    },
+    {
+      "name": "free-disk-factor-too-small",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "freeDiskFactor"
+          ],
+          "value": 2
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "freeDiskFactor"
+      ]
+    },
+    {
+      "name": "team-identifier-is-malformed",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "node",
+            "teamIdentifier"
+          ],
+          "value": "x\" or true"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "node.teamIdentifier"
+      ]
+    },
+    {
+      "name": "released-at-is-not-a-date",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "chromium",
+            "releasedAt"
+          ],
+          "value": "tomorrow"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "chromium.releasedAt"
+      ]
+    },
+    {
+      "name": "mcp-digest-is-malformed",
+      "ops": [
+        {
+          "op": "set",
+          "path": [
+            "mcp",
+            "lockfileSHA256"
+          ],
+          "value": "xyz"
+        }
+      ],
+      "valid": false,
+      "problems": [
+        "mcp digests"
+      ]
+    }
+  ]
+}

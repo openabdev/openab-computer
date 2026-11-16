@@ -106,7 +106,7 @@ final class PlaywrightManifestTests: XCTestCase {
         XCTAssertFalse(try mutated("\"id\": \"mcp", "\"id\": \".mcp").isEmpty, "leading dot id")
         XCTAssertFalse(try mutated("\"freeDiskFactor\": 3", "\"freeDiskFactor\": 2").isEmpty)
         XCTAssertFalse(try mutated("\"teamIdentifier\": \"HX7739G8FX\"", "\"teamIdentifier\": \"x\\\" or true\"").isEmpty, "team id shape")
-        XCTAssertFalse(try mutated("\"schema\": 1", "\"schema\": 2").isEmpty)
+        XCTAssertFalse(try mutated("\"schema\": 2", "\"schema\": 1").isEmpty)
         XCTAssertFalse(try mutated("\"nodejs.org\",\n    \"registry", "\"nodejs.org\",\n    \"extra.example\",\n    \"registry").isEmpty, "extra host")
         XCTAssertFalse(try mutated("\"executable\": \"chrome-mac-arm64/", "\"executable\": \"../chrome-mac-arm64/").isEmpty, "executable escapes")
         XCTAssertFalse(try mutated("\"format\": \"tar.gz\"", "\"format\": \"zip\"").isEmpty, "format")
@@ -116,12 +116,12 @@ final class PlaywrightManifestTests: XCTestCase {
         var obj = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(PlaywrightPins.pinsJSON.utf8)) as? [String: Any])
         var node = obj["node"] as! [String: Any]
         var arts = node["artifacts"] as! [String: Any]
-        arts.removeValue(forKey: "x86_64")
+        arts.removeValue(forKey: "darwin-x64")
         node["artifacts"] = arts
         obj["node"] = node
         let data = try JSONSerialization.data(withJSONObject: obj)
         let m = try PlaywrightManifest.decode(String(decoding: data, as: UTF8.self))
-        XCTAssertTrue(m.validate().contains("node architectures"))
+        XCTAssertTrue(m.validate().contains("node platforms"))
     }
 
     func testEmbeddedFilesCheckedAgainstTheirDigests() {
