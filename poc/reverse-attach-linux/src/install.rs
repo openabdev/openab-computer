@@ -774,12 +774,18 @@ pub fn update(o: &Opts<'_>, io: &mut Io<'_>, ask: &mut dyn FnMut(&str) -> Option
     let rec = new_record(o.manifest, &sel, Some(old.version.clone()))?;
     // The record is replaced only if it still holds the bytes read under the lock at the start.
     let expected = before.as_deref().ok_or(Fail("record_changed"))?;
-    state::write_record_cas(
+    if let Err(e) = state::write_record_cas(
         root.fd(),
         state::RECORD_NAME,
         rec.to_json().as_bytes(),
         expected,
-    )?;
+    ) {
+        if e == Fail("record_swap_stuck") {
+            // `install.json` already names the new version, so that directory must stay.
+            guard.new_version = None;
+        }
+        return Err(e);
+    }
     guard.armed = false;
     // The old version stays until `pending-cleanup.json` is acted on. A failure to write it leaves
     // the old directory in place, which `status` and `remove` report.

@@ -760,3 +760,179 @@ fn stat_rel_does_not_follow_links_in_the_middle() {
     assert!(stat_rel(root.fd(), "v/../v/a/b").is_none());
     assert!(stat_rel(root.fd(), "/etc/passwd").is_none());
 }
+
+/// Puts `content` at `dir/name` as a different object than whatever is there: the new file is
+/// created under another name first (so the old inode cannot be reused) and renamed over.
+#[cfg(target_os = "linux")]
+fn replace_with_foreign(dir: &Path, name: &str, content: &str) {
+    let side = dir.join(format!(".side-{}", random_hex(4)));
+    std::fs::write(&side, content).unwrap();
+    std::fs::rename(&side, dir.join(name)).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn clear_hooks() {
+    BEFORE_SWAP.with(|h| *h.borrow_mut() = None);
+    AFTER_SWAP.with(|h| *h.borrow_mut() = None);
+    BEFORE_UNLINK.with(|h| *h.borrow_mut() = None);
+}
+
+#[cfg(target_os = "linux")]
+fn tmp_files(t: &TempDir) -> Vec<(String, Vec<u8>)> {
+    std::fs::read_dir(rootp(t))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                std::fs::read(e.path()).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cas_swap_back_never_deletes_a_file_a_third_writer_put_at_the_temp_name() {
+    let t = TempDir::new();
+    let root = t.root();
+    write_record(root.fd(), "x.json", b"1").unwrap();
+    // A foreign record replaces x.json, so the exchange displaces it and the check fails.
+    BEFORE_SWAP.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|p: &Path| {
+            replace_with_foreign(p, "x.json", "foreign")
+        }));
+    });
+    // After the exchange a third writer replaces x.json (which holds our new bytes) before the
+    // swap back, so the swap back brings the third writer's file to the temp name.
+    AFTER_SWAP.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|p: &Path| {
+            replace_with_foreign(p, "x.json", "third")
+        }));
+    });
+    let r = write_record_cas(root.fd(), "x.json", b"3", b"1");
+    clear_hooks();
+    assert_eq!(r, Err(Fail("record_changed_left")));
+    assert_eq!(std::fs::read(rootp(&t).join("x.json")).unwrap(), b"foreign");
+    let left = tmp_files(&t);
+    assert_eq!(left.len(), 1, "the third writer's file stays");
+    assert_eq!(left[0].1, b"third");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cas_never_deletes_a_replacement_of_the_displaced_copy() {
+    let t = TempDir::new();
+    let root = t.root();
+    write_record(root.fd(), "x.json", b"1").unwrap();
+    // The record verifies, and the displaced copy is replaced just before it is removed.
+    BEFORE_UNLINK.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|p: &Path| {
+            let name = std::fs::read_dir(p)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .find(|n| n.contains(".tmp-"))
+                .unwrap();
+            replace_with_foreign(p, &name, "someone else's note");
+        }));
+    });
+    let r = write_record_cas(root.fd(), "x.json", b"3", b"1");
+    clear_hooks();
+    assert_eq!(r, Ok(()));
+    assert_eq!(std::fs::read(rootp(&t).join("x.json")).unwrap(), b"3");
+    let left = tmp_files(&t);
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].1, b"someone else's note");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unlink_if_same_leaves_a_replacement_and_a_link() {
+    let t = TempDir::new();
+    let root = t.root();
+    let id = write_new_file_id(root.fd(), "a", b"1", 0o600).unwrap();
+    replace_with_foreign(&rootp(&t), "a", "2");
+    assert_eq!(
+        unlink_if_same(root.fd(), "a", &id),
+        Err(Fail("record_changed"))
+    );
+    assert!(exists(&rootp(&t).join("a")));
+    let (_, outside) = t.sentinel();
+    std::fs::remove_file(rootp(&t).join("a")).unwrap();
+    symlink(&outside, rootp(&t).join("a")).unwrap();
+    assert!(unlink_if_same(root.fd(), "a", &id).is_err());
+    assert_sentinel(&outside);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn remove_leaves_every_record_file_swapped_in_after_the_ownership_decision() {
+    let t = TempDir::new();
+    let root = t.root();
+    make_version(&t, "ours-1", true);
+    write_record_file(&t, &record("ours-1"));
+    let tmp_name = "install.json.tmp-0123456789abcdef";
+    put(&rootp(&t).join(tmp_name), &record("ours-1").to_json());
+    put(&rootp(&t).join(PENDING_NAME), &pending_json("old-1"));
+    put(
+        &rootp(&t).join(CONFIG_NAME),
+        r#"{"_oabInstallerOwned":true}"#,
+    );
+    // The unlinks run in this order: the record, then the others by name. Each call swaps in a
+    // foreign file for the one that is about to be unlinked.
+    let order = [RECORD_NAME, tmp_name, PENDING_NAME, CONFIG_NAME];
+    let n = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let n2 = n.clone();
+    BEFORE_UNLINK.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move |p: &Path| {
+            let i = n2.get();
+            n2.set(i + 1);
+            if let Some(name) = order.get(i) {
+                replace_with_foreign(p, name, "foreign");
+            }
+        }));
+    });
+    let rep = remove_all(&root).unwrap();
+    clear_hooks();
+    assert_eq!(n.get(), 4);
+    for name in order {
+        assert_eq!(
+            std::fs::read(rootp(&t).join(name)).unwrap(),
+            b"foreign",
+            "{name} was deleted or overwritten"
+        );
+        assert!(
+            rep.left.iter().any(|(l, _)| l == name),
+            "{name} not reported"
+        );
+        assert!(!rep.removed.iter().any(|r| r == name));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn pending_cleanup_leaves_a_pending_record_swapped_in_before_its_unlink() {
+    let t = TempDir::new();
+    let root = t.root();
+    make_version(&t, "new-2", true);
+    let mut r = record("new-2");
+    r.previous = Some("old-1".into());
+    write_record_file(&t, &r);
+    make_version(&t, "old-1", true);
+    put(&rootp(&t).join(PENDING_NAME), &pending_json("old-1"));
+    BEFORE_UNLINK.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|p: &Path| {
+            replace_with_foreign(p, PENDING_NAME, "foreign")
+        }));
+    });
+    let out = run_pending_cleanup(&root);
+    clear_hooks();
+    assert_eq!(out.unwrap(), Some("old-1".into()));
+    assert!(!exists(&rootp(&t).join("old-1")));
+    assert_eq!(
+        std::fs::read(rootp(&t).join(PENDING_NAME)).unwrap(),
+        b"foreign"
+    );
+}

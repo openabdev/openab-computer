@@ -148,6 +148,12 @@ pub fn create_dir_at(dir: &impl AsFd, name: &str) -> R<OwnedFd> {
 
 /// Writes a new file, failing if the name exists. Mode 0600 unless given.
 pub fn write_new_file(dir: &impl AsFd, name: &str, bytes: &[u8], mode: u32) -> R<()> {
+    write_new_file_id(dir, name, bytes, mode).map(|_| ())
+}
+
+/// Like [`write_new_file`], and returns the identity (`fstat` of the open file) of what it
+/// created, so a later cleanup can prove it is deleting its own file and not a replacement.
+pub fn write_new_file_id(dir: &impl AsFd, name: &str, bytes: &[u8], mode: u32) -> R<Stat> {
     let fd = rustix::fs::openat(
         dir,
         name,
@@ -155,18 +161,27 @@ pub fn write_new_file(dir: &impl AsFd, name: &str, bytes: &[u8], mode: u32) -> R
         Mode::from_raw_mode(mode as _),
     )
     .map_err(|_| IO)?;
+    // `O_EXCL` made the file, so `fstat` of the open descriptor is its identity.
+    let st = rustix::fs::fstat(&fd).map_err(|_| IO)?;
     let mut f = File::from(fd);
     if f.write_all(bytes).is_err() || f.sync_all().is_err() {
         drop(f);
-        let _ = rustix::fs::unlinkat(dir, name, AtFlags::empty());
+        let _ = unlink_if_same(dir, name, &st);
         return Err(IO);
     }
-    Ok(())
+    Ok(st)
 }
 
 /// Reads a regular file below `dir`, at most `cap` bytes. A symlink, a FIFO or anything else that
 /// is not a regular file, and a file over the cap, are errors.
 pub fn read_file_capped(dir: &impl AsFd, name: &str, cap: u64) -> R<Vec<u8>> {
+    read_file_id(dir, name, cap).map(|(b, _)| b)
+}
+
+/// [`read_file_capped`] that also returns the identity of the object that was read (`fstat` of
+/// the open descriptor). A caller that decides ownership from the bytes and then deletes must pass
+/// this identity to [`unlink_if_same`].
+pub fn read_file_id(dir: &impl AsFd, name: &str, cap: u64) -> R<(Vec<u8>, Stat)> {
     let fd = rustix::fs::openat(
         dir,
         name,
@@ -186,43 +201,25 @@ pub fn read_file_capped(dir: &impl AsFd, name: &str, cap: u64) -> R<Vec<u8>> {
     if out.len() as u64 > cap {
         return Err(Fail("record_unreadable"));
     }
-    Ok(out)
+    Ok((out, st))
 }
 
-/// Write-then-rename of a small record: temp file (`O_EXCL`, 0600, fsync) renamed onto `name` with
-/// `RENAME_NOREPLACE`, so it never overwrites anything. To replace a record that exists use
-/// [`write_record_cas`].
-pub fn write_record(dir: &impl AsFd, name: &str, bytes: &[u8]) -> R<()> {
-    let tmp = format!("{name}.tmp-{}", random_hex(8));
-    write_new_file(dir, &tmp, bytes, 0o600)?;
-    if rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::NOREPLACE).is_err() {
-        let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
-        return Err(IO);
-    }
-    Ok(())
-}
+#[cfg(test)]
+type Hook = std::cell::RefCell<Option<Box<dyn Fn(&std::path::Path)>>>;
 
 #[cfg(test)]
 thread_local! {
     /// Runs between the temp file being written and the swap; tests plant files here.
-    pub(crate) static BEFORE_SWAP: std::cell::RefCell<Option<Box<dyn Fn(&std::path::Path)>>> =
-        const { std::cell::RefCell::new(None) };
+    pub(crate) static BEFORE_SWAP: Hook = const { std::cell::RefCell::new(None) };
+    /// Runs after the first exchange and before the displaced file is examined.
+    pub(crate) static AFTER_SWAP: Hook = const { std::cell::RefCell::new(None) };
+    /// Runs between a record unlink's ownership decision and its identity recheck.
+    pub(crate) static BEFORE_UNLINK: Hook = const { std::cell::RefCell::new(None) };
 }
 
-/// Replaces `name` only when it still holds exactly `expected` at the moment of the swap.
-///
-/// The new bytes are written to a temp file and swapped in with `RENAME_EXCHANGE`. The file that
-/// was displaced is then read from the temp name and compared with `expected`. When it differs
-/// (or cannot be read) the swap is undone, so a record that appeared after the caller's own read
-/// is put back and `record_changed` is reported. Where the file system has no exchange the
-/// fallback compares and then renames, which leaves a window of a few instructions that
-/// `flock` does not cover against a non-cooperating writer; the installer never uses it on the
-/// filesystems it supports (tmpfs, ext4, xfs, btrfs).
-pub fn write_record_cas(dir: &impl AsFd, name: &str, bytes: &[u8], expected: &[u8]) -> R<()> {
-    let tmp = format!("{name}.tmp-{}", random_hex(8));
-    write_new_file(dir, &tmp, bytes, 0o600)?;
-    #[cfg(test)]
-    BEFORE_SWAP.with(|h| {
+#[cfg(test)]
+fn fire(hook: &'static std::thread::LocalKey<Hook>, dir: &impl AsFd) {
+    hook.with(|h| {
         if let (Some(f), Ok(p)) = (
             h.borrow().as_ref(),
             std::fs::read_link(format!(
@@ -233,40 +230,92 @@ pub fn write_record_cas(dir: &impl AsFd, name: &str, bytes: &[u8], expected: &[u
             f(&p);
         }
     });
-    let cleanup = |dir: &dyn AsFd| {
-        let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
-    };
-    match rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::EXCHANGE) {
-        Ok(()) => {
-            // `tmp` now names what used to be `name`.
-            let same =
-                matches!(read_file_capped(dir, &tmp, RECORD_CAP), Ok(old) if old == expected);
-            if same {
-                cleanup(dir);
-                return Ok(());
-            }
-            // Put the displaced entry back. If even that fails it stays under `tmp` (it is never
-            // deleted here: it is not ours) and the caller sees the error.
-            if rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::EXCHANGE)
-                .is_ok()
-            {
-                cleanup(dir);
-            }
-            Err(Fail("record_changed"))
+}
+
+/// Deletes `dir/name` only while it is still the object `id` names (same device and inode, by
+/// `lstat`). A replacement, a link or a vanished name is left alone and reported as
+/// `record_changed`. The gap between the `lstat` and the `unlinkat` is a few instructions long;
+/// POSIX has no unlink-if-same-inode, and every caller also holds the install lock.
+pub fn unlink_if_same(dir: &impl AsFd, name: &str, id: &Stat) -> R<()> {
+    #[cfg(test)]
+    fire(&BEFORE_UNLINK, dir);
+    match lstat_at(dir, name)? {
+        Some(cur) if same_object(&cur, id) => {
+            rustix::fs::unlinkat(dir, name, AtFlags::empty()).map_err(|_| IO)
         }
+        _ => Err(Fail("record_changed")),
+    }
+}
+
+/// Write-then-rename of a small record: temp file (`O_EXCL`, 0600, fsync) renamed onto `name` with
+/// `RENAME_NOREPLACE`, so it never overwrites anything. To replace a record that exists use
+/// [`write_record_cas`].
+pub fn write_record(dir: &impl AsFd, name: &str, bytes: &[u8]) -> R<()> {
+    let tmp = format!("{name}.tmp-{}", random_hex(8));
+    let id = write_new_file_id(dir, &tmp, bytes, 0o600)?;
+    if rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::NOREPLACE).is_err() {
+        let _ = unlink_if_same(dir, &tmp, &id);
+        return Err(IO);
+    }
+    Ok(())
+}
+
+/// Replaces `name` only when it still holds exactly `expected` at the moment of the swap.
+///
+/// The new bytes are written to a temp file and swapped in with `RENAME_EXCHANGE`. The file that
+/// was displaced is then read from the temp name (its identity is kept) and compared with
+/// `expected`. When it differs (or cannot be read) the swap is undone, so a record that appeared
+/// after the caller's own read is put back and `record_changed` is reported.
+///
+/// Fail-closed rules, each tested:
+/// - The temp name is unlinked only while `lstat` still shows the object this function expects
+///   there: its own temp file after a swap back, the displaced original after a verified swap.
+///   Anything else found there (a third writer's file) is left, and the class is
+///   `record_changed_left` so the caller can say a stray file remains. When the swap cannot be
+///   undone the class is `record_swap_stuck`: the new record is in place and the displaced file
+///   stays under the temp name.
+/// - A file system without `RENAME_EXCHANGE` gives `record_replace_unsupported`. There is no
+///   compare-then-rename fallback, because it would reopen the overwrite race. Nothing is
+///   replaced and the temp file is removed.
+pub fn write_record_cas(dir: &impl AsFd, name: &str, bytes: &[u8], expected: &[u8]) -> R<()> {
+    let tmp = format!("{name}.tmp-{}", random_hex(8));
+    let mine = write_new_file_id(dir, &tmp, bytes, 0o600)?;
+    #[cfg(test)]
+    fire(&BEFORE_SWAP, dir);
+    match rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::EXCHANGE) {
+        Ok(()) => {}
         Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP) => {
-            let same =
-                matches!(read_file_capped(dir, name, RECORD_CAP), Ok(cur) if cur == expected);
-            if same && rustix::fs::renameat(dir, tmp.as_str(), dir, name).is_ok() {
-                return Ok(());
-            }
-            cleanup(dir);
-            Err(Fail("record_changed"))
+            let _ = unlink_if_same(dir, &tmp, &mine);
+            return Err(Fail("record_replace_unsupported"));
         }
         Err(_) => {
-            cleanup(dir);
-            Err(IO)
+            let _ = unlink_if_same(dir, &tmp, &mine);
+            return Err(IO);
         }
+    }
+    #[cfg(test)]
+    fire(&AFTER_SWAP, dir);
+    // `tmp` now names what used to be `name`. Read it by descriptor so the identity and the bytes
+    // are of the same object.
+    let displaced = read_file_id(dir, &tmp, RECORD_CAP);
+    if let Ok((old, old_id)) = &displaced {
+        if old == expected {
+            // Verified: remove exactly the object that was read.
+            // The record is replaced. If the displaced copy cannot be removed (it changed or
+            // vanished) it stays as a `.tmp-` file that `remove` recognises by name and content.
+            let _ = unlink_if_same(dir, &tmp, old_id);
+            return Ok(());
+        }
+    }
+    // Put the displaced entry back, then remove our own temp file if it is what came back.
+    if rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::EXCHANGE).is_err() {
+        // Could not undo: `name` holds our new record and the other file stays under `tmp`.
+        return Err(Fail("record_swap_stuck"));
+    }
+    match unlink_if_same(dir, &tmp, &mine) {
+        Ok(()) => Err(Fail("record_changed")),
+        // Something other than our temp file was swapped in meanwhile: it is not ours to delete.
+        Err(_) => Err(Fail("record_changed_left")),
     }
 }
 
@@ -632,15 +681,20 @@ pub fn record_bytes(root: &Root) -> R<Option<Vec<u8>>> {
     }
 }
 
-/// `pending-cleanup.json`: `{"schema":1,"previous":"<id>"}`.
-pub fn pending_previous(root: &Root) -> Option<String> {
-    let bytes = read_file_capped(root.fd(), PENDING_NAME, RECORD_CAP).ok()?;
-    let v: Value = serde_json::from_slice(&bytes).ok()?;
+/// Parses the bytes of `pending-cleanup.json`: `{"schema":1,"previous":"<id>"}`.
+fn parse_pending(bytes: &[u8]) -> Option<String> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
     if v.get("schema")?.as_i64()? != 1 {
         return None;
     }
     let p = v.get("previous")?.as_str()?;
     is_safe_id(p).then(|| p.to_string())
+}
+
+/// `pending-cleanup.json`: `{"schema":1,"previous":"<id>"}`.
+pub fn pending_previous(root: &Root) -> Option<String> {
+    let bytes = read_file_capped(root.fd(), PENDING_NAME, RECORD_CAP).ok()?;
+    parse_pending(&bytes)
 }
 
 pub fn pending_json(previous: &str) -> String {
@@ -665,35 +719,24 @@ fn tmp_base(name: &str) -> Option<&'static str> {
 /// A leftover temp file is ours only with the exact generated name and content that parses as
 /// the record it would have become. Anything else (a note someone named `install.json.tmp-x`) is
 /// left in place.
-fn tmp_is_ours(root: &Root, name: &str) -> bool {
-    let Some(base) = tmp_base(name) else {
-        return false;
-    };
-    let Ok(bytes) = read_file_capped(root.fd(), name, RECORD_CAP) else {
-        return false;
-    };
-    if base == RECORD_NAME {
-        return InstallRecord::parse(&bytes).is_some();
+fn tmp_bytes_ours(name: &str, bytes: &[u8]) -> bool {
+    match tmp_base(name) {
+        Some(RECORD_NAME) => InstallRecord::parse(bytes).is_some(),
+        Some(_) => parse_pending(bytes).is_some(),
+        None => false,
     }
-    serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .is_some_and(|v| {
-            v.get("schema").and_then(Value::as_i64) == Some(1)
-                && v.get("previous")
-                    .and_then(Value::as_str)
-                    .is_some_and(is_safe_id)
-        })
 }
 
 /// `pw-config.json` is ours only when it is a JSON object with `_oabInstallerOwned: true`.
-fn config_is_ours(root: &Root) -> bool {
-    let Ok(bytes) = read_file_capped(root.fd(), CONFIG_NAME, CONFIG_CAP) else {
-        return false;
-    };
-    serde_json::from_slice::<Value>(&bytes)
+fn config_bytes_ours(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes)
         .ok()
         .and_then(|v| v.get("_oabInstallerOwned").and_then(Value::as_bool))
         == Some(true)
+}
+
+fn config_is_ours(root: &Root) -> bool {
+    read_file_capped(root.fd(), CONFIG_NAME, CONFIG_CAP).is_ok_and(|b| config_bytes_ours(&b))
 }
 
 // ---- run records ----------------------------------------------------------------------------
@@ -973,17 +1016,32 @@ fn drop_dir(root: &Root, name: &str, marker: &str, report: &mut Report) -> R<()>
     Ok(())
 }
 
-/// Removes a regular file below the root (never a directory or a link target).
-fn drop_file(root: &Root, name: &str, report: &mut Report) {
+/// Removes a regular file below the root that proves to be ours. The file is opened without
+/// following a link, read (capped), judged by `ours`, and then unlinked only while `lstat` still
+/// shows that same object. A file that fails the judgement, or was replaced between judgement and
+/// unlink, is left and reported.
+fn drop_checked(
+    root: &Root,
+    name: &str,
+    cap: u64,
+    ours: &dyn Fn(&[u8]) -> bool,
+    report: &mut Report,
+) {
     match lstat_at(root.fd(), name) {
-        Ok(Some(st)) if is_regular(&st) => {
-            if rustix::fs::unlinkat(root.fd(), name, AtFlags::empty()).is_ok() {
-                report.removed.push(name.to_string());
-            } else {
-                report.failed = true;
-                report.leave(name, "could not delete");
-            }
-        }
+        Ok(Some(st)) if is_regular(&st) => match read_file_id(root.fd(), name, cap) {
+            Ok((bytes, id)) if ours(&bytes) => match unlink_if_same(root.fd(), name, &id) {
+                Ok(()) => report.removed.push(name.to_string()),
+                Err(Fail("record_changed")) => {
+                    report.leave(name, "changed while it was being removed")
+                }
+                Err(_) => {
+                    report.failed = true;
+                    report.leave(name, "could not delete");
+                }
+            },
+            Ok(_) => report.leave(name, "not created by this installer"),
+            Err(_) => report.leave(name, "not readable as a record of this installer"),
+        },
         Ok(Some(_)) => report.leave(name, "not a regular file"),
         _ => {}
     }
@@ -1034,9 +1092,15 @@ pub fn run_pending_cleanup(root: &Root) -> R<Option<String>> {
     if report.failed || !report.left.is_empty() {
         return Ok(None);
     }
-    match rustix::fs::unlinkat(root.fd(), PENDING_NAME, AtFlags::empty()) {
-        Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-        Err(_) => return Err(IO),
+    // Delete the pending record only if it is still the one that named `prev`.
+    match read_file_id(root.fd(), PENDING_NAME, RECORD_CAP) {
+        Ok((bytes, id)) if parse_pending(&bytes).as_deref() == Some(prev.as_str()) => {
+            match unlink_if_same(root.fd(), PENDING_NAME, &id) {
+                Ok(()) | Err(Fail("record_changed")) => {}
+                Err(_) => return Err(IO),
+            }
+        }
+        _ => {}
     }
     Ok(Some(prev))
 }
@@ -1097,7 +1161,7 @@ pub fn remove_all(root: &Root) -> R<Report> {
             // A record temp file that an interrupted write left behind. Ours only when a record
             // of ours exists, the name is exactly what `write_record` generates, and the content
             // parses as a record this installer writes.
-            if ours.is_some() && is_regular(st) && tmp_is_ours(root, n) {
+            if ours.is_some() && is_regular(st) {
                 Plan::Tmp
             } else {
                 Plan::Skip("not created by this installer")
@@ -1120,20 +1184,62 @@ pub fn remove_all(root: &Root) -> R<Report> {
         plan.push((name.clone(), item));
     }
 
-    // The record goes first, so nothing can start the child from a directory being deleted.
+    // The record goes first, so nothing can start the child from a directory being deleted. Every
+    // file is judged again from the bytes of the object that is unlinked (`drop_checked`), so a
+    // file swapped in after planning is left, not deleted.
+    let ours_version = ours.as_ref().map(|r| r.version.clone());
+    let record_ours = |b: &[u8]| {
+        InstallRecord::parse(b)
+            .is_some_and(|r| Some(&r.version) == ours_version.as_ref() && record_is_ours(root, &r))
+    };
     for (name, p) in &plan {
         if *p == Plan::Record {
-            drop_file(root, name, &mut report);
+            drop_checked(root, name, RECORD_CAP, &record_ours, &mut report);
         }
     }
     for (name, p) in &plan {
         match p {
             Plan::Record => {}
             Plan::Skip(why) => report.leave(name, why),
-            Plan::Pending | Plan::Config | Plan::Tmp => drop_file(root, name, &mut report),
-            Plan::Data => drop_dir(root, name, OWNED_DATA, &mut report)?,
-            Plan::Staging => drop_dir(root, name, STAGING_MARK, &mut report)?,
-            Plan::Version => drop_dir(root, name, OWNED, &mut report)?,
+            Plan::Pending => drop_checked(
+                root,
+                name,
+                RECORD_CAP,
+                &|b| parse_pending(b).is_some(),
+                &mut report,
+            ),
+            Plan::Config => drop_checked(root, name, CONFIG_CAP, &config_bytes_ours, &mut report),
+            Plan::Tmp => {
+                let nm = name.clone();
+                drop_checked(
+                    root,
+                    name,
+                    RECORD_CAP,
+                    &move |b| tmp_bytes_ours(&nm, b),
+                    &mut report,
+                )
+            }
+            Plan::Data => {
+                // A walker error after the record was deleted must not hide the report.
+                if drop_dir(root, name, OWNED_DATA, &mut report).is_err() {
+                    report.failed = true;
+                    report.leave(name, "could not be fully removed");
+                }
+            }
+            Plan::Staging => {
+                // A walker error after the record was deleted must not hide the report.
+                if drop_dir(root, name, STAGING_MARK, &mut report).is_err() {
+                    report.failed = true;
+                    report.leave(name, "could not be fully removed");
+                }
+            }
+            Plan::Version => {
+                // A walker error after the record was deleted must not hide the report.
+                if drop_dir(root, name, OWNED, &mut report).is_err() {
+                    report.failed = true;
+                    report.leave(name, "could not be fully removed");
+                }
+            }
         }
     }
     Ok(report)
