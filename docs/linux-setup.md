@@ -20,30 +20,32 @@ are the only two profiles (#59); the retired `desktop` runs as `observe`.
 
 ```mermaid
 flowchart LR
-    subgraph callers["Callers (anywhere on the tailnet)"]
-        cli["Coding CLI / agent"]
-        connect["OpenAB Connect<br/>Screens pane"]
-        pod["openab-pty pod<br/>(reverse attach)"]
+    subgraph callers["Callers on the tailnet"]
+        cli["Coding CLI or agent"]
+        connect["OpenAB Connect Screens pane"]
+        pod["openab-pty pod, reverse attach"]
     end
 
-    subgraph node["Linux hands node — one box"]
-        ts["tailscale serve :8444<br/>TLS + injects Tailscale-User-Login"]
-        subgraph seat["Desktop seat · systemd --user · WAYLAND_DISPLAY=wayland-0"]
-            mcp["<b>oab-computer.service</b><br/>reverse-attach binary · 127.0.0.1:8795<br/>auth = allow-login <b>AND</b> bearer<br/>/mcp · /attach · /healthz<br/>sys_info · screenshot · bash · mouse · key<br/>exec_start · exec_poll · exec_list · exec_cancel"]
-            pw["<b>oab-computer-pw-mcp.service</b><br/>@playwright/mcp · 127.0.0.1:8794<br/>headed distro Chromium, persistent profile"]
+    subgraph node["Linux hands node, one box"]
+        ts["tailscale serve port 8444, TLS, adds the caller identity header"]
+        subgraph seat["Desktop seat, systemd user units, WAYLAND_DISPLAY wayland-0"]
+            mcp["oab-computer.service, 127.0.0.1 port 8795, allow-login AND bearer, serves /mcp /attach /healthz, tools sys_info screenshot bash mouse key exec_start exec_poll exec_list exec_cancel"]
+            pw["oab-computer-pw-mcp.service, @playwright/mcp, 127.0.0.1 port 8794, headed Chromium, persistent profile"]
+            chrom["Chromium, the distro package when present, else Playwright's own download"]
         end
         subgraph hands["What the tools touch"]
-            grim["grim → screenshot"]
-            wl["virtual pointer / wtype → mouse, key"]
-            sh["bash -c as the desktop user"]
+            grim["grim for screenshot"]
+            wl["virtual pointer and wtype for mouse and key"]
+            sh["bash as the desktop user"]
         end
     end
 
-    cli -- "HTTPS · MCP" --> ts
+    cli -- "HTTPS MCP" --> ts
     connect -- "screenshot loop" --> ts
     ts --> mcp
-    mcp -- "WS dial-out<br/>ws://pod:8090/tools/attach/{session}" --> pod
-    mcp -- "MCP_UPSTREAM browser=<br/>re-served, profile-filtered" --> pw
+    mcp -- "WebSocket dial out to the pod" --> pod
+    mcp -- "MCP_UPSTREAM browser, re-served and profile filtered" --> pw
+    pw --> chrom
     mcp --> hands
 ```
 
@@ -73,15 +75,15 @@ loopback `8794`. A managed Linux tier is designed
 - `sudo`. Rust ≥ 1.85 (`rustup`) is needed only to build from source.
 
 ```sh
-sudo apt-get install -y grim wtype nodejs npm               # + sway for --headless-seat
+sudo apt-get install -y grim wtype wlrctl nodejs npm       # + sway for --headless-seat; wlrctl: see #130 below
 sudo apt-get install -y chromium                             # Debian / Raspberry Pi OS only
 ```
 
 `install-linux.sh` still exits 78 ("missing: wlrctl") when `wlrctl` is not installed, although the
 daemon never calls it: it spawns `grim` and `wtype` and holds its own virtual pointer.
-`wlrctl` is not in the Ubuntu 24.04 archive, so on Ubuntu the installer cannot finish until
-[#130](https://github.com/openabdev/openab-computer/issues/130) is fixed. Install `wlrctl` first if
-your distro packages it.
+`wlrctl` is not in the Ubuntu 24.04 archive, so on Ubuntu the `apt-get` line above fails and the
+installer cannot finish until [#130](https://github.com/openabdev/openab-computer/issues/130) is
+fixed. On Ubuntu drop `wlrctl` from that line and install it another way first.
 
 Debian 13 ships `nodejs` 20 and `npm` 9, which is enough for `@playwright/mcp`. Ubuntu has no
 `chromium` deb (snap only, unusable from a user unit); the installer downloads Playwright's
@@ -206,6 +208,8 @@ ExecStart=%h/.local/oab-computer/pw-mcp.sh
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=DISPLAY=:0
+# Environment=PW_CHROMIUM=/path/to/chromium   # default /usr/bin/chromium
+# Environment=PW_NODE_BIN=/path/to/node/bin    # only for a non-system node (fnm, nvm)
 Restart=always
 RestartSec=3
 
@@ -223,8 +227,8 @@ echo '{"DefaultMediaStreamSetting": 2, "DefaultNotificationsSetting": 2, "Defaul
 systemctl --user restart oab-computer-pw-mcp
 ```
 
-`pw-mcp.sh` uses `PW_CHROMIUM` (the installer sets it; the distro Chromium when present, so nothing is
-downloaded), launches it **headed** into the seat, keeps a persistent profile under
+`pw-mcp.sh` uses `PW_CHROMIUM` (the installer sets it; the default is `/usr/bin/chromium`, so nothing is
+downloaded when the distro package is there), launches it **headed** into the seat, keeps a persistent profile under
 `~/.local/oab-computer/pw-profile`, and lists `--allowed-hosts` in both `host` and
 `host:port` forms (Playwright answers 403 to everything otherwise). Chromium runs with its
 sandbox on; check with `tr '\0' '\n' </proc/$(pgrep -f 'chromium.*user-data-dir' | head -1)/cmdline | grep -c no-sandbox`
@@ -267,23 +271,23 @@ desktop at Connect's quality 0.6, against about 2 MB as PNG.
 
 ```mermaid
 sequenceDiagram
-    participant H as Human (CLI / Connect)
-    participant N as hands node :8444
-    participant R as openab-pty runtime :8090
-    participant A as agent in the session
-    H->>N: POST /attach {runtime, session, profile, ttl_secs, admin_credential}
-    N->>R: POST /admin/sessions/{session}/tools-attach {ttl_secs}
-    R-->>N: {secret, expires_in}
-    N-->>H: 202 grant {id, state: idle}
-    N->>R: WS GET /tools/attach/{session} · Bearer secret
-    R-->>N: 101 (state: attached)
-    A->>R: tools/list via $OPENAB_TOOLS_MCP_URL
-    R->>N: tools/list (over the WS)
-    N-->>R: owner: 9 local tools + 32 browser_* · observe: sys_info screenshot
-    A->>R: tools/call screenshot
-    R->>N: tools/call screenshot
-    N-->>R: image/jpeg
-    Note over N,R: close 4010 / DELETE /attach/{id} → stop · 1000 → redial with backoff
+    participant H as "Human, CLI or Connect"
+    participant N as "hands node port 8444"
+    participant R as "openab-pty runtime port 8090"
+    participant A as "agent in the session"
+    H->>N: "POST /attach with runtime, session, profile, ttl_secs, admin_credential"
+    N->>R: "POST /admin/sessions/SESSION/tools-attach with ttl_secs"
+    R-->>N: "secret and expires_in_secs"
+    N-->>H: "202 grant with id, state idle"
+    N->>R: "WebSocket GET /tools/attach/SESSION with Bearer secret"
+    R-->>N: "101, state attached"
+    A->>R: "tools/list via OPENAB_TOOLS_MCP_URL"
+    R->>N: "tools/list over the WebSocket"
+    N-->>R: "owner gets 9 local tools and 32 browser tools, observe gets sys_info and screenshot"
+    A->>R: "tools/call screenshot"
+    R->>N: "tools/call screenshot"
+    N-->>R: "image/jpeg"
+    Note over N,R: "close 4010 or DELETE /attach/ID stops it, close 1000 redials with backoff"
 ```
 
 ```sh

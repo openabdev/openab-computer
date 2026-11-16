@@ -578,7 +578,7 @@ The Apple Events tier is not built. Design: [ADR](docs/adr/browser-tiers.md).
 ```mermaid
 flowchart TB
     caller["Caller with the owner profile, observe sees no browser tools"]
-    pref{"Which backend. The OAB-Browser-Backend header first, else the menu pin, else auto"}
+    pref{"Which backend. The OAB-Browser-Backend header first, else the stored preference (no menu control sets it in 0.12.0), else auto"}
     pready{"Playwright ready"}
     aready{"Apple Events ready"}
     noBackend["No backend. No browser tools are listed and a call says browser tools are not set up"]
@@ -598,11 +598,11 @@ flowchart TB
     aready -- "no" --> noBackend
     which -- "yes" --> ext
     which -- "no" --> man
-    style tiera stroke-dasharray: 5 5
 ```
 
 Under `auto` Playwright wins whenever it is ready. A named backend that is not ready is never
-replaced silently. Every result carries `structuredContent.backend`.
+replaced silently. Every result from a selected backend carries `structuredContent.backend`; the
+"not set up" and guarded-selection errors come before a backend is chosen and carry none.
 
 User guide for both platforms: [`docs/browser-tools.md`](docs/browser-tools.md).
 

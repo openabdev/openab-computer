@@ -63,7 +63,7 @@ The preference is `auto` (default), `appleEvents` or `playwright`, stored per us
 overridable per connection with the `OAB-Browser-Backend` request header. Under `auto`,
 Playwright is chosen when ready, else Apple Events.
 
-- **No silent fallback to a named backend.** If the header or menu pin names a backend that is
+- **No silent fallback to a named backend.** If the header or stored preference names a backend that is
   not ready, `tools/list` shows no `browser_*` names and a call returns a setup message naming
   that backend.
 - **Identity guard.** Tier A and Tier P are different identities (the real signed-in sessions
@@ -71,11 +71,12 @@ Playwright is chosen when ready, else Apple Events.
   the last browser call, and within 30 minutes it does not switch to the other backend by
   itself, in either direction. If the last backend is no longer ready, the caller gets a
   message saying the other tier is ready but is not used automatically mid-task. After 30
-  minutes without a browser call, or when a header or menu pin names a backend, the choice is
+  minutes without a browser call, or when a header or a stored preference names a backend, the choice is
   recomputed. The window is a design value and can change without changing any interface.
 - **No retry on the other backend.** A call is never repeated on a different tier, because that
   would move the caller between the real browser and the Playwright profile.
-- Every browser result carries `structuredContent.backend`.
+- Every result from a selected backend carries `structuredContent.backend`. Errors raised before a
+  backend is chosen (no backend ready, a guarded selection) carry none.
 
 The diagram shows how a call reaches a backend. Dotted or marked parts are designed and not built in 0.12.0. The identity guard
 needs two ready backends, so it has no effect until Tier A exists.
@@ -83,7 +84,7 @@ needs two ready backends, so it has no effect until Tier A exists.
 ```mermaid
 flowchart TB
     caller["Caller with the owner profile, observe sees no browser tools"]
-    pref{"Which backend. The OAB-Browser-Backend header first, else the menu pin, else auto"}
+    pref{"Which backend. The OAB-Browser-Backend header first, else the stored preference (no menu control sets it in 0.12.0), else auto"}
     pready{"Tier P Playwright ready"}
     aready{"Tier A Apple Events ready"}
     noBackend["No backend. No browser tools are listed and a call says browser tools are not set up"]
@@ -103,7 +104,6 @@ flowchart TB
     aready -- "no" --> noBackend
     which -- "yes" --> ext
     which -- "no" --> man
-    style tiera stroke-dasharray: 5 5
 ```
 
 Tier C (Chrome remote debugging) is reserved, not built, and never chosen by `auto`, so it is not drawn.

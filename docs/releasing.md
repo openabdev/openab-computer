@@ -137,7 +137,7 @@ flowchart TB
 4. The `Release macOS installer` workflow runs the tests and the Playwright pins check, then builds,
    signs, notarizes and publishes the macOS artifacts. From the same run it also publishes
    `oab-computer-VERSION-linux-{arm64,amd64}.tar.gz` and a `.sha256` for each (Linux tarballs
-   exist since 0.6.7; before 0.12.0 they were named `oab-instance-mcp-VERSION-linux-*`).
+   exist since 0.6.5; before 0.12.0 they were named `oab-instance-mcp-VERSION-linux-*`).
    All three jobs wait for a reviewer to approve the `release` environment, so open the run and
    approve it, or nothing starts. A manual
    dispatch can retry an existing tag; it is not a way to release an untagged commit, and it

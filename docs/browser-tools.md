@@ -19,7 +19,7 @@ details are in the README sections
 | Listening port | Managed: none. External: `127.0.0.1:8794` | `127.0.0.1:8794`, no authentication |
 | How you install it | Setup wizard page or menu item | `install-linux.sh` (skip with `--no-browser`) |
 | Browser | A pinned Chromium (Chrome for Testing) the app downloads | The distro `chromium` if present, otherwise Playwright's own Chromium |
-| Update and remove | Menu items | By hand ([Linux setup](linux-setup.md)) |
+| Update and remove | Menu items | By hand, see [Linux update and remove](#linux-update-and-remove) below |
 | Sign-in window | Menu item **Open Playwright window to sign in…** | The browser window is on the node's desktop seat |
 | Who can call the tools | `owner` profile only | `owner` profile only |
 
@@ -144,7 +144,11 @@ files. It starts nothing.
   in `~/.local/oab-computer/pw-profile`,
 - the `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp` line in `oab-computer.service`, and a Chromium
   policy file `/etc/chromium/policies/managed/oab-computer.json` (when `sudo` allows it) that blocks
-  camera, microphone, notification and location prompts.
+  camera, microphone, notification and location prompts,
+- on Ubuntu with `apparmor_restrict_unprivileged_userns` set (and `sudo` allowed), an AppArmor profile
+  `/etc/apparmor.d/playwright-chromium` that lets Playwright's own Chromium create its sandbox,
+- the font packages `fonts-dejavu-core`, `fonts-liberation`, `fonts-noto-cjk` and
+  `fonts-noto-color-emoji` (when `sudo` allows it), so pages do not render as boxes.
 
 **Port 8794 is unauthenticated.** Any local user on the node can call every browser tool, including
 `browser_run_code_unsafe` (arbitrary Node code). On a shared host use `--no-browser`. The installer
@@ -154,6 +158,27 @@ The browser is headed and appears on the node's desktop seat (a real desktop, or
 seat from `--headless-seat`). Sign in to sites by using that window through the `screenshot` and
 `mouse` tools or at the node itself. Linux has no wizard, no menu bar and no update or remove
 commands for the browser: use `systemctl --user` and the steps in [Linux setup](linux-setup.md#4-browser-tools-playwrightmcp).
+
+### Linux update and remove
+
+There is no command for these. To update, stop the unit, change the version, and start it again:
+
+```sh
+systemctl --user stop oab-computer-pw-mcp.service
+cd ~/.local/oab-computer/pw-mcp && npm install --save-exact @playwright/mcp@NEW_VERSION
+systemctl --user start oab-computer-pw-mcp.service
+```
+
+To remove the browser tools:
+
+```sh
+systemctl --user disable --now oab-computer-pw-mcp.service
+rm ~/.config/systemd/user/oab-computer-pw-mcp.service
+rm -r ~/.local/oab-computer/pw-mcp ~/.local/oab-computer/pw-profile   # the profile holds your sign-ins
+systemctl --user daemon-reload
+```
+
+Then delete the `MCP_UPSTREAM=browser=...` line from `oab-computer.service` and restart that unit.
 
 ### Planned: a managed Linux tier
 

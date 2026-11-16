@@ -263,36 +263,40 @@ callers written for Playwright work unchanged. Unsupported options (for example
 The states of the Playwright row on this page (R5.6, R7.2, R7.3), as the page model implements them:
 
 ```mermaid
-stateDiagram-v2
-    state "Pre-checked, nothing installed, Continue enabled" as PreChecked
-    state "Declined, box unchecked" as Declined
-    state "Preflight, free disk and install lock" as Preflight
-    state "Downloading, Cancel offered, Continue disabled" as Downloading
-    state "Verifying and installing, extract, Node signature, npm packages and health check" as Verifying
-    state "Installed" as Installed
-    state "Failed, message shown, Retry and Continue without offered" as Failed
-    state "Continued without, Playwright not installed" as ContinuedWithout
-    state "Page complete, the wizard advances" as PageComplete
+flowchart TB
+    start(["Page opens"])
+    installedAlready["Already installed, no download offered"]
+    pre["Pre-checked, nothing installed, Continue enabled"]
+    declined["Declined, box unchecked"]
+    preflight["Preflight, free disk and install lock"]
+    downloading["Downloading, Cancel offered, Continue disabled"]
+    verifying["Verifying and installing, extract, Node signature, npm packages and health check"]
+    installed["Installed"]
+    failed["Failed, message shown, Retry and Continue without offered"]
+    without["Continued without, Playwright not installed"]
+    complete(["Page complete, the wizard advances"])
 
-    [*] --> PreChecked : page opens
-    PreChecked --> Declined : user unchecks the box
-    Declined --> PreChecked : user checks the box
-    Declined --> PageComplete : Continue, nothing is downloaded
-    PreChecked --> Preflight : Continue with the box checked
-    Preflight --> Downloading : preflight passed
-    Downloading --> Verifying : each file matched its size and digest
-    Verifying --> Installed : committed and the health check passed
-    Installed --> PageComplete : the install ended
-    Preflight --> Failed : not enough disk, lock held or offline
-    Downloading --> Failed : offline, interrupted, TLS or digest mismatch
-    Verifying --> Failed : archive rejected, signature or health check failed
-    Preflight --> PreChecked : Cancel
-    Downloading --> PreChecked : Cancel, staging removed at once
-    Verifying --> PreChecked : Cancel, staging removed at once
-    Failed --> Preflight : Retry
-    Failed --> ContinuedWithout : Continue without
-    ContinuedWithout --> PageComplete : the page records the choice
-    PageComplete --> [*]
+    start -- "nothing installed" --> pre
+    start -- "install.json and files present" --> installedAlready
+    installedAlready --> complete
+    pre -- "user unchecks the box" --> declined
+    declined -- "user checks the box" --> pre
+    declined -- "Continue, nothing is downloaded" --> complete
+    pre -- "Continue with the box checked" --> preflight
+    preflight -- "passed" --> downloading
+    downloading -- "each file matched its size and digest" --> verifying
+    verifying -- "committed and the health check passed" --> installed
+    installed --> complete
+    preflight -- "not enough disk or lock held" --> failed
+    downloading -- "offline, interrupted, TLS or digest mismatch" --> failed
+    verifying -- "archive rejected, signature or health check failed" --> failed
+    preflight -- "Cancel" --> pre
+    downloading -- "Cancel, staging is removed once the transfer stops" --> pre
+    verifying -- "Cancel, staging is removed once the step stops" --> pre
+    failed -- "Retry" --> preflight
+    failed -- "Decline" --> declined
+    failed -- "Continue without" --> without
+    without --> complete
 ```
 
 Closing the window is not completion, so the page reopens from **Set up browser tools…**. After

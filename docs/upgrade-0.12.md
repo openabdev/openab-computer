@@ -264,6 +264,7 @@ macOS:
 
 ```sh
 launchctl bootout gui/$(id -u)/dev.openab.computer
+mv ~/Library/LaunchAgents/dev.openab.computer.plist ~/oab-instance-mcp-backup/   # else it starts again at login and races the old agent for 127.0.0.1:8795
 cp ~/oab-instance-mcp-backup/dev.openab.instance-mcp*.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.plist
 ```
@@ -274,7 +275,8 @@ Grants you reset with `tccutil` in step 3 must be granted again to the old app.
 Linux:
 
 ```sh
-systemctl --user disable --now oab-computer.service oab-computer-pw-mcp.service
+systemctl --user disable --now oab-computer.service
+systemctl --user disable --now oab-computer-pw-mcp.service   # only if the browser was installed (no --no-browser)
 cp ~/oab-instance-mcp-backup/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now oab-instance-mcp.service
