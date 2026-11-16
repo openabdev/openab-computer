@@ -708,12 +708,7 @@ pub fn install(o: &Opts<'_>, io: &mut Io<'_>) -> R<Done> {
     guard.new_version = Some(id.to_string());
     after_rename(&root);
     let rec = new_record(o.manifest, &sel, None)?;
-    state::write_record(
-        root.fd(),
-        state::RECORD_NAME,
-        rec.to_json().as_bytes(),
-        false,
-    )?;
+    state::write_record(root.fd(), state::RECORD_NAME, rec.to_json().as_bytes())?;
     guard.armed = false;
     Ok(Done::Installed(id.to_string()))
 }
@@ -777,26 +772,30 @@ pub fn update(o: &Opts<'_>, io: &mut Io<'_>, ask: &mut dyn FnMut(&str) -> Option
     guard.new_version = Some(id.to_string());
     after_rename(&root);
     let rec = new_record(o.manifest, &sel, Some(old.version.clone()))?;
-    state::write_record(
+    // The record is replaced only if it still holds the bytes read under the lock at the start.
+    let expected = before.as_deref().ok_or(Fail("record_changed"))?;
+    state::write_record_cas(
         root.fd(),
         state::RECORD_NAME,
         rec.to_json().as_bytes(),
-        true,
+        expected,
     )?;
     guard.armed = false;
     // The old version stays until `pending-cleanup.json` is acted on. A failure to write it leaves
     // the old directory in place, which `status` and `remove` report.
+    // `pending-cleanup.json` is written only when no such entry exists (`NOREPLACE`). A record
+    // that is already there, ours or not, is never replaced or dropped: it is reported instead.
     if state::write_record(
         root.fd(),
         state::PENDING_NAME,
         state::pending_json(&old.version).as_bytes(),
-        true,
     )
     .is_err()
     {
         io.say(&format!(
-            "left in place: {} (the previous version; its cleanup record could not be written)",
-            old.version
+            "left in place: {} (the previous version; its cleanup record could not be written: {} already exists or the write failed)",
+            old.version,
+            state::PENDING_NAME
         ));
     }
     Ok(Done::Updated {

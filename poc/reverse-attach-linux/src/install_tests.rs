@@ -1086,6 +1086,51 @@ fn an_update_that_cannot_record_removes_only_what_it_added() {
     assert!(!before.is_empty());
 }
 
+#[test]
+fn a_foreign_record_planted_at_the_last_moment_of_an_update_is_not_overwritten() {
+    let e = Env::new(Tw::default());
+    let m1 = e.manifest("test-id-1");
+    let m2 = e.manifest("test-id-2");
+    assert!(e.install(&m1).0.is_ok());
+    crate::state::BEFORE_SWAP.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|p: &std::path::Path| {
+            std::fs::remove_file(p.join("install.json")).unwrap();
+            std::fs::write(p.join("install.json"), "foreign").unwrap();
+        }));
+    });
+    let (r, _, _) = e.update(&m2, Some(true), None);
+    crate::state::BEFORE_SWAP.with(|h| *h.borrow_mut() = None);
+    assert_eq!(r.err().map(|f| f.0), Some("record_changed"));
+    assert_eq!(
+        std::fs::read(e.root().join("install.json")).unwrap(),
+        b"foreign"
+    );
+    assert!(!e.root().join("test-id-2").exists());
+    assert!(e.root().join("test-id-1").is_dir());
+    assert!(!e.root().join("pending-cleanup.json").exists());
+    assert!(e
+        .names()
+        .iter()
+        .all(|n| !n.contains(".tmp-") && !n.starts_with(".staging-")));
+}
+
+#[test]
+fn an_existing_pending_record_is_never_replaced_by_an_update() {
+    let e = Env::new(Tw::default());
+    let m1 = e.manifest("test-id-1");
+    let m2 = e.manifest("test-id-2");
+    assert!(e.install(&m1).0.is_ok());
+    std::fs::write(e.root().join("pending-cleanup.json"), "foreign").unwrap();
+    let (r, out, _) = e.update(&m2, Some(true), None);
+    assert!(r.is_ok());
+    assert_eq!(
+        std::fs::read(e.root().join("pending-cleanup.json")).unwrap(),
+        b"foreign"
+    );
+    assert!(out.contains("left in place: test-id-1"));
+    assert!(e.root().join("test-id-1").is_dir());
+}
+
 // ---- remove ---------------------------------------------------------------------------------
 
 #[test]

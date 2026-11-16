@@ -551,10 +551,10 @@ fn state_is_installed_invalid_or_not_installed() {
 fn write_record_replaces_or_refuses() {
     let t = TempDir::new();
     let root = t.root();
-    write_record(root.fd(), "x.json", b"1", false).unwrap();
-    assert!(write_record(root.fd(), "x.json", b"2", false).is_err());
+    write_record(root.fd(), "x.json", b"1").unwrap();
+    assert!(write_record(root.fd(), "x.json", b"2").is_err());
     assert_eq!(std::fs::read(rootp(&t).join("x.json")).unwrap(), b"1");
-    write_record(root.fd(), "x.json", b"3", true).unwrap();
+    write_record_cas(root.fd(), "x.json", b"3", b"1").unwrap();
     assert_eq!(std::fs::read(rootp(&t).join("x.json")).unwrap(), b"3");
     let mode = std::fs::metadata(rootp(&t).join("x.json"))
         .unwrap()
@@ -568,6 +568,36 @@ fn write_record_replaces_or_refuses() {
         .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
         .collect();
     assert!(leftovers.is_empty(), "a failed write leaves no temp file");
+}
+
+#[test]
+fn cas_never_overwrites_a_record_that_appeared_after_the_caller_read_it() {
+    let t = TempDir::new();
+    let root = t.root();
+    write_record(root.fd(), "x.json", b"1").unwrap();
+    BEFORE_SWAP.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|p: &std::path::Path| {
+            std::fs::remove_file(p.join("x.json")).unwrap();
+            std::fs::write(p.join("x.json"), "foreign").unwrap();
+        }));
+    });
+    let r = write_record_cas(root.fd(), "x.json", b"3", b"1");
+    BEFORE_SWAP.with(|h| *h.borrow_mut() = None);
+    assert_eq!(r, Err(Fail("record_changed")));
+    assert_eq!(std::fs::read(rootp(&t).join("x.json")).unwrap(), b"foreign");
+    let leftovers = std::fs::read_dir(rootp(&t))
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+        .count();
+    assert_eq!(leftovers, 0);
+    // A record that vanished is not recreated by the replace path, and a non-file is put back.
+    std::fs::remove_file(rootp(&t).join("x.json")).unwrap();
+    assert!(write_record_cas(root.fd(), "x.json", b"3", b"foreign").is_err());
+    assert!(!rootp(&t).join("x.json").exists());
+    std::fs::create_dir(rootp(&t).join("x.json")).unwrap();
+    assert!(write_record_cas(root.fd(), "x.json", b"3", b"foreign").is_err());
+    assert!(rootp(&t).join("x.json").is_dir());
 }
 
 #[test]

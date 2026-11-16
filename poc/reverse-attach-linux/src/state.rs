@@ -189,21 +189,85 @@ pub fn read_file_capped(dir: &impl AsFd, name: &str, cap: u64) -> R<Vec<u8>> {
     Ok(out)
 }
 
-/// Write-then-rename of a small record: temp file (`O_EXCL`, 0600, fsync) renamed over `name`.
-/// With `replace == false` the rename refuses to overwrite.
-pub fn write_record(dir: &impl AsFd, name: &str, bytes: &[u8], replace: bool) -> R<()> {
+/// Write-then-rename of a small record: temp file (`O_EXCL`, 0600, fsync) renamed onto `name` with
+/// `RENAME_NOREPLACE`, so it never overwrites anything. To replace a record that exists use
+/// [`write_record_cas`].
+pub fn write_record(dir: &impl AsFd, name: &str, bytes: &[u8]) -> R<()> {
     let tmp = format!("{name}.tmp-{}", random_hex(8));
     write_new_file(dir, &tmp, bytes, 0o600)?;
-    let res = if replace {
-        rustix::fs::renameat(dir, tmp.as_str(), dir, name)
-    } else {
-        rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::NOREPLACE)
-    };
-    if res.is_err() {
+    if rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::NOREPLACE).is_err() {
         let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
         return Err(IO);
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs between the temp file being written and the swap; tests plant files here.
+    pub(crate) static BEFORE_SWAP: std::cell::RefCell<Option<Box<dyn Fn(&std::path::Path)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Replaces `name` only when it still holds exactly `expected` at the moment of the swap.
+///
+/// The new bytes are written to a temp file and swapped in with `RENAME_EXCHANGE`. The file that
+/// was displaced is then read from the temp name and compared with `expected`. When it differs
+/// (or cannot be read) the swap is undone, so a record that appeared after the caller's own read
+/// is put back and `record_changed` is reported. Where the file system has no exchange the
+/// fallback compares and then renames, which leaves a window of a few instructions that
+/// `flock` does not cover against a non-cooperating writer; the installer never uses it on the
+/// filesystems it supports (tmpfs, ext4, xfs, btrfs).
+pub fn write_record_cas(dir: &impl AsFd, name: &str, bytes: &[u8], expected: &[u8]) -> R<()> {
+    let tmp = format!("{name}.tmp-{}", random_hex(8));
+    write_new_file(dir, &tmp, bytes, 0o600)?;
+    #[cfg(test)]
+    BEFORE_SWAP.with(|h| {
+        if let (Some(f), Ok(p)) = (
+            h.borrow().as_ref(),
+            std::fs::read_link(format!(
+                "/proc/self/fd/{}",
+                std::os::fd::AsRawFd::as_raw_fd(&dir.as_fd())
+            )),
+        ) {
+            f(&p);
+        }
+    });
+    let cleanup = |dir: &dyn AsFd| {
+        let _ = rustix::fs::unlinkat(dir, tmp.as_str(), AtFlags::empty());
+    };
+    match rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::EXCHANGE) {
+        Ok(()) => {
+            // `tmp` now names what used to be `name`.
+            let same =
+                matches!(read_file_capped(dir, &tmp, RECORD_CAP), Ok(old) if old == expected);
+            if same {
+                cleanup(dir);
+                return Ok(());
+            }
+            // Put the displaced entry back. If even that fails it stays under `tmp` (it is never
+            // deleted here: it is not ours) and the caller sees the error.
+            if rustix::fs::renameat_with(dir, tmp.as_str(), dir, name, RenameFlags::EXCHANGE)
+                .is_ok()
+            {
+                cleanup(dir);
+            }
+            Err(Fail("record_changed"))
+        }
+        Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS | rustix::io::Errno::OPNOTSUPP) => {
+            let same =
+                matches!(read_file_capped(dir, name, RECORD_CAP), Ok(cur) if cur == expected);
+            if same && rustix::fs::renameat(dir, tmp.as_str(), dir, name).is_ok() {
+                return Ok(());
+            }
+            cleanup(dir);
+            Err(Fail("record_changed"))
+        }
+        Err(_) => {
+            cleanup(dir);
+            Err(IO)
+        }
+    }
 }
 
 /// Stats a relative path below `dir`, component by component, opening every intermediate
