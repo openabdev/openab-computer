@@ -26,41 +26,42 @@ the intelligence stays in the caller.
 
 ```mermaid
 flowchart LR
-    subgraph callers["Callers — the brain (anywhere on the tailnet)"]
-        cli["Coding CLI / agent<br/>kiro-cli · claude · openab<br/><i>mcp.json: mac-mcp</i>"]
-        connect["OpenAB Connect<br/>(Mac app, Screens pane)"]
+    subgraph callers["Callers, where the model runs"]
+        cli["Coding CLI or agent with an MCP client"]
+        connect["OpenAB Connect"]
     end
 
-    sb["<b>Switchboard</b> (openab-sb)<br/>/mcp/computer · bearer token per caller<br/>routes calls down the computer's open socket"]
+    sb["Switchboard openab-sb, one bearer token per caller"]
+    rt["Agent runtime that was lent this Mac, reverse attach"]
 
-    subgraph mac["The instance — a Mac with someone logged in"]
-        subgraph ts["tailscale serve (TLS + identity)"]
-            s8444[":8444 → 127.0.0.1:8795<br/>injects Tailscale-User-Login"]
+    subgraph mac["The Mac, with a desktop user logged in"]
+        ts["tailscale serve, https port 8444, TLS and the Tailscale login header"]
+        subgraph app["oab-computer, LaunchAgent dev.openab.computer"]
+            ep["HTTP endpoint 127.0.0.1 port 8795, paths mcp and attach and healthz. Callers are checked as described under Auth"]
+            tools["Local tools, sys_info exec screenshot ui_snapshot ui_action mouse key osascript"]
+            router["BrowserRouter, one Playwright slot, 32 browser tools, owner profile only"]
+            dial["Dial-out clients, switchboard and reverse attach"]
         end
-        subgraph gui["Aqua session · LaunchAgents in gui/501"]
-            mcp["<b>oab-computer</b> (Swift)<br/>auth = allow-login <b>AND</b> bearer token<br/>sys_info · exec · exec_start/poll/list/cancel<br/>screenshot · ui_snapshot · ui_action · mouse · key · osascript"]
-            pw["@playwright/mcp<br/>headed Chromium, persistent profile<br/><i>macOS: managed, stdio child, no port<br/>or external via --upstream (loopback 8794)</i>"]
-        end
-        dial["<b>--switchboard</b> client<br/>dials out to /vm/attach"]
-        subgraph hands["What the daemon touches — nothing a logged-in user could not"]
-            shell["Shell<br/>zsh as the desktop user<br/>Xcode · xcodebuild · simulators · git"]
-            screen["Display<br/>ScreenCaptureKit"]
-            input["Input<br/>CGEvent mouse / keyboard"]
-            apps["Apps<br/>osascript / JXA"]
-        end
-        tcc{{"TCC grants, once, on the Mac's own screen<br/>Screen Recording · Accessibility · Full Disk Access<br/>bound to bundle id dev.openab.computer"}}
+        managed["Managed Playwright when installed, a node child over stdio with no port. Used when --upstream browser is not given"]
+        ext["External Playwright MCP, 127.0.0.1 port 8794, a separate process. Used instead when --upstream browser is given"]
+        ae["Apple Events tier, planned and not built"]
+        os["Shell, display, input and apps of the logged-in user, gated by TCC grants"]
     end
 
-    cli -- "HTTPS · MCP Streamable HTTP" --> s8444
-    connect -- "screenshot loop" --> s8444
-    cli -- "HTTPS · MCP via /mcp/computer" --> sb
-    dial -- "WSS · dialed out, /vm/attach" --> sb
-    sb -- "tool calls over that socket" --> dial
-    dial --> mcp
-    s8444 --> mcp
-    mcp -- "managed stdio child, or --upstream (loopback only)" --> pw
-    mcp --> hands
-    tcc -. "gates screen / input / apps" .-> hands
+    cli -- "HTTPS, MCP over HTTP" --> ts
+    connect --> ts
+    ts --> ep
+    cli -- "HTTPS, MCP through the switchboard" --> sb
+    dial -- "WSS dialed out to vm attach" --> sb
+    sb -- "tool calls down that socket" --> dial
+    dial -- "WS dialed out after POST attach" --> rt
+    ep --> tools
+    ep --> router
+    dial --> ep
+    router --> managed
+    router --> ext
+    router -.-> ae
+    tools --> os
 ```
 
 Read it left to right: the model and its reasoning live in the caller; the machine only receives
@@ -73,6 +74,10 @@ macOS the tools that touch screen or input are gated by TCC, granted once to the
 The loop the tools are built for: `screenshot` → decide →
 `mouse` / `key` / `osascript` / `exec` → `screenshot` to confirm. SSH already gives you a shell;
 this exists for what SSH cannot reach.
+
+The browser part of the diagram is covered in [Browser tools](#browser-tools). The
+Apple Events tier is drawn with a dotted arrow because it is planned and not built. The diagram shows
+the macOS app. The Linux node is described in [`docs/linux-setup.md`](docs/linux-setup.md).
 
 ## Contents
 
@@ -569,6 +574,35 @@ Playwright is the other option (`--upstream`, below). Both feed the same router.
 The router reads an `OAB-Browser-Backend` request header with the values `auto`, `playwright` or
 `appleEvents`. Only the Playwright backend exists in 0.12.0, so `appleEvents` answers "not set up".
 The Apple Events tier is not built. Design: [ADR](docs/adr/browser-tiers.md).
+
+```mermaid
+flowchart TB
+    caller["Caller with the owner profile, observe sees no browser tools"]
+    pref{"Which backend. The OAB-Browser-Backend header first, else the menu pin, else auto"}
+    pready{"Playwright ready"}
+    aready{"Apple Events ready"}
+    noBackend["No backend. No browser tools are listed and a call says browser tools are not set up"]
+    subgraph tierp["Playwright tier, shipped in 0.12.0"]
+        which{"Was --upstream browser given"}
+        ext["External Playwright, 127.0.0.1 port 8794, a separate process you started. The managed child is not used"]
+        man["Managed Playwright, a stdio child of the app with no listener"]
+    end
+    tiera["Apple Events tier, NOT BUILT, so it is never ready in 0.12.0"]
+    caller --> pref
+    pref -- "auto or playwright" --> pready
+    pref -- "appleEvents" --> aready
+    pready -- "yes" --> which
+    pready -- "no, and auto" --> aready
+    pready -- "no, and pinned to playwright" --> noBackend
+    aready -- "yes" --> tiera
+    aready -- "no" --> noBackend
+    which -- "yes" --> ext
+    which -- "no" --> man
+    style tiera stroke-dasharray: 5 5
+```
+
+Under `auto` Playwright wins whenever it is ready. A named backend that is not ready is never
+replaced silently. Every result carries `structuredContent.backend`.
 
 User guide for both platforms: [`docs/browser-tools.md`](docs/browser-tools.md).
 

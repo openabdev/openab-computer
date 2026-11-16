@@ -260,6 +260,44 @@ callers written for Playwright work unchanged. Unsupported options (for example
   the window is not completion; the page reopens from **Set up browser tools…**. Tailnet exposure
   stays reachable from the Network menu regardless. If no supported browser is installed, only the
   Playwright row shows.
+The states of the Playwright row on this page (R5.6, R7.2, R7.3), as the page model implements them:
+
+```mermaid
+stateDiagram-v2
+    state "Pre-checked, nothing installed, Continue enabled" as PreChecked
+    state "Declined, box unchecked" as Declined
+    state "Preflight, free disk and install lock" as Preflight
+    state "Downloading, Cancel offered, Continue disabled" as Downloading
+    state "Verifying and installing, extract, Node signature, npm packages and health check" as Verifying
+    state "Installed" as Installed
+    state "Failed, message shown, Retry and Continue without offered" as Failed
+    state "Continued without, Playwright not installed" as ContinuedWithout
+    state "Page complete, the wizard advances" as PageComplete
+
+    [*] --> PreChecked : page opens
+    PreChecked --> Declined : user unchecks the box
+    Declined --> PreChecked : user checks the box
+    Declined --> PageComplete : Continue, nothing is downloaded
+    PreChecked --> Preflight : Continue with the box checked
+    Preflight --> Downloading : preflight passed
+    Downloading --> Verifying : each file matched its size and digest
+    Verifying --> Installed : committed and the health check passed
+    Installed --> PageComplete : the install ended
+    Preflight --> Failed : not enough disk, lock held or offline
+    Downloading --> Failed : offline, interrupted, TLS or digest mismatch
+    Verifying --> Failed : archive rejected, signature or health check failed
+    Preflight --> PreChecked : Cancel
+    Downloading --> PreChecked : Cancel, staging removed at once
+    Verifying --> PreChecked : Cancel, staging removed at once
+    Failed --> Preflight : Retry
+    Failed --> ContinuedWithout : Continue without
+    ContinuedWithout --> PageComplete : the page records the choice
+    PageComplete --> [*]
+```
+
+Closing the window is not completion, so the page reopens from **Set up browser tools…**. After
+Continue without or a decline, the router lists no `browser_*` tool unless another tier is ready.
+
 - R5.7 **Assisted flip of Chrome's menu item.** Next to Chrome's `jsDisabled` state, a **Turn it
   on for me** button, available only when Accessibility is granted. It is never automatic. It
   shows an alert naming the exact change, including that this is a Chrome setting for the whole

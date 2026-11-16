@@ -81,6 +81,46 @@ deleted in an `always()` cleanup step.
 
 ## Cut a release
 
+The flow below is what the steps and the `Release macOS installer` workflow do. The three jobs
+run in parallel after approval. The Linux jobs wait for the release that the macOS job creates.
+
+```mermaid
+flowchart TB
+    bump["Bump version in main.swift and merge with green CI"]
+    tag["Tag the main commit vMAJOR.MINOR.PATCH and push the tag"]
+    approve["A reviewer approves the release environment, all three jobs wait for it"]
+
+    subgraph mac["macOS job on macos-15"]
+        m1["Validate the tag against main.swift and check the release secrets"]
+        m2["swift test and the Playwright pins check, offline then online"]
+        m3["Build arm64 and x86_64, lipo into one universal binary, assemble the app"]
+        m4["Import the Developer ID certificates into an ephemeral keychain"]
+        m5["Sign the app, notarize it and staple the ticket"]
+        m6["Build and sign the pkg, notarize it and staple the ticket"]
+        m7["stapler validate, spctl and verify-release.sh"]
+        m8["Write SHA256SUMS, create the GitHub Release and upload the pkg, the app zip and SHA256SUMS"]
+        m9["Always delete the keychain and the signing files"]
+        m1 --> m2 --> m3 --> m4 --> m5 --> m6 --> m7 --> m8 --> m9
+    end
+
+    subgraph lin["Linux jobs, amd64 and arm64"]
+        l1["Validate the tag against the version source"]
+        l2["cargo build and the smoke test"]
+        l3["Package the tarball and its sha256 file"]
+        l4["Wait for the release to exist, then upload both files"]
+        l1 --> l2 --> l3 --> l4
+    end
+
+    verify["Download the artifacts, run verify-release.sh and shasum -c, install the pkg on a test Mac, check sys_info and make one reverse attach call"]
+
+    bump --> tag --> approve
+    approve --> m1
+    approve --> l1
+    m8 -. "release now exists" .-> l4
+    m8 --> verify
+    l4 --> verify
+```
+
 1. Update `let version = "…"` in `Sources/oab-computer/main.swift` and merge with green CI.
    This is the only version to bump. The Linux binary takes its version from the tag at build
    time (see [Linux version](#linux-version)); do not bump `poc/reverse-attach-linux/Cargo.toml`.

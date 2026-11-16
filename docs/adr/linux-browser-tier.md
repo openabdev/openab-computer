@@ -119,6 +119,35 @@ The child's environment is cleared inside the unit with `env -i` and rebuilt fro
 Without that, a user service inherits the user manager's environment, which can contain bearer,
 cloud or `GH_*` values.
 
+The diagram shows the planned layout and what ends the managed processes. None of it is built yet.
+
+```mermaid
+flowchart TB
+    subgraph du["oab-computer.service, the daemon is its main process, KillMode process"]
+        daemon["oab-computer daemon"]
+    end
+    subgraph cg["Transient user service, KillMode control-group, BindsTo the daemon unit, environment rebuilt with env -i"]
+        nodeProc["node running the Playwright MCP entry"]
+        chromium["Chromium and its helpers, detached ones included"]
+    end
+    daemon -- "stdin and stdout pipes, no listening socket" --> nodeProc
+    nodeProc --> chromium
+
+    stop["Daemon stop or restart"]
+    kill9["Daemon killed with SIGKILL or by the out of memory killer"]
+    stop -- "systemd stops the bound unit" --> cg
+    kill9 -- "the BindsTo reaction, checked by a self-test" --> cg
+    cg -- "the kernel kills every process in the control group, SIGKILL after TimeoutStopSec 10 s" --> gone["No managed process is left"]
+
+    nouser["Host with no user manager"]
+    unavailable["Managed tier unavailable on that host until the PID namespace supervisor lands"]
+    nouser -.-> unavailable
+```
+
+The session and process group, `PR_SET_PDEATHSIG`, closing stdin, the `/proc` tree walk and the
+sweep before every start are extra layers. They are not drawn because none of them is the
+guarantee. A CLI child (sign-in, health check) is bound to its own scope, not to the daemon.
+
 ### Router
 
 Linux has one tier, so the router answers one question: which Playwright serves `browser_*`.
