@@ -265,14 +265,14 @@ tccutil reset SystemPolicyAllFiles dev.openab.instance-mcp   # only if you used 
 
 Possible until step 8, as long as the old install directory and the backup exist.
 
-Only if you installed the managed Playwright on macOS and the old agent will not hold `127.0.0.1:8794` again: remove it first from the menu (**Remove Playwright…**), before the macOS commands below boot the app out. Otherwise the managed browser stays installed and unused.
+Optional, macOS: if you installed the managed Playwright and will not try 0.12 again, remove it first from the menu (**Remove Playwright…**), before the commands below boot the app out. Otherwise it stays installed and unused. The managed browser has no listener on `127.0.0.1:8794`, so it does not conflict with the old Playwright agent.
 
 macOS:
 
 ```sh
 launchctl bootout gui/$(id -u)/dev.openab.computer
-launchctl bootout gui/$(id -u)/dev.openab.computer.pw-mcp   # only if step 7 installed it; it holds 127.0.0.1:8794
-mv ~/Library/LaunchAgents/dev.openab.computer.pw-mcp.plist ~/oab-instance-mcp-backup/ 2>/dev/null   # else it starts again at login and holds 127.0.0.1:8794
+launchctl bootout gui/$(id -u)/dev.openab.computer.pw-mcp   # only if step 7 installed the external Playwright agent; it holds 127.0.0.1:8794
+mv ~/Library/LaunchAgents/dev.openab.computer.pw-mcp.plist ~/oab-instance-mcp-backup/ 2>/dev/null   # else it starts again at login and holds 127.0.0.1:8794 (only if step 7 installed it)
 mv ~/Library/LaunchAgents/dev.openab.computer.plist ~/oab-instance-mcp-backup/   # else it starts again at login and races the old agent for 127.0.0.1:8795
 cp ~/oab-instance-mcp-backup/dev.openab.instance-mcp*.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.plist
@@ -288,9 +288,11 @@ Linux:
 systemctl --user disable --now oab-computer.service
 systemctl --user disable --now oab-computer-pw-mcp.service   # only if the browser was installed (no --no-browser)
 cp ~/oab-instance-mcp-backup/*.service ~/.config/systemd/user/
+# restore the old MCP_UPSTREAM line in the daemon unit now, before daemon-reload (the backup copy already has it)
 systemctl --user daemon-reload
+systemctl --user enable --now oab-pw-mcp.service   # only if you used the Playwright unit; start it first
+ss -ltnp 'sport = :8794'                           # the old Playwright unit must be listening before the daemon starts
 systemctl --user enable --now oab-instance-mcp.service
-# and oab-pw-mcp.service too, if you used the Playwright unit
 ```
 
 The tailnet mapping on `:8444` points at `127.0.0.1:8795` in both versions, so it can stay. The old

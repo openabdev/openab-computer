@@ -166,21 +166,27 @@ There is no command for these. Re-running `install-linux.sh` without `--no-brows
 recreates the unit and the `MCP_UPSTREAM` line, and it skips `npm install` when `playwright-mcp`
 already exists, so it neither updates the browser nor keeps it removed.
 
-To update, stop the daemon first, then the unit, change the version, and start them in the other
-order. The running daemon keeps its `MCP_UPSTREAM` setting until it stops, so stopping only the
+To update, stop the daemon first, then the unit, change the version, and start the unit before the
+daemon. The running daemon keeps its `MCP_UPSTREAM` setting until it stops, so stopping only the
 unit would leave a freed port 8794 that any local user could bind:
 
 ```sh
-systemctl --user stop oab-computer.service oab-computer-pw-mcp.service
+systemctl --user stop oab-computer.service
+systemctl --user stop oab-computer-pw-mcp.service
 cd ~/.local/oab-computer/pw-mcp && npm install --save-exact @playwright/mcp@NEW_VERSION
-systemctl --user start oab-computer-pw-mcp.service oab-computer.service
 ```
 
-This is enough when the unit uses the distro `chromium`. When the installer downloaded Playwright's
-own Chromium, the new `@playwright/mcp` may need a matching build: run
-`npx playwright install chromium` in `~/.local/oab-computer/pw-mcp`, then update the
-`Environment=PW_CHROMIUM=` line in `~/.config/systemd/user/oab-computer-pw-mcp.service` to the new
-binary path, run `systemctl --user daemon-reload`, and restart the unit.
+When the installer downloaded Playwright's own Chromium, the new `@playwright/mcp` may need a
+matching build: run `npx playwright install chromium` in `~/.local/oab-computer/pw-mcp`, then update
+the `Environment=PW_CHROMIUM=` line in `~/.config/systemd/user/oab-computer-pw-mcp.service` to the
+new binary path and run `systemctl --user daemon-reload`. A unit that uses the distro `chromium`
+needs neither step. Then start the unit, check that it listens, and start the daemon:
+
+```sh
+systemctl --user start oab-computer-pw-mcp.service
+ss -ltnp 'sport = :8794'
+systemctl --user start oab-computer.service
+```
 
 To remove the browser tools, stop the daemon first and edit `oab-computer.service` so it no longer
 points at port 8794 (a freed port could be bound by any local user, who would then answer
