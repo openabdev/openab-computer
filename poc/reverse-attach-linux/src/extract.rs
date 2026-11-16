@@ -12,7 +12,7 @@
 //! handed in, so unverified bytes cannot be extracted. Errors carry a fixed reason and never an
 //! entry name or any archive text.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::os::fd::{AsFd, OwnedFd};
@@ -236,6 +236,8 @@ struct EntryPlanner {
     total_bytes: u64,
     kinds: HashMap<String, Kind>,
     lowered: HashMap<String, String>,
+    /// Paths the archive lists as directories itself (not implied by a child's path).
+    explicit: HashSet<String>,
     seen: u64,
 }
 
@@ -247,6 +249,7 @@ impl EntryPlanner {
             total_bytes: 0,
             kinds: HashMap::new(),
             lowered: HashMap::new(),
+            explicit: HashSet::new(),
             seen: 0,
         }
     }
@@ -297,7 +300,9 @@ impl EntryPlanner {
             }
         }
         if let Some(prior) = self.kinds.get(&path) {
-            if *prior != e.kind || e.kind != Kind::Directory {
+            // A directory implied by an earlier child may be listed once; any other repeat of a
+            // path is a duplicate.
+            if *prior != e.kind || e.kind != Kind::Directory || self.explicit.contains(&path) {
                 return rej(Reason::Duplicate);
             }
         } else if let Some(other) = self.lowered.get(&path.to_lowercase()) {
@@ -334,6 +339,9 @@ impl EntryPlanner {
                 check_link(&t, parents.len())?;
                 target = Some(t);
             }
+        }
+        if e.kind == Kind::Directory {
+            self.explicit.insert(path.clone());
         }
         self.kinds.insert(path.clone(), e.kind);
         let planned = PlannedEntry {

@@ -535,8 +535,15 @@ fn duplicate_and_case_colliding_names_are_refused() {
         Reason::CaseCollision,
         "a/x,A/y",
     );
-    // dir + dir is allowed.
-    for (f, b) in both(&[E::D("a"), E::D("a"), E::F("a/x", b"1", 0o644)]) {
+    rejects_both(&[E::D("a"), E::D("a")], &lim(), Reason::Duplicate, "dir+dir");
+    rejects_both(
+        &[E::D("a"), E::F("a/x", b"1", 0o644), E::D("a")],
+        &lim(),
+        Reason::Duplicate,
+        "dir+child+dir",
+    );
+    // An implicit parent declared explicitly later is allowed once.
+    for (f, b) in both(&[E::F("a/x", b"1", 0o644), E::D("a")]) {
         let (fx, _) = extract_ok(f, &b, &lim());
         assert_eq!(fs::read(fx.stage.join("a/x")).unwrap(), b"1");
     }
