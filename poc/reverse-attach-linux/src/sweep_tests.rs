@@ -28,6 +28,14 @@ pub(crate) fn detached(exe: &std::path::Path) -> std::process::Child {
             Ok(())
         });
     }
+    // A sibling test thread that forked while the copy's write fd was open leaves the file briefly
+    // "busy" (ETXTBSY); the fd closes at that fork's exec, so retry.
+    for _ in 0..50 {
+        match c.spawn() {
+            Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(Duration::from_millis(20)),
+            r => return r.unwrap(),
+        }
+    }
     c.spawn().unwrap()
 }
 
@@ -210,6 +218,38 @@ fn stopping_one_child_leaves_what_another_live_record_claims_under_the_same_vers
         alive(&mut sibling),
         "the sibling's process was killed by another child's stop"
     );
+    sibling.kill().unwrap();
+    sibling.wait().unwrap();
+}
+
+#[test]
+fn a_plain_launch_writes_a_cli_record_and_stopping_it_spares_a_sibling() {
+    use crate::sigstop::{Launcher, Plain};
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let v = root.abs_path().join("pw-1");
+    let bin = v.join("node/bin");
+    let mut sibling = detached(&sleeper_at(&bin, "sibling"));
+    let _rec = run_record::write(&root, "managed", sibling.id(), None).unwrap();
+    let spec = crate::proc::Spec {
+        exe: std::path::PathBuf::from("/bin/sh"),
+        args: vec!["-c".into(), "sleep 300".into()],
+        env: vec![],
+        cwd: t.path.clone(),
+    };
+    let mut launched = Plain.launch(&root, &spec, &v).unwrap();
+    assert_eq!(
+        run_record::live(&root).len(),
+        2,
+        "the plain launch wrote no cli run record"
+    );
+    launched.child.stop();
+    assert!(
+        alive(&mut sibling),
+        "a plain child's stop killed the sibling's process"
+    );
+    drop(launched);
+    assert_eq!(run_record::live(&root).len(), 1);
     sibling.kill().unwrap();
     sibling.wait().unwrap();
 }

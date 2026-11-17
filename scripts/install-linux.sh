@@ -141,6 +141,7 @@ output HEADLESS-1 resolution 1920x1080 position 0,0
 default_border none
 focus_follows_mouse no
 SWAY
+  SEAT_UNOWNED=
   cat >"$UNITS/oab-seat.service.new" <<'UNIT'
 # oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.
 [Unit]
@@ -163,13 +164,19 @@ UNIT
   # left byte for byte as it is and the unit this run would have written is put next to it.
   if [ -f "$UNITS/oab-seat.service" ] && ! grep -qF '# oab-computer-installer:' "$UNITS/oab-seat.service"; then
     mv "$UNITS/oab-seat.service.new" "$UNITS/oab-seat.service.proposed"
+    SEAT_UNOWNED=1
     echo "install: note: $UNITS/oab-seat.service was not written by this installer, so it was left as it is. The unit this run would have written is $UNITS/oab-seat.service.proposed; to adopt it, review it, move it over oab-seat.service, then daemon-reload and restart." >&2
   else
     mv "$UNITS/oab-seat.service.new" "$UNITS/oab-seat.service"
   fi
   systemctl --user daemon-reload
-  systemctl --user enable --now oab-seat.service
-  sleep 2
+  if [ -n "$SEAT_UNOWNED" ]; then
+    # Never enable or start a unit this script did not write: its ExecStart is unreviewed.
+    echo "install: oab-seat.service was not enabled or started by this run; the Wayland socket check below decides whether a seat exists." >&2
+  else
+    systemctl --user enable --now oab-seat.service
+    sleep 2
+  fi
 fi
 # Which Wayland socket is the seat on? A desktop gives wayland-0; headless sway picks the first
 # free name, usually wayland-1.
@@ -333,7 +340,8 @@ sleep 1
 if [ "$INSTANCE_UNIT_LIVE" = 1 ]; then
   echo "daemon: not started and not checked. The old unit oab-instance-mcp.service may hold port $PORT; turn it off as warned above, then run: systemctl --user enable --now oab-computer.service" >&2
 else
-  curl -fsS "127.0.0.1:$PORT/healthz" >/dev/null && echo "daemon: ok"
+  if curl -fsS "127.0.0.1:$PORT/healthz" >/dev/null; then echo "daemon: ok"
+  else echo "daemon: NOT answering on 127.0.0.1:$PORT; see: journalctl --user -u oab-computer.service -n 50" >&2; fi
 fi
 DNS=$(tailscale status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
 echo "MCP URL : https://$DNS:$SERVE_PORT/mcp"

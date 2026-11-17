@@ -197,7 +197,8 @@ Linux:
 ```sh
 systemctl --user disable --now oab-instance-mcp.service
 rm ~/.config/systemd/user/oab-instance-mcp.service
-# only if you used the Playwright unit:
+# only if you used the Playwright unit (for installers after 0.12.0 the rm waits until the soak is over:
+# docs/linux-setup.md#removing-the-old-browser-setup-after-the-soak):
 systemctl --user disable --now oab-pw-mcp.service
 rm ~/.config/systemd/user/oab-pw-mcp.service
 systemctl --user daemon-reload

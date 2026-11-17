@@ -123,6 +123,7 @@ pub struct Launched {
 }
 
 impl Launched {
+    #[cfg(test)]
     pub fn plain(child: Child) -> Launched {
         Launched {
             child,
@@ -140,14 +141,16 @@ pub trait Launcher {
 pub struct Plain;
 
 impl Launcher for Plain {
-    fn launch(&self, _: &Root, spec: &Spec, scope: &Path) -> std::io::Result<Launched> {
-        Ok(Launched::plain(Child::spawn(
-            spec,
-            true,
-            true,
-            crate::health::MAX_LINE,
-            scope,
-        )?))
+    fn launch(&self, root: &Root, spec: &Spec, scope: &Path) -> std::io::Result<Launched> {
+        let mut child = Child::spawn(spec, true, true, crate::health::MAX_LINE, scope)?;
+        // The same record and sibling protection as the unit path: two same-version CLI children
+        // without a unit must not kill each other's tree when one stops. Best effort, like there.
+        let rec = run_record::write(root, "cli", child.pid(), None).ok();
+        child.set_others(crate::sweep::others_live(root, child.pid()));
+        Ok(Launched {
+            child,
+            _guard: rec.map(|r| Box::new(r) as Box<dyn Any + Send>),
+        })
     }
 }
 

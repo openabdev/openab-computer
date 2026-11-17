@@ -135,7 +135,7 @@ flowchart TB
         nodeProc["node running the Playwright MCP entry"]
         chromium["Chromium and its helpers, detached ones included"]
     end
-    daemon -- "stdin and stdout pipes, no listening socket" --> nodeProc
+    daemon -- "stdin and stdout pipes, no TCP or UDP port" --> nodeProc
     nodeProc --> chromium
 
     stop["Daemon stop or restart"]

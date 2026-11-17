@@ -779,7 +779,7 @@ installer does on each kind of host:
 | --- | --- | --- |
 | New: nothing from before | Writes the daemon unit without `MCP_UPSTREAM`, asks about the browser. | Nothing. |
 | New-style unit: `oab-computer-pw-mcp.service` from 0.12.0, and an `MCP_UPSTREAM` line inside `oab-computer.service` | Warns, with the exact command to turn the unit off. The installer rewrites `oab-computer.service` only when the unit carries its own marker line (`# oab-computer-installer:`). A unit without it, which includes any unit from before the marker existed, is left byte for byte as it is (whatever it contains, `MCP_UPSTREAM` included); the unit this run would have written is put beside it as `oab-computer.service.proposed`. The binary is still replaced and the daemon restarted. | After `browser status` shows the managed browser working: `systemctl --user disable --now oab-computer-pw-mcp.service`, then remove the `MCP_UPSTREAM` line (back it up first), or review and move `.proposed` over the unit, `daemon-reload`, restart. |
-| Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line when there is none or it carries the installer's marker (an unmarked existing one is left as it is, with `.proposed` beside it; no backup copy is made) and leaves the drop-in alone. If `oab-instance-mcp.service` (0.11 or earlier) is still live it holds port 8795: the installer warns, writes the new unit but does not enable, start or restart `oab-computer.service` and does not check the daemon; disable that unit first (`systemctl --user disable --now oab-instance-mcp.service`), then `systemctl --user enable --now oab-computer.service`. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. |
+| Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line when there is none or it carries the installer's marker (an unmarked existing one is left as it is, with `.proposed` beside it; no backup copy is made) and leaves the drop-in alone. If `oab-instance-mcp.service` (0.11 or earlier) is still live it holds port 8795: the installer warns, writes the new unit but does not enable, start or restart `oab-computer.service` and does not check the daemon; disable that unit first (`systemctl --user disable --now oab-instance-mcp.service`), then `systemctl --user enable --now oab-computer.service`. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. If a `.proposed` file sits beside `oab-computer.service`, adopt it too (review it, move it over the unit): until then later installer runs leave the unmarked unit alone. |
 
 A plain `systemctl stop` is not enough: those units come back at the next login or boot, and each
 is an unauthenticated Playwright on loopback `8794`. While the old unit and its line exist, a
@@ -849,7 +849,9 @@ below is marked if it needs root.
    and stays.
 
 4. Delete the old Chromium policy file the old installer wrote. **Root:**
-   `sudo rm /etc/chromium/policies/managed/oab-computer.json`.
+   `sudo rm /etc/chromium/policies/managed/oab-computer.json`. Installers from the 0.11 era named
+   it `oab-instance-mcp.json`; if `ls /etc/chromium/policies/managed/` shows that file, remove it the
+   same way (`sudo rm /etc/chromium/policies/managed/oab-instance-mcp.json`).
 
 ## Old external browser (deprecated)
 

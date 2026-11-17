@@ -324,6 +324,7 @@ run ownseat --browser none --headless-seat
 cmp -s "$T/ownseat.orig" "$(UNITD ownseat)/oab-seat.service" || fail "ownseat: an unmarked seat unit was rewritten"
 [ -f "$(UNITD ownseat)/oab-seat.service.proposed" ] || fail "ownseat: no .proposed seat unit"
 has ownseat "oab-seat.service was not written by this installer" err
+if grep -qE 'systemctl --user (enable|restart|start).* oab-seat.service' "$T/ownseat/calls"; then fail "ownseat: an unowned seat unit was enabled or started"; fi
 run ownmarked2 --browser none --headless-seat
 run ownmarked2 --browser none --headless-seat
 expect ownmarked2 oab-seat.service ci-user 8795

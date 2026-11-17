@@ -454,7 +454,7 @@ macOS:
   `--yes`; `--browser none` (or `--no-browser`) skips it. It writes no browser unit and no
   `MCP_UPSTREAM` line. What is downloaded, how big and where it goes is in
   [Linux setup](docs/linux-setup.md#what-the-install-downloads); it matches the macOS table above
-  except that the downloaded Node.js gets no code-signature check on Linux (only the pinned SHA-256)
+  except for the per-architecture sizes, the install root below, and that the downloaded Node.js gets no code-signature check on Linux (only the pinned SHA-256)
   and there is no quarantine step. The install root is `${XDG_DATA_HOME:-$HOME/.local/share}/oab-computer/playwright/`,
   and `oab-computer browser remove` deletes only what carries the installer's marker.
 - `MCP_UPSTREAM` takes plain `http://` URLs only, and every `name=url` entry must be a literal loopback
@@ -791,7 +791,8 @@ To upgrade:
    ```sh
    systemctl --user disable --now oab-instance-mcp.service
    rm ~/.config/systemd/user/oab-instance-mcp.service
-   # only if you used the Playwright unit:
+   # only if you used the Playwright unit (installers after 0.12.0 manage the browser themselves:
+   # do the rm only after the soak, see docs/linux-setup.md#removing-the-old-browser-setup-after-the-soak):
    systemctl --user disable --now oab-pw-mcp.service
    rm ~/.config/systemd/user/oab-pw-mcp.service
    systemctl --user daemon-reload
