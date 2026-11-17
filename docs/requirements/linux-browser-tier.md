@@ -1,7 +1,8 @@
 # Requirements: Linux managed Playwright tier
 
-> **Status:** accepted design, not implemented as of v0.12.0. Today's Linux behavior is in
-> [`docs/linux-setup.md`](../linux-setup.md).
+> **Status:** accepted design, implemented through L3 (the installer, `browser signin` and the docs
+> are in; L4 to L6 and the cutover are not). The 0.12.0 release does not contain it. The operator guide
+> is [`docs/linux-setup.md`](../linux-setup.md).
 
 - **Issues:** [#119](https://github.com/openabdev/openab-computer/issues/119), [#118](https://github.com/openabdev/openab-computer/issues/118)
 - **ADR:** [`docs/adr/linux-browser-tier.md`](../adr/linux-browser-tier.md) (decisions D1 to D17 are cited below)
@@ -56,7 +57,9 @@
   hints, and never installs packages. It also reports libc, the glibc floor, the user-namespace
   state, disk needed and free, and seat presence. musl is refused with a clear message (D16).
 - R3.6 Without root the installer does everything under the user's home. Root actions are printed
-  with the exact command and the reason, and run only with `--apply-system-changes` (D7).
+  with the exact command and the reason, and run only with `--apply-system-changes` (D7). The only
+  entry point of that flag is `scripts/install-linux.sh`; `oab-computer browser` never runs a root
+  action and refuses the flag.
 
 ### R4. Router
 
@@ -122,7 +125,7 @@ person, not a PR. Hosts fall into two classes:
 Facts such as which unit is enabled, which profile is in use and how large the old directories are
 are collected in step 0, not assumed.
 
-The order of the steps in section 2.2 is below. The managed tier is not built yet, so this is the
+The order of the steps in section 2.2 is below. The managed tier is built through L3 and not released, so this is the
 procedure for when it ships. A failed check at any point leads to the rollback in section 2.4.
 
 ```mermaid
@@ -245,11 +248,14 @@ flowchart TB
 5. Verify as in step 6, expecting the old behaviour: a listener on 8794 and `backend: external`.
 
 If the new binary stays but the managed tier misbehaves, set `OAB_BROWSER=off` in a drop-in and
-restart. On a host that has not reached step 5, that alone is enough. On a host where step 5 already
-ran, it is not a return to the external path. External mode needs the `MCP_UPSTREAM=browser=...`
-line (removed in step 5) and the old unit (stopped in step 5). Restore both from the backup, add
-`MCP_BROWSER_BACKEND=external` as the explicit trust act, start the old unit, and restart the
-daemon.
+restart. With a managed install that means no `browser_*` tools at all: the router ignores a stale
+`MCP_UPSTREAM browser=` line, because a managed install wins over it (D5), so `OAB_BROWSER=off` is not
+a return to the old external unit, on a host that has not reached step 5 either. (`OAB_BROWSER=off` with
+nothing installed and a `MCP_UPSTREAM browser=` line still serves that line as external.) To go back
+to the external path, set `MCP_BROWSER_BACKEND=external` as the explicit trust act. External mode needs
+the `MCP_UPSTREAM=browser=...` line (still there before step 5, removed in step 5) and the old unit
+(running before step 5, stopped in step 5). After step 5 restore both from the backup, start the old
+unit, and restart the daemon.
 
 ## 3. Test plan
 
