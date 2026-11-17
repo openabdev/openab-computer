@@ -197,26 +197,81 @@ for bad in "--no-browser --browser managed" "--no-browser --yes" "--browser none
   [ ! -e "$T/$n/home/.config/systemd/user/oab-computer.service" ] || fail "$n: a unit was written for bad arguments"
 done
 
+# Each port is checked on its own: an empty one does not hide behind the other, and the range is 1 to
+# 65535 (#132). Empty strings must reach the installer as arguments, so these are not word-split.
+for pair in "--port|" "--serve-port|" "--port|0" "--serve-port|0" "--port|65536" "--serve-port|65536" \
+            "--port|99999999" "--serve-port|x" "--port|-1" "--serve-port|1.5"; do
+  n="badnum${pair%%|*}_${pair#*|}"; n="$(echo "$n" | tr -c 'A-Za-z0-9\n' '_')"
+  run_rc "$n" 64 "${pair%%|*}" "${pair#*|}"
+  [ ! -e "$T/$n/home/.config/systemd/user/oab-computer.service" ] || fail "$n: a unit was written for a bad number"
+done
+# One empty value with the other set is refused too (the check on the concatenation let it through).
+run_rc badpair 64 --port 9000 --serve-port ""
+# The ends of the range are fine.
+run portlow --browser none --port 1 --serve-port 65535
+expect portlow oab-computer.service ci-user 1
+has portlow "sudo tailscale serve --bg --https=65535 http://127.0.0.1:1" out
+
 # 6. --apply-system-changes: every printed root command runs through sudo, the preflight's actions
 # before the install, linger and tailscale serve after it. The preflight is run again after them.
-ACT='sudo apparmor_parser -r /etc/apparmor.d/oab-computer-chromium\tprofile for your own data path'
+# The AppArmor action has the shape the binary prints (a printf | sudo tee pipeline, then the load)
+# and the per-user profile name with the hash of the install path (preflight.rs apparmor_name), not
+# the bare `oab-computer-chromium`. The stub answers through printf %b, so a backslash that must
+# survive is doubled and a tab is a backslash-t.
+BS=$'\\'
+AA=oab-computer-chromium-9f3a1c2e
+ACT="printf '%s${BS}${BS}n' 'abi <abi/4.0>,' 'include <tunables/global>' 'profile $AA /home/ci/.local/share/oab-computer/playwright/*/chromium/**/chrome flags=(unconfined) {' '  userns,' '}' | sudo tee /etc/apparmor.d/$AA >/dev/null && sudo apparmor_parser -r /etc/apparmor.d/$AA${BS}tprofile for your own data path"
 STUB_ROOT_ACTIONS="$ACT" STUB_NOFONTS=1 STUB_LINGER=no run apply --browser managed --apply-system-changes
-has apply "running: sudo apparmor_parser -r /etc/apparmor.d/oab-computer-chromium" out
+has apply "running: printf" out
+has apply "sudo tee /etc/apparmor.d/$AA" calls
+has apply "sudo apparmor_parser -r /etc/apparmor.d/$AA" calls
 has apply "running: sudo loginctl enable-linger" out
 has apply "running: sudo tailscale serve --bg --https=8444 http://127.0.0.1:8795" out
 has apply "running: sudo apt-get install -y fonts-dejavu-core" out
-a=$(line_of apply "sudo apparmor_parser -r /etc/apparmor.d/oab-computer-chromium"); i=$(line_of apply "oab-computer browser install")
+a=$(line_of apply "sudo apparmor_parser -r /etc/apparmor.d/$AA"); i=$(line_of apply "oab-computer browser install")
 l=$(line_of apply "sudo loginctl enable-linger"); s=$(line_of apply "sudo tailscale serve")
 if ! { [ -n "$a" ] && [ -n "$i" ] && [ -n "$l" ] && [ -n "$s" ] && [ "$a" -lt "$i" ] && [ "$i" -lt "$l" ] && [ "$l" -lt "$s" ]; }; then fail "apply: order is not apparmor, install, linger, serve ($a $i $l $s)"; fi
 n=$(grep -c '^oab-computer browser preflight$' "$T/apply/calls" || true)
 [ "$n" = 2 ] || fail "apply: wanted the preflight twice (before and after the root actions), saw $n"
 # Without the flag the same actions are printed and no sudo call is made, and the install still runs.
 STUB_ROOT_ACTIONS="$ACT" STUB_NOFONTS=1 run printed --browser managed
-has printed "sudo apparmor_parser -r /etc/apparmor.d/oab-computer-chromium" out
+has printed "sudo apparmor_parser -r /etc/apparmor.d/$AA" out
 has printed "sudo apt-get install -y fonts-dejavu-core" out
 has printed "NOT run" out
 no_root_ran printed
 [ -n "$(line_of printed "oab-computer browser install")" ] || fail "printed: the install did not run"
+# No root action is handed to a shell (#132): a plain command runs as argv, the AppArmor pipeline runs
+# only in its exact shape, and anything else is printed as refused, not run, and fails the install.
+# Each command below would, run by `sh -c`, create a file, expand a glob or run a substitution.
+BAD1="sudo true; touch $T/pwned-semicolon"
+BAD2="sudo echo \$(touch $T/pwned-subst)"
+BAD3="sudo echo 'quoted' $T/pwned-quote"
+BAD4="sudo echo *"
+BAD5="sudo true && touch $T/pwned-and"
+BAD6="printf '%s${BS}${BS}n' 'x' | sudo tee /etc/apparmor.d/$AA >/dev/null && sudo apparmor_parser -r /etc/apparmor.d/other; touch $T/pwned-aa"
+BAD7="printf '%s${BS}${BS}n' 'x' | sudo tee /etc/apparmor.d/$AA >/dev/null && sudo apparmor_parser -r /etc/apparmor.d/other"
+BADS="${BAD1}${BS}tr1${BS}n${BAD2}${BS}tr2${BS}n${BAD3}${BS}tr3${BS}n${BAD4}${BS}tr4${BS}n${BAD5}${BS}tr5${BS}n${BAD6}${BS}tr6${BS}n${BAD7}${BS}tr7${BS}nsudo true${BS}tthe plain one still runs"
+STUB_ROOT_ACTIONS="$BADS" run_rc refused 1 --browser managed --apply-system-changes
+for f in semicolon subst quote and aa; do
+  [ ! -e "$T/pwned-$f" ] || fail "refused: a shell ran the command that creates pwned-$f"
+done
+n=$(grep -c 'refused: not a plain command' "$T/refused/err" || true)
+[ "$n" = 7 ] || fail "refused: wanted 7 refusals, saw $n"
+has refused "failed (exit 126)" err
+# The plain command ran, none of the others reached sudo, and the install still ran.
+[ -n "$(line_of refused "sudo true")" ] || fail "refused: the plain root action did not run"
+if grep -qE 'touch|pwned|echo' "$T/refused/calls"; then fail "refused: a refused command reached sudo"; fi
+[ -n "$(line_of refused "oab-computer browser install")" ] || fail "refused: the install did not run after the refusals"
+# Argv form: every argument is its own word.
+cat >"$STUBS/sudo" <<'EOS'
+#!/bin/bash
+{ printf 'sudo'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'; } >>"$STUB_LOG"
+exit 0
+EOS
+chmod 755 "$STUBS/sudo"
+STUB_ROOT_ACTIONS="sudo apt-get install -y pkg-a pkg-b${BS}twhy" run argv --browser managed --apply-system-changes
+has argv "sudo [apt-get] [install] [-y] [pkg-a] [pkg-b]" calls
+stub sudo 'exit 0'
 # A failing root action does not stop the rest, and the exit status says so.
 cat >"$STUBS/sudo" <<'EOS'
 #!/bin/bash
