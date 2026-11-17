@@ -431,9 +431,24 @@ without that tier), `not_applicable` (nothing is installed yet) or `not_checked`
 mount tier still runs without the protection the probes did not confirm. The base tier is
 different: where the full base list cannot start at all (a user manager that refuses a property such
 as `ProtectKernelModules`, as on some Ubuntu 24.04 hosts with restricted user namespaces), the
-containment check reports `unverified` and the managed browser is unavailable until that is fixed. A listing of leftovers
-from an old setup (old units, old directories with sizes, the old profile that holds cookies) is
-not in `status` yet: use the checklist under
+containment check reports `unverified` and the managed browser is unavailable until that is fixed.
+
+Three more fields list what the old external setup left behind. They exist from the first release
+that contains L5, and they only read: `status` never stops, moves or deletes any of it (D10).
+`legacy_units` is `none` or a comma list of `oab-pw-mcp.service`, `oab-computer-pw-mcp.service`
+(unit files in `~/.config/systemd/user/`) and `drop-in:oab-computer.service.d` or
+`drop-in:oab-instance-mcp.service.d` (a drop-in directory with a `*.conf` that sets
+`MCP_UPSTREAM`; the file's content and the URL are never shown). `legacy` is `none` or a comma
+list of `<path>:<size>` for the old directories and files (`~/.local/oab-computer/pw-mcp`,
+`pw-profile`, `pw-output`, `pw-config.json`, `pw-mcp.sh`, `~/.local/oab-instance-mcp/pw-mcp`,
+`~/.cache/ms-playwright`); the old profile carries `:holds_cookies`, a link is `:symlink` and is not
+followed, and a size that could not be taken is `:size_unknown`. Sizes are apparent sizes in a
+fixed unit (`B`, `KiB`, `MiB`, `GiB`). `legacy_listener` is `8794` when a TCP socket listens on the
+old unit's port (any owner, since that port has no authentication), `none`, or `unknown` when the
+table cannot be read. The three fields say `unknown` when `HOME` is not set. When any of them shows
+something, the human output adds one line that points at
+[the cutover guide](linux-cutover.md); `--json` has the fixed fields only. Removing what they list
+is a person's job: use that guide and the checklist under
 [Removing the old browser setup after the soak](#removing-the-old-browser-setup-after-the-soak).
 
 ### Flags and environment variables
@@ -902,8 +917,11 @@ below is marked if it needs root.
 
 0.12.0 and earlier started Playwright as a separate unit, `oab-computer-pw-mcp.service`, on
 `127.0.0.1:8794`, with `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp` in the daemon unit, started
-by `poc/reverse-attach-linux/pw-mcp.sh` (kept in the tarball for one more release, to be marked
-deprecated by the release PR L5, so that a binary rollback has a script to restore). That path has no authentication on the listener
+by `poc/reverse-attach-linux/pw-mcp.sh` (kept in the tarball for one more release so that a binary
+rollback has a script to restore, and, from the first release that contains L5, marked deprecated: a
+header comment, and a notice on stderr that the old unit's journal shows each time it starts; the
+launch itself is unchanged). The script is removed in the minor release after that (D14). Moving off
+it is described in [the cutover guide](linux-cutover.md). That path has no authentication on the listener
 and no pinned downloads; it is only for a host that has not moved, or for
 `MCP_BROWSER_BACKEND=external`. Its pieces: `PW_CHROMIUM` and `PW_NODE_BIN` (the script's own
 environment, default `/usr/bin/chromium`), a persistent profile under

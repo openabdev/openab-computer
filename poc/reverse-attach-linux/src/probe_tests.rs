@@ -33,6 +33,30 @@ fn by_default_nothing_runs_and_the_vocabulary_is_fixed() {
     assert_eq!(x.hardening_mount, "not_checked");
     assert_eq!(x.hardening_unverified, "not_checked");
     assert_eq!(x.run_records, "unavailable");
+    // L5: `gather` does not look at the home directory, so the legacy fields stay `none`.
+    assert_eq!(
+        (
+            x.legacy_units.as_str(),
+            x.legacy.as_str(),
+            x.legacy_listener.as_str()
+        ),
+        ("none", "none", "none")
+    );
+    assert!(!x.legacy_present());
+}
+
+#[test]
+fn the_legacy_fields_are_set_apart_from_the_probe() {
+    let mut x = Extras::none();
+    x.set_legacy(crate::legacy::Legacy {
+        units: "oab-pw-mcp.service".into(),
+        paths: "~/.cache/ms-playwright:1 MiB".into(),
+        listener: "8794".into(),
+    });
+    assert!(x.legacy_present());
+    assert_eq!(x.legacy_units, "oab-pw-mcp.service");
+    assert_eq!(x.legacy, "~/.cache/ms-playwright:1 MiB");
+    assert_eq!(x.legacy_listener, "8794");
 }
 
 #[test]

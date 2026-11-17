@@ -35,6 +35,7 @@ mod http;
 mod http_conformance;
 mod install;
 mod jobs;
+mod legacy;
 mod manifest;
 #[cfg(test)]
 mod manifest_conformance;

@@ -23,6 +23,10 @@
 //!   not read `1` in an applied tier (`hardening.rs` holds the fixed vocabulary).
 //! - `run_records`: `ok`, `full` (a managed start would refuse with `run_records_full`) or
 //!   `unavailable` (`run/` missing, unmarked or unreadable).
+//!
+//! L5 appends three more, the legacy listing of `legacy.rs`: `legacy_units`, `legacy` and
+//! `legacy_listener`. They are filled by `Extras::set_legacy`, outside `gather`, because they look at
+//! the home directory and not at the data root.
 
 use std::path::Path;
 
@@ -43,6 +47,9 @@ pub struct Extras {
     pub hardening_mount: String,
     pub hardening_unverified: String,
     pub run_records: String,
+    pub legacy_units: String,
+    pub legacy: String,
+    pub legacy_listener: String,
 }
 
 impl Extras {
@@ -57,7 +64,27 @@ impl Extras {
             hardening_unverified: Tiers::NONE.unverified_text(),
             // Without an install root there is no `run/`.
             run_records: RunRecords::Unavailable.word().into(),
+            legacy_units: "none".into(),
+            legacy: "none".into(),
+            legacy_listener: "none".into(),
         }
+    }
+
+    /// Fills the three legacy fields (L5).
+    pub fn set_legacy(&mut self, l: crate::legacy::Legacy) {
+        self.legacy_units = l.units;
+        self.legacy = l.paths;
+        self.legacy_listener = l.listener;
+    }
+
+    /// Something of the old external setup was found (`unknown` is not a finding).
+    pub fn legacy_present(&self) -> bool {
+        crate::legacy::Legacy {
+            units: self.legacy_units.clone(),
+            paths: self.legacy.clone(),
+            listener: self.legacy_listener.clone(),
+        }
+        .present()
     }
 }
 

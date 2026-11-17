@@ -125,6 +125,9 @@ config. Verified from the laptop: click into a field → `type` → screenshot s
 Same pattern as the Mac: `@playwright/mcp` runs beside the daemon on loopback and the daemon
 re-serves its tools under its own `tools/list`, filtered by the connection's profile.
 
+- **Deprecated (D14, R7.1).** `pw-mcp.sh` ships for one more minor release and is then removed; it
+  prints a deprecation notice to stderr when it starts. Cutover and rollback:
+  [`docs/linux-cutover.md`](../../docs/linux-cutover.md).
 - `pw-mcp.sh` + systemd user unit `oab-computer-pw-mcp.service`: `@playwright/mcp@0.0.82` pinned (same
   as `poc/pw-mcp`), **headed** Chromium launched into the labwc seat (`WAYLAND_DISPLAY`,
   `XDG_RUNTIME_DIR`, `DISPLAY=:0` for labwc's Xwayland), using the distro Chromium
@@ -194,7 +197,7 @@ comment).
 | `install [--from-dir DIR]` | Installs the pinned Node.js, Playwright MCP and Chromium below `${XDG_DATA_HOME:-~/.local/share}/oab-computer/playwright/`. `--from-dir` installs from pre-fetched files in `DIR` (the basenames of the pinned URLs and of the lockfile's `resolved` URLs), hash-checked the same way, with `npm ci --offline` and no network. |
 | `update [--yes] [--from-dir DIR]` | Prompted, never silent (no terminal and no `--yes` is a refusal). Installs the new version beside the old one and keeps the old one if anything fails. |
 | `remove` | Deletes only what carries the installer's marker and prints `left in place:` for everything else. |
-| `status [--json] [--retry]` | Install state, ids, platform, whether an update is available, and (L2) `containment`, `external_configured`, `listeners` and `refusal`, and (L4) `hardening_base`, `hardening_mount`, `hardening_unverified` and `run_records`. `--json` has a fixed set of keys. `--retry` removes the unavailable latch and re-runs the containment self-test in this process. |
+| `status [--json] [--retry]` | Install state, ids, platform, whether an update is available, and (L2) `containment`, `external_configured`, `listeners` and `refusal`, and (L4) `hardening_base`, `hardening_mount`, `hardening_unverified` and `run_records`, and (from the first release that contains L5) `legacy_units`, `legacy` and `legacy_listener`, which list what an install from before the managed browser left behind and never change it. `--json` has a fixed set of keys. `--retry` removes the unavailable latch and re-runs the containment self-test in this process. |
 
 Exit codes: `0` success (including a no-op), `1` the operation failed or the preflight found a
 blocker (one `browser: <command>_failed class=<token>` line on stderr), `2` a usage error. A usage
@@ -356,7 +359,7 @@ Design: `docs/adr/linux-browser-tier.md` ("Process containment", V4, V11) and
   until the child's run record is written, and the sweep lock (waited for, up to 10 s) across the
   spawn, so `remove`, `update` and a second start cannot act between the spawn and the record.
   Run records that are not records (junk `.json` files) are pruned, and a full `run/` is its own
-  class, `run_records_full`.
+  class, `run_records_full`. A start that cannot take the sweep lock within that wait is refused with `sweep_busy`, and one whose sweep fails for any other reason with `sweep_unavailable`: no child is started that neither the lock nor a run record protects. Neither counts as a failure of the child.
 - `src/state.rs`: `open_private_base` is the base of the short temporary directories. `XDG_RUNTIME_DIR`
   is used only when it opens without following a link and is a directory of ours that others cannot
   write; otherwise `/tmp/oab-<euid>` (0700, ours), never `/tmp` itself.
