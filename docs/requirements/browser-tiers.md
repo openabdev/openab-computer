@@ -487,7 +487,9 @@ nor Chromium opens a listening socket (V12).
 - R7.5.4 Errors are a fixed boundary. Every `UpstreamError`, transport error and JSON-RPC `error`
   maps to a class string (`upstream_http_<status>`, `upstream_redirect`, `upstream_bad_body`,
   `upstream_rpc_error`, `upstream_unreachable`, `upstream_timeout`) with no upstream-supplied
-  text. Successful tool results stay passthrough. The generic `--upstream name=URL` path keeps its
+  text. Listing tools has one overall budget (the client timeout, 90 s by default) on a monotonic
+  clock that also covers `initialize`, a session reset and the retry; running out of it is
+  `playwright_timeout` on both the HTTP and the stdio client. Successful tool results stay passthrough. The generic `--upstream name=URL` path keeps its
   current behaviour.
 - R7.5.5 **Listener ownership.** Before use and on every health check, the app finds the pid that
   owns the listening socket (libproc) and compares its uid with the daemon's effective uid. If the

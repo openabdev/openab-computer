@@ -64,6 +64,43 @@ final class ManagedPlaywrightSupervisionTests: XCTestCase {
         XCTAssertTrue(l.last?.hasExited == true)
     }
 
+    func testServerProtocolListErrorsDoNotCountAsChildFailures() async throws {
+        let l = FakeLauncher(.healthy)
+        let t = ManagedPlaywrightTransport(spec: dummySpec, launcher: l, initializeTimeout: 2)
+        try await t.healthCheck()
+        let child = try XCTUnwrap(l.last)
+        // Endless distinct cursors (page cap), then the same cursor again (cycle), then a bad cursor.
+        for (mode, want) in [("endless", "tools_list_too_many_pages"), ("cycle", "tools_list_cursor_cycle"),
+                             ("bad", "tools_list_bad_cursor")] {
+            child.script.onSend = { [script = child.script] v in
+                guard let id = v["id"]?.intValue else { return }
+                guard v["method"]?.stringValue == "tools/list" else {
+                    script.feed("{\"jsonrpc\":\"2.0\",\"id\":\(id),\"result\":{}}\n"); return
+                }
+                let cur = v["params"]?["cursor"]?.stringValue
+                let n = cur.flatMap { Int($0.dropFirst()) } ?? 0
+                let next: String
+                switch mode {
+                case "endless": next = "\"nextCursor\":\"c\(n + 1)\""
+                case "cycle": next = "\"nextCursor\":\"same\""
+                default: next = "\"nextCursor\":7"
+                }
+                script.feed("{\"jsonrpc\":\"2.0\",\"id\":\(id),\"result\":{\"tools\":[{\"name\":\"t\(n)\"}],\(next)}}\n")
+            }
+            for _ in 0..<6 {   // more than the latch limit
+                do { _ = try await t.listTools(); XCTFail("expected \(want)") }
+                catch let e as PlaywrightTransportError { XCTAssertEqual(e.errorClass, want) }
+            }
+        }
+        let latched = await t.isLatched
+        XCTAssertFalse(latched)
+        let backoff = await t.nextBackoff
+        XCTAssertEqual(backoff, 1, "no failure was recorded")
+        XCTAssertFalse(child.hasExited, "the child was not terminated")
+        XCTAssertEqual(l.launches, 1)
+        let ok = await klass(t); XCTAssertEqual(ok, "ok")
+    }
+
     func testBackoffDoublesAndCaps() async throws {
         let clock = TestClock()
         let l = FakeLauncher(.dieAtStart)

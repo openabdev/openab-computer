@@ -164,7 +164,11 @@ public actor ManagedPlaywrightTransport: PlaywrightTransport {
     public func listTools() async throws -> [JSONValue] {
         try await ensureRunning()
         do { return try await client!.listTools(timeout: callTimeout) }
-        catch { await noteFailure(error); throw error }
+        catch {
+            // A cap, cycle or bad cursor is the server's answer on a live channel, not a crash or a hang.
+            if !ToolListPagination.isServerProtocolError(error) { await noteFailure(error) }
+            throw error
+        }
     }
 
     public func callTool(_ name: String, arguments: JSONValue) async throws -> JSONValue {
@@ -204,7 +208,7 @@ public actor ManagedPlaywrightTransport: PlaywrightTransport {
     private func noteFailure(_ error: Error) async {
         await noteFailureIfDead()
         guard let c = child, let cl = client,
-              (error as? PlaywrightTransportError)?.errorClass == "playwright_timeout" else { return }
+              (error as? PlaywrightTransportError)?.errorClass == ToolListPagination.budgetExhausted else { return }
         do { try await cl.ping(timeout: healthTimeout); return } catch {}
         guard child === c else { return }   // replaced while the confirming ping ran
         log("browser: playwright_hung \(c.exitInfo?.summary ?? "status=running")")
