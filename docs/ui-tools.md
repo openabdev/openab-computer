@@ -9,7 +9,7 @@ has the summary. Both tools are macOS only; the Linux AT-SPI port is deferred
 Accessibility tree of a native app's window (AXUIElement), read-only. `owner` only.
 
 - **Target.** Default: the frontmost app's focused window. `app` (bundle id or name) or `pid`
-  selects an app; `window` (title or index) or `all_windows` selects windows.
+  selects an app; `window` (a title string; existing callers may still send a native JSON integer index) or `all_windows` selects windows.
   `include_menu_bar` also walks the app's menu bar, so menu items get refs.
 - **Per node.** Role, subrole, title, value (secure fields always masked), state, frame in
   display points (the `screenshot`/`mouse` space, with display index), and a `ref` valid within
@@ -28,7 +28,7 @@ Acts on a `ui_snapshot` node by ref through the Accessibility API, without movin
 - **Arguments.** `snapshot_id` + `ref` + `action`.
 - **Actions.**
   - `press` (AXPress).
-  - `set_value` (AXValue, with `value`: string, number or bool; replaces the whole value).
+  - `set_value` (AXValue, with `value`, advertised and passed as a string, e.g. `"3"` or `"true"`; existing callers' native JSON number or bool are still accepted; replaces the whole value).
   - `focus` (sets AXFocused; never raises a window; refused where AXFocused is not settable).
   - `show_menu`, `confirm`, `cancel`, `increment`, `decrement`.
 - **Unsupported actions.** An action the element does not support is refused before anything is

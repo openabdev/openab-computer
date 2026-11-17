@@ -20,8 +20,8 @@ public struct UISnapshotTool: Tool {
         "properties": [
             "app": ["type": "string", "description": "Bundle id (com.apple.TextEdit) or app name (TextEdit). Default: frontmost app."],
             "pid": ["type": "integer", "description": "Process id. Use instead of app when several apps match."],
-            "window": ["anyOf": [["type": "string"], ["type": "integer", "minimum": 0]],
-                       "description": "Window title (exact, else case-insensitive substring) or index into the app's window list. Default: focused window."],
+            "window": ["type": "string",
+                       "description": "Window title as a string (exact, else case-insensitive substring); a string is always read as a title, even when it looks like a number. Existing callers that send a native JSON integer ≥ 0 still select that index in the app's window list. Default: focused window."],
             "all_windows": ["type": "boolean", "description": "Walk every window of the app.", "default": false],
             "include_menu_bar": ["type": "boolean", "description": "Also walk the app's menu bar, after the windows (it shares max_nodes), so menu items get refs for ui_action.", "default": false],
             "max_depth": ["type": "integer", "description": "Levels below the window.",
