@@ -1,7 +1,7 @@
 //! Outbound half of reverse attach: mint an attach secret at the runtime, dial `/tools/attach/{session}` over WebSocket, serve MCP on it with the grant's profile, redial/stop per the disposition table.
 
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::Read;
+use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
@@ -16,8 +16,54 @@ use tungstenite::{Message, WebSocket};
 use super::*;
 use crate::mcp::{answer_attached, error_response, parse_request};
 
-// mint(): replicate the Swift runtimeMintRequest contract (http/ws only)
+// mint(): replicate the Swift runtimeMintRequest contract (http/ws and https/wss)
 // ---------------------------------------------------------------------------
+
+/// Largest mint response read. A real one is a few hundred bytes of JSON.
+const MINT_MAX_BODY: u64 = 64 * 1024;
+const MINT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MINT_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const MINT_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Root certificates a `https` mint verifies the runtime against. There is no way to turn
+/// verification off. Production uses `system()`; tests build one around their own root with
+/// `with_root_der`, which only exists in test builds.
+pub(crate) struct MintTrust {
+    roots: ureq::tls::RootCerts,
+}
+
+impl MintTrust {
+    /// The system root store, the same source the dial's `rustls-tls-native-roots` reads. A
+    /// host with no usable system roots falls back to the bundled webpki roots, never to
+    /// "trust anything".
+    pub(crate) fn system() -> Self {
+        let roots = match rustls_native_certs::load_native_certs() {
+            Ok(certs) if !certs.is_empty() => ureq::tls::RootCerts::from(
+                certs
+                    .iter()
+                    .map(|c| ureq::tls::Certificate::from_der(c.as_ref()).to_owned()),
+            ),
+            _ => ureq::tls::RootCerts::WebPki,
+        };
+        MintTrust { roots }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_root_der(der: &[u8]) -> Self {
+        MintTrust {
+            roots: ureq::tls::RootCerts::from([ureq::tls::Certificate::from_der(der).to_owned()]),
+        }
+    }
+}
+
+/// Replaces every occurrence of the credential in text that may reach a log or an error.
+fn redact(text: &str, credential: &str) -> String {
+    if credential.is_empty() {
+        text.to_string()
+    } else {
+        text.replace(credential, "[redacted]")
+    }
+}
 
 pub(crate) fn mint(
     runtime: &str,
@@ -25,90 +71,118 @@ pub(crate) fn mint(
     admin_credential: &str,
     ttl_secs: u64,
 ) -> Result<(String, u64), String> {
-    // Map scheme ws->http, wss->https. Only plain http (ws://) is supported.
-    let http_base: String = if runtime.starts_with("wss://") {
+    mint_with(
+        &MintTrust::system(),
+        runtime,
+        session,
+        admin_credential,
+        ttl_secs,
+    )
+}
+
+pub(crate) fn mint_with(
+    trust: &MintTrust,
+    runtime: &str,
+    session: &str,
+    admin_credential: &str,
+    ttl_secs: u64,
+) -> Result<(String, u64), String> {
+    // Map scheme ws->http, wss->https. Plain http stays what it was: any ws:// runtime.
+    let (https, rest) = if let Some(rest) = runtime.strip_prefix("wss://") {
+        (true, rest)
+    } else if let Some(rest) = runtime.strip_prefix("ws://") {
+        (false, rest)
+    } else {
+        return Err("unsupported runtime scheme for mint: use ws:// or wss://".to_string());
+    };
+    let rest = strip_trailing_slashes(rest);
+    // The runtime string is never echoed below: it must not carry userinfo, a query or a
+    // fragment, so nothing in it can be a second credential or a redirect of the request.
+    if rest.is_empty()
+        || rest.starts_with('/')
+        || rest.chars().any(|c| {
+            c.is_control() || c.is_whitespace() || matches!(c, '@' | '?' | '#' | '\\' | '%')
+        })
+    {
         return Err(
-            "https mint not supported in PoC; use ws:// runtime or pass a pre-minted secret"
+            "runtime must be ws://host[:port][/prefix] or wss://host[:port][/prefix], \
+             with no user info, query or fragment"
                 .to_string(),
         );
-    } else if let Some(rest) = runtime.strip_prefix("ws://") {
-        format!("http://{}", rest)
-    } else {
-        return Err(format!("unsupported runtime scheme for mint: {}", runtime));
-    };
-
-    let base = strip_trailing_slashes(&http_base).to_string();
-    let url = format!("{}/admin/sessions/{}/tools-attach", base, session);
-
-    // Parse http://host[:port]/path
-    let after_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "internal: expected http scheme".to_string())?;
-    let (authority, path) = match after_scheme.find('/') {
-        Some(idx) => (&after_scheme[..idx], &after_scheme[idx..]),
-        None => (after_scheme, "/"),
-    };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) => (
-            h.to_string(),
-            p.parse::<u16>().map_err(|_| "bad port".to_string())?,
-        ),
-        None => (authority.to_string(), 80u16),
-    };
-
-    let body = json!({ "ttl_secs": ttl_secs }).to_string();
-    let request = format!(
-        "POST {path} HTTP/1.1\r\n\
-         Host: {authority}\r\n\
-         Authorization: Bearer {cred}\r\n\
-         Content-Type: application/json\r\n\
-         Content-Length: {len}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {body}",
-        path = path,
-        authority = authority,
-        cred = admin_credential,
-        len = body.len(),
-        body = body,
+    }
+    if admin_credential.chars().any(|c| c.is_control()) {
+        return Err("admin credential contains a control character".to_string());
+    }
+    let authority = rest.split('/').next().unwrap_or(rest).to_string();
+    let url = format!(
+        "{}://{}/admin/sessions/{}/tools-attach",
+        if https { "https" } else { "http" },
+        rest,
+        session
     );
+    let body = json!({ "ttl_secs": ttl_secs }).to_string();
 
-    let addr = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|e| format!("resolve failed: {e}"))?
-        .next()
-        .ok_or_else(|| "no address resolved".to_string())?;
+    let tls = ureq::tls::TlsConfig::builder()
+        .root_certs(trust.roots.clone())
+        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .https_only(https)
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .http_status_as_error(false)
+        .user_agent("oab-computer")
+        .accept_encoding("identity")
+        .tls_config(tls)
+        .timeout_connect(Some(MINT_CONNECT_TIMEOUT))
+        .timeout_per_read(Some(MINT_READ_TIMEOUT))
+        .timeout_global(Some(MINT_TOTAL_TIMEOUT))
+        .build()
+        .into();
 
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-        .map_err(|e| format!("connect failed: {e}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(15))).ok();
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("write failed: {e}"))?;
+    let mut response = agent
+        .post(&url)
+        .header("Authorization", format!("Bearer {admin_credential}"))
+        .content_type("application/json")
+        .send(body.as_str())
+        .map_err(|e| {
+            let detail = redact(&e.to_string(), admin_credential);
+            if https {
+                format!(
+                    "mint to {authority} failed: {detail} (the runtime's certificate must be \
+                     valid for that host and chain to a system root certificate)"
+                )
+            } else {
+                format!("mint to {authority} failed: {detail}")
+            }
+        })?;
 
+    let status = response.status().as_u16();
     let mut raw = Vec::new();
-    stream
+    response
+        .body_mut()
+        .as_reader()
+        .take(MINT_MAX_BODY + 1)
         .read_to_end(&mut raw)
-        .map_err(|e| format!("read failed: {e}"))?;
-    let text = String::from_utf8_lossy(&raw).to_string();
+        .map_err(|e| {
+            format!(
+                "mint response read failed: {}",
+                redact(&e.to_string(), admin_credential)
+            )
+        })?;
+    if raw.len() as u64 > MINT_MAX_BODY {
+        return Err(format!(
+            "mint response from {authority} exceeds {MINT_MAX_BODY} bytes; refused"
+        ));
+    }
+    let resp_body = redact(&String::from_utf8_lossy(&raw), admin_credential);
 
-    // Split headers / body on the first blank line.
-    let sep = text
-        .find("\r\n\r\n")
-        .map(|i| (i, 4))
-        .or_else(|| text.find("\n\n").map(|i| (i, 2)));
-    let (head, resp_body) = match sep {
-        Some((i, off)) => (&text[..i], &text[i + off..]),
-        None => (text.as_str(), ""),
-    };
-
-    let status = head
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-
+    if (300..=399).contains(&status) {
+        return Err(format!(
+            "mint HTTP {status}: the runtime redirected the request; redirects are never \
+             followed, so use the runtime's final address"
+        ));
+    }
     if !(200..=299).contains(&status) {
         return Err(format!("mint HTTP {status}: {}", resp_body.trim()));
     }
@@ -531,6 +605,10 @@ fn handshake_status(err: &tungstenite::Error) -> Option<u16> {
 #[cfg(test)]
 #[path = "client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mint_tests.rs"]
+mod mint_tests;
 
 #[cfg(test)]
 #[path = "liveness_tests.rs"]

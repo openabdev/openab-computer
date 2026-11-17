@@ -24,3 +24,6 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process", "pipe"] }
 # Synchronous HTTPS client on the same rustls ring provider. No proxy, cookie, gzip or json features.
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+# The system root store for the https mint (#140). Already in the tree through tungstenite's
+# rustls-tls-native-roots, same locked version, so no new code in the binary.
+rustls-native-certs = "0.7"

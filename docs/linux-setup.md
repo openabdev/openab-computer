@@ -597,6 +597,14 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 #   GET $U/attach lists, DELETE $U/attach/<id> revokes
 ```
 
+The runtime may be `ws://` or `wss://`. With `wss://` the daemon mints over `https` and checks the
+runtime's certificate against the system root store (the one the WebSocket dial uses, bundled
+Mozilla roots if the host has none); there is no switch to skip that check. The admin credential
+goes into one request header, is never written to a log, a file or an error message, and a redirect
+from the runtime is refused rather than followed. A bad certificate shows up as
+`mint failed: mint to HOST failed: … invalid peer certificate …`: serve the runtime with a
+certificate for the name you dial, or add its CA to the node's system roots.
+
 `"profile"` is `owner` (full control) or `observe` (look only). A request without it gets
 `observe`; up to 0.8.2 it got `owner`. Any other name is a 400
 `profile must be one of [owner, observe]`. A request for the retired `desktop` gets `observe`,
