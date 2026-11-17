@@ -510,7 +510,7 @@ fn a_row_that_is_not_there_yet_is_read_again_and_another_owner_is_never_accepted
         SameUid {
             source: Box::new(Shared(Arc::clone(f))),
         }
-        .check(client, server)
+        .check(client, server, Instant::now() + Duration::from_secs(60))
     };
     // Missing twice, then there: accepted.
     let f = flaky(2, me);
@@ -710,7 +710,7 @@ mod paging {
         let e = External::for_test("browser", &url).with_deadline(Duration::from_millis(500));
         let big = json!({"cursor": "a".repeat(64 << 20)});
         let started = Instant::now();
-        let r = e.post(&big, Duration::from_secs(30));
+        let r = e.post(&big, Some(Duration::from_secs(30)));
         assert_eq!(r.err().as_deref(), Some("upstream_timeout"));
         assert!(
             started.elapsed() < Duration::from_millis(1500),
@@ -718,5 +718,63 @@ mod paging {
             started.elapsed()
         );
         t.join().unwrap();
+    }
+}
+
+mod ordinary_calls {
+    //! `rpc` keeps the timing and the error classes it had before the listing followed cursors.
+    use super::*;
+
+    #[test]
+    fn each_post_has_the_whole_deadline() {
+        // Every reply takes 0.6 s against a 1 s deadline: three requests (initialize, the
+        // notification, the call) take longer than the deadline in all, and each one is inside it.
+        let f = fake(Box::new(|req| {
+            std::thread::sleep(Duration::from_millis(600));
+            let id = req["id"].clone();
+            match req["method"].as_str().unwrap_or("") {
+                "initialize" => http(
+                    "200 OK",
+                    "Mcp-Session-Id: s\r\nContent-Type: application/json\r\n",
+                    &json!({"jsonrpc":"2.0","id":id,"result":{}}).to_string(),
+                ),
+                "notifications/initialized" => http("202 Accepted", "", ""),
+                _ => json_ok(&id, json!({"ok": true})),
+            }
+        }));
+        let e = External::for_test("browser", &f.url).with_deadline(Duration::from_secs(1));
+        assert_eq!(e.rpc("ping", None).unwrap(), json!({"ok": true}));
+    }
+
+    #[test]
+    fn a_refused_connection_is_unreachable() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let e = External::for_test("browser", &format!("http://127.0.0.1:{port}/mcp"));
+        assert_eq!(
+            e.rpc("ping", None).err().as_deref(),
+            Some("upstream_unreachable")
+        );
+    }
+}
+
+mod owner_deadline {
+    use super::*;
+
+    #[test]
+    fn the_owner_check_ends_at_the_request_deadline() {
+        // The owner is never ours: the check retries, but not past `end`.
+        let client: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let server: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        let started = Instant::now();
+        let r = SameUid::real().check(client, server, Instant::now() + Duration::from_millis(60));
+        assert_eq!(r, Err("upstream_timeout"));
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

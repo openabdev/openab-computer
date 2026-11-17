@@ -136,14 +136,16 @@ impl Rpc<'_> {
             if crate::cancel::is_cancelled() {
                 return Err(RpcError::Cancelled);
             }
+            // Every iteration, not only after a refused write: a child that drains a little at a
+            // time never makes the write fail, and must still end by `end`.
+            if Instant::now() >= end {
+                return Err(RpcError::Timeout);
+            }
             match stdin.write(rest) {
                 Ok(0) => return Err(RpcError::Exited),
                 Ok(n) => rest = &rest[n..],
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    if Instant::now() >= end {
-                        return Err(RpcError::Timeout);
-                    }
                     std::thread::sleep(Duration::from_millis(2));
                 }
                 Err(_) => return Err(RpcError::Exited),

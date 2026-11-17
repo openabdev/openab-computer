@@ -317,3 +317,25 @@ exec sleep 30
         started.elapsed()
     );
 }
+
+#[test]
+fn a_child_that_drains_slowly_ends_the_check_by_the_deadline() {
+    // Page one names a cursor of 1 MiB; the child then takes its input a few KiB at a time, so the
+    // request for page two goes on making progress without ever finishing.
+    let script = r#"IFS= read -r line
+printf '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"Playwright"},"capabilities":{}}}\n'
+IFS= read -r line
+IFS= read -r line
+printf '{"jsonrpc":"2.0","id":2,"result":{"tools":[],"nextCursor":"'
+head -c 1048576 /dev/zero | tr '\0' a
+printf '"}}\n'
+while sleep 0.05; do head -c 4096 >/dev/null; done
+"#;
+    let started = Instant::now();
+    assert_eq!(run(script), Err(Failure::Check));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}

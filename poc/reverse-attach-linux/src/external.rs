@@ -71,7 +71,13 @@ pub fn parse_target(url: &str) -> Result<Target, &'static str> {
 
 /// Decides whether the owner of a connection is acceptable.
 pub trait OwnerCheck: Send + Sync {
-    fn check(&self, client: SocketAddr, server: SocketAddr) -> Result<(), &'static str>;
+    /// `end` is the request deadline: a check that is still waiting then fails as a timeout.
+    fn check(
+        &self,
+        client: SocketAddr,
+        server: SocketAddr,
+        end: Instant,
+    ) -> Result<(), &'static str>;
 }
 
 /// The real check: the server end of the connection belongs to this process's uid.
@@ -88,7 +94,12 @@ impl SameUid {
 }
 
 impl OwnerCheck for SameUid {
-    fn check(&self, client: SocketAddr, server: SocketAddr) -> Result<(), &'static str> {
+    fn check(
+        &self,
+        client: SocketAddr,
+        server: SocketAddr,
+        end: Instant,
+    ) -> Result<(), &'static str> {
         // The kernel lists a connection that the server has not accepted yet with uid 0 (the owner
         // of a socket is read from its file, which an unaccepted socket does not have), and a
         // connection that has only just completed may not be listed at all; `/proc/net/tcp` is also
@@ -105,7 +116,12 @@ impl OwnerCheck for SameUid {
                 return Ok(());
             }
             if read < READS {
-                std::thread::sleep(Duration::from_millis(20));
+                // The request deadline bounds the retries and the pauses between them.
+                let left = end.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err("upstream_timeout");
+                }
+                std::thread::sleep(Duration::from_millis(20).min(left));
             }
         }
         Err(procnet::UNKNOWN)
@@ -118,7 +134,7 @@ pub struct AllowAll;
 
 #[cfg(test)]
 impl OwnerCheck for AllowAll {
-    fn check(&self, _: SocketAddr, _: SocketAddr) -> Result<(), &'static str> {
+    fn check(&self, _: SocketAddr, _: SocketAddr, _: Instant) -> Result<(), &'static str> {
         Ok(())
     }
 }
@@ -197,12 +213,15 @@ impl External {
     }
 
     /// One POST on a fresh connection. Every error is a fixed class.
-    /// The request ends by `limit` at the latest, and by the client's own deadline in any case.
-    fn post(&self, msg: &Value, limit: Duration) -> Result<Reply, String> {
-        let end = Instant::now() + self.deadline.min(limit);
-        let connect = Duration::from_secs(10)
-            .min(limit)
-            .max(Duration::from_millis(1));
+    /// With `limit` (the paged listing) the request ends by `limit` at the latest, and by the
+    /// client's own deadline in any case; every step waits only for what is left of that end. With
+    /// `None` (an ordinary call) each POST has the client's deadline and the timing and error classes
+    /// it always had: a 10 s connect, a 10 s write bound reported as `upstream_unreachable`.
+    fn post(&self, msg: &Value, limit: Option<Duration>) -> Result<Reply, String> {
+        let end = Instant::now() + limit.map_or(self.deadline, |l| self.deadline.min(l));
+        let connect = limit.map_or(Duration::from_secs(10), |l| {
+            Duration::from_secs(10).min(l).max(Duration::from_millis(1))
+        });
         let sid = self.session_id.lock().ok().and_then(|g| g.clone());
         let body = msg.to_string();
         let mut stream = TcpStream::connect_timeout(&self.target.addr, connect).map_err(|e| {
@@ -217,8 +236,11 @@ impl External {
             .map_err(|_| "upstream_unreachable".to_string())?;
         // Before a single request byte: whose is the other end of this connection?
         self.owner
-            .check(local, self.target.addr)
+            .check(local, self.target.addr, end)
             .map_err(str::to_string)?;
+        if limit.is_none() {
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+        }
         let host = match self.target.addr {
             SocketAddr::V4(a) => format!("127.0.0.1:{}", a.port()),
             SocketAddr::V6(a) => format!("[::1]:{}", a.port()),
@@ -234,14 +256,22 @@ impl External {
             head.push_str(&format!("Mcp-Session-Id: {s}\r\n"));
         }
         head.push_str("\r\n");
-        // One absolute deadline for connect, owner check, write and read: each write waits only for
-        // what is left of `end`, so a server that stops reading cannot hold the request past it.
-        write_before(&mut stream, head.as_bytes(), end)?;
-        write_before(&mut stream, body.as_bytes(), end)?;
+        if limit.is_some() {
+            // One absolute deadline for connect, owner check, write and read: each write waits only
+            // for what is left of `end`, so a server that stops reading cannot hold the request
+            // past it.
+            write_before(&mut stream, head.as_bytes(), end)?;
+            write_before(&mut stream, body.as_bytes(), end)?;
+        } else {
+            stream
+                .write_all(head.as_bytes())
+                .and_then(|_| stream.write_all(body.as_bytes()))
+                .map_err(|_| "upstream_unreachable".to_string())?;
+        }
         read_reply(&mut stream, end)
     }
 
-    fn initialize(&self, limit: Duration) -> Result<(), String> {
+    fn initialize(&self, limit: Option<Duration>) -> Result<(), String> {
         let start = Instant::now();
         // Never send a stale id on initialize: the upstream answers 404 to it.
         if let Ok(mut g) = self.session_id.lock() {
@@ -255,7 +285,7 @@ impl External {
             }),
             limit,
         )?;
-        let limit = limit.saturating_sub(start.elapsed());
+        let limit = limit.map(|l| l.saturating_sub(start.elapsed()));
         if !(200..300).contains(&r.status) {
             return Err(status_class(r.status));
         }
@@ -273,15 +303,16 @@ impl External {
     }
 
     pub fn rpc(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
-        self.rpc_within(method, params, self.deadline)
+        self.rpc_within(method, params, None)
     }
 
-    /// [`External::rpc`] whose every request, a re-initialisation included, ends within `limit`.
+    /// [`External::rpc`]; with `limit` (a page of the listing) every request, a re-initialisation
+    /// included, ends within `limit`. Without it each POST keeps its own deadline.
     fn rpc_within(
         &self,
         method: &str,
         params: Option<Value>,
-        limit: Duration,
+        limit: Option<Duration>,
     ) -> Result<Value, String> {
         let r = self.rpc_inner(method, params, limit);
         match &r {
@@ -295,10 +326,10 @@ impl External {
         &self,
         method: &str,
         params: Option<Value>,
-        limit: Duration,
+        limit: Option<Duration>,
     ) -> Result<Value, String> {
         let start = Instant::now();
-        let left = || limit.saturating_sub(start.elapsed());
+        let left = || limit.map(|l| l.saturating_sub(start.elapsed()));
         if self.session_id.lock().ok().is_none_or(|g| g.is_none()) {
             self.initialize(left())?;
         }
@@ -336,7 +367,7 @@ impl External {
             self.deadline,
             self.deadline,
             |p, t| {
-                self.rpc_within("tools/list", Some(p), t)
+                self.rpc_within("tools/list", Some(p), Some(t))
                     .map_err(|_| ListFail::Rpc)
             },
             ListFail::Bad,
