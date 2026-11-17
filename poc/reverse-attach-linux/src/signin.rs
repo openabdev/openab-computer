@@ -16,7 +16,7 @@
 //! stderr is printed: failures are fixed classes.
 //!
 //! Classes: `terminal_required`, `not_installed`, `no_seat`, `profile_locked`, `launch_refused`,
-//! `spawn_failed`, `invalid_url`, `cancelled`.
+//! `spawn_failed`, `invalid_url`, `cancelled`, `browser_exited`, `timed_out`.
 
 use std::path::Path;
 use std::sync::mpsc;
@@ -133,12 +133,21 @@ impl Default for Timeouts {
     }
 }
 
+/// Why the wait ended. Only `Enter` is a finished sign-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    Enter,
+    Cancelled,
+    ChildExited,
+    TimedOut,
+}
+
 /// Runs one sign-in. `wait` returns when the person is done (Enter, a signal, the bound). Errors
 /// are fixed classes.
 pub fn run(
     s: &Setup<'_>,
     io: &mut Io<'_>,
-    wait: &mut dyn FnMut(&mut Child),
+    wait: &mut dyn FnMut(&mut Child) -> Ended,
 ) -> Result<(), &'static str> {
     if !valid_url(s.url) {
         return Err("invalid_url");
@@ -185,7 +194,7 @@ fn drive(
     child: &mut Child,
     s: &Setup<'_>,
     io: &mut Io<'_>,
-    wait: &mut dyn FnMut(&mut Child),
+    wait: &mut dyn FnMut(&mut Child) -> Ended,
 ) -> Result<(), &'static str> {
     let mut rpc = Rpc { child, next: 0 };
     let class_of = |c: &Child| match c.stderr_class() {
@@ -224,18 +233,23 @@ fn drive(
         _ => return Err(class_of(rpc.child)),
     }
     io.say("Sign in in the browser window. Press Enter here when finished.");
-    wait(rpc.child);
+    let ended = wait(rpc.child);
     // `browser_close` lets Chromium flush its cookies before the tree is stopped.
     let _ = rpc.call(
         "tools/call",
         json!({"name": "browser_close", "arguments": {}}),
         s.timeouts.close,
     );
-    Ok(())
+    match ended {
+        Ended::Enter => Ok(()),
+        Ended::Cancelled => Err("cancelled"),
+        Ended::ChildExited => Err("browser_exited"),
+        Ended::TimedOut => Err("timed_out"),
+    }
 }
 
 /// The production wait: a line on stdin, a signal, the child ending, or the bound.
-pub fn wait_for_enter(child: &mut Child) {
+pub fn wait_for_enter(child: &mut Child) -> Ended {
     let (tx, rx) = mpsc::channel::<()>();
     std::thread::spawn(move || {
         use std::io::{BufRead, Read};
@@ -244,16 +258,34 @@ pub fn wait_for_enter(child: &mut Child) {
         let _ = std::io::stdin().lock().take(64).read_line(&mut line);
         let _ = tx.send(());
     });
-    let end = Instant::now() + MAX_OPEN;
+    wait_loop(
+        || child.has_exited(),
+        &rx,
+        Instant::now() + MAX_OPEN,
+        Duration::from_millis(100),
+    )
+}
+
+/// The decision part of the wait, apart from stdin and the real child so it can be tested.
+fn wait_loop(
+    mut child_exited: impl FnMut() -> bool,
+    rx: &mpsc::Receiver<()>,
+    end: Instant,
+    tick: Duration,
+) -> Ended {
     while Instant::now() < end {
-        if crate::cancel::is_cancelled() || child.has_exited() {
-            return;
+        if crate::cancel::is_cancelled() {
+            return Ended::Cancelled;
         }
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        if child_exited() {
+            return Ended::ChildExited;
+        }
+        match rx.recv_timeout(tick) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ended::Enter,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
+    Ended::TimedOut
 }
 
 #[cfg(test)]

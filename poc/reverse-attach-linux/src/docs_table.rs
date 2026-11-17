@@ -47,11 +47,11 @@ const fn f(
 
 const FLAGS: &[Flag] = &[
     f(INSTALLER, "`--allow-login LOGIN`", "The Tailscale login that may use this node. Default: the login this node is signed in with.", &[]),
-    f(INSTALLER, "`--browser MODE`", "`managed` downloads and installs the pinned browser (after showing what it downloads and asking, unless `--yes`); `none` skips it. With no terminal and neither `--browser managed` nor `--yes`, nothing is downloaded and the installer prints the command to run later.", &[]),
+    f(INSTALLER, "`--browser MODE`", "`managed` shows what is downloaded and then downloads and installs the pinned browser without asking (the flag is the consent); `none` skips it. Without either, a terminal gets the question and no terminal means nothing is downloaded: the installer prints the command to run later.", &[]),
     f(INSTALLER, "`--no-browser`", "Same as `--browser none`. Cannot be combined with `--browser managed` or `--yes`.", &[]),
     f(INSTALLER, "`--yes`", "Agrees to the browser download without asking. It runs no root action.", &[]),
     f(INSTALLER, "`--apply-system-changes`", "Runs the root actions the installer prints (linger, `tailscale serve`, the AppArmor profile, missing libraries, fonts), each with `sudo`. Without it they are only printed.", &[]),
-    f(INSTALLER, "`--headless-seat`", "No desktop on this node: install sway and run it headless as the user unit `oab-seat.service`.", &[]),
+    f(INSTALLER, "`--headless-seat`", "No desktop on this node: run sway headless as the user unit `oab-seat.service`. sway must already be installed (`apt-get install sway`); the installer exits 78 if it is missing.", &[]),
     f(INSTALLER, "`--port N`", "The daemon's loopback port. Default 8795.", &[]),
     f(INSTALLER, "`--serve-port N`", "The HTTPS port `tailscale serve` uses. Default 8444.", &[]),
     f("`oab-computer browser plan`", "-", "Prints what an install downloads, from where, how much, and where it goes. Downloads and writes nothing.", &["plan"]),
@@ -71,11 +71,11 @@ const FLAGS: &[Flag] = &[
 
 /// `(name, read by, meaning)`.
 const ENV: &[(&str, &str, &str)] = &[
-    ("BIND", "daemon", "Listen address. The unit sets `127.0.0.1:8795`. Anything but loopback is refused unless the token and login checks are on."),
+    ("BIND", "daemon", "Listen address. The unit sets `127.0.0.1:8795`. The daemon does not refuse another address, so keep it on loopback and publish it with `tailscale serve`."),
     ("MCP_TOKEN", "daemon", "The bearer token, inline. Prefer `MCP_TOKEN_FILE`."),
     ("MCP_TOKEN_FILE", "daemon", "A file that holds the bearer token. The installer writes it with mode 600."),
-    ("MCP_ALLOW_LOGIN", "daemon", "The Tailscale login that may call without the token, by the `Tailscale-User-Login` header that `tailscale serve` adds."),
-    ("MCP_INSECURE_LOCAL", "daemon", "Allows unauthenticated loopback calls. For tests only."),
+    ("MCP_ALLOW_LOGIN", "daemon", "Comma list of Tailscale logins, matched against the `Tailscale-User-Login` header that `tailscale serve` adds. Every check that is configured must pass: with a token and a login set, a call needs both."),
+    ("MCP_INSECURE_LOCAL", "daemon", "`1` or `true` lets the daemon start with no token and no login set. It is for loopback debugging only; never set it on a node reachable through `tailscale serve`."),
     ("MCP_AUDIT_FILE", "daemon", "Where the audit log is written. Default: `$XDG_STATE_HOME` or `~/.local/state`."),
     ("MCP_GRANTS_FILE", "daemon", "Where lend grants are stored. Same default directory."),
     ("MCP_UPSTREAM", "daemon", "`name=url` entries of tool servers the daemon forwards to. Every URL must be a literal loopback address, `http://127.0.0.1:PORT` or `http://[::1]:PORT`; any other host stops the daemon with exit 64. The installer no longer writes it. Used only for the old external browser."),

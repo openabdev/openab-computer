@@ -48,6 +48,10 @@ struct Out {
 }
 
 fn go(fx: &Fx, terminal: bool, seat: Option<Seat>, url: &str) -> Out {
+    go_ended(fx, terminal, seat, url, Ended::Enter)
+}
+
+fn go_ended(fx: &Fx, terminal: bool, seat: Option<Seat>, url: &str, ended: Ended) -> Out {
     let root = fx.root();
     let l = launcher();
     let s = Setup {
@@ -70,7 +74,10 @@ fn go(fx: &Fx, terminal: bool, seat: Option<Seat>, url: &str) -> Out {
             out: &mut out,
             err: &mut err,
         },
-        &mut |_c| n += 1,
+        &mut |_c| {
+            n += 1;
+            ended
+        },
     );
     assert!(err.is_empty(), "signin wrote to stderr itself");
     Out {
@@ -168,7 +175,7 @@ fn the_failures_are_fixed_classes_and_nothing_is_started_for_the_first_four() {
             out: &mut o,
             err: &mut e,
         },
-        &mut |_| {},
+        &mut |_| Ended::Enter,
     );
     assert_eq!(r, Err("not_installed"));
 }
@@ -290,4 +297,40 @@ fn the_seat_is_the_environments_display_or_the_highest_numbered_socket() {
         (s.display.as_str(), s.runtime_dir.as_path()),
         ("wayland-2", d.as_path())
     );
+}
+
+#[test]
+fn only_enter_counts_as_a_finished_sign_in() {
+    use std::sync::mpsc;
+    let tick = Duration::from_millis(5);
+    let far = Instant::now() + Duration::from_secs(5);
+    let (tx, rx) = mpsc::channel::<()>();
+    tx.send(()).unwrap();
+    assert_eq!(wait_loop(|| false, &rx, far, tick), Ended::Enter);
+    let (_tx2, rx2) = mpsc::channel::<()>();
+    assert_eq!(wait_loop(|| true, &rx2, far, tick), Ended::ChildExited);
+    assert_eq!(
+        wait_loop(
+            || false,
+            &rx2,
+            Instant::now() + Duration::from_millis(30),
+            tick
+        ),
+        Ended::TimedOut
+    );
+}
+
+#[test]
+fn a_wait_that_did_not_end_on_enter_is_not_success() {
+    for (ended, class) in [
+        (Ended::Cancelled, "cancelled"),
+        (Ended::ChildExited, "browser_exited"),
+        (Ended::TimedOut, "timed_out"),
+    ] {
+        let fx = Fx::new(&node(OK_NAV, ""));
+        let o = go_ended(&fx, true, seat(), "about:blank", ended);
+        assert_eq!(o.result, Err(class));
+        assert_eq!(o.waits, 1);
+        assert!(crate::run_record::live(&fx.root()).is_empty());
+    }
 }

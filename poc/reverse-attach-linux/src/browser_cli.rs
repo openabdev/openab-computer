@@ -144,6 +144,8 @@ fn hint(class: &str) -> Option<&'static str> {
         "launch_refused" => "the browser could not start its sandbox; run `oab-computer browser preflight`",
         "spawn_failed" => "the browser did not start; run `oab-computer browser status`",
         "invalid_url" => "--url takes an http:// or https:// address of at most 2048 bytes, with no spaces",
+        "browser_exited" => "the browser ended before you pressed Enter; nothing was saved for certain. Run `oab-computer browser signin` again",
+        "timed_out" => "the sign-in window stayed open for 30 minutes and was closed; run `oab-computer browser signin` again",
         "cancelled" => "the sign-in was interrupted; the browser was stopped",
         "root_not_directory" => "the install root or a directory above it is a link, is not yours, or is writable by others; nothing below it was touched",
         _ => return None,
@@ -387,7 +389,7 @@ fn signin(o: &Opts<'_>, url: Option<&str>, io: &mut Io<'_>) -> i32 {
         url: url.unwrap_or("about:blank"),
         timeouts: crate::signin::Timeouts::default(),
     };
-    match crate::signin::run(&setup, io, &mut |c| crate::signin::wait_for_enter(c)) {
+    match crate::signin::run(&setup, io, &mut crate::signin::wait_for_enter) {
         Ok(()) => {
             io.say("sign-in finished: the browser is closed and the profile keeps what you signed in to");
             0

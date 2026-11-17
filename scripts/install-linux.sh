@@ -12,16 +12,18 @@
 # Idempotent. Full walkthrough: docs/linux-setup.md.
 #
 # --browser managed|none  managed: download and install the pinned browser after showing what it
-#                         downloads and asking [Y/n]; none: skip it. With no terminal and neither
-#                         --browser managed nor --yes, nothing is downloaded.
+#                         downloads, with no question (the flag is the consent); none: skip it.
+#                         Without either flag, a terminal gets the question [Y/n] and no terminal
+#                         means nothing is downloaded.
 # --no-browser            same as --browser none (kept for existing automation)
 # --yes                   agree to the browser download without asking. Runs no root action.
 # --apply-system-changes  run the root actions this script prints, each with sudo (linger,
 #                         tailscale serve, the AppArmor profile, missing libraries, fonts).
 #                         Without it they are only printed. Nothing here runs sudo by itself.
 # --headless-seat         for a server install with no desktop (Ubuntu Server, a mini PC in a
-#                         closet): installs sway and runs it headless (one 1920x1080 virtual output)
-#                         as user unit oab-seat.service. Boxes that already run a wlroots desktop
+#                         closet): needs sway already installed (apt-get install sway; exit 78
+#                         if missing) and runs it headless (one 1920x1080 virtual output) as
+#                         user unit oab-seat.service. Boxes that already run a wlroots desktop
 #                         (Raspberry Pi OS labwc, sway) do not need it.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -198,7 +200,7 @@ fi
 if [ "$UPSTREAM_IN_UNIT" = 1 ]; then
   echo "install: note: $UNITS/oab-computer.service still sets MCP_UPSTREAM (written by an older installer). It was left as it is, so --port and --allow-login did not change it. A managed browser wins over that line; remove the line at cutover (docs/linux-setup.md)." >&2
 else
-  cat >"$UNITS/oab-computer.service" <<UNIT
+  cat >"$UNITS/oab-computer.service.new" <<UNIT
 [Unit]
 Description=oab-computer (Linux hands node: /mcp + /attach)
 After=graphical-session.target
@@ -218,6 +220,13 @@ KillMode=process
 [Install]
 WantedBy=default.target
 UNIT
+  # A unit this script did not write (a hand-written one) is kept as a dated backup first.
+  if [ -f "$UNITS/oab-computer.service" ] && ! cmp -s "$UNITS/oab-computer.service" "$UNITS/oab-computer.service.new"; then
+    BAK="$UNITS/oab-computer.service.bak-$(date +%Y%m%d%H%M%S)"
+    cp -p "$UNITS/oab-computer.service" "$BAK"
+    echo "install: the existing $UNITS/oab-computer.service differed and was replaced; the old copy is at $BAK" >&2
+  fi
+  mv "$UNITS/oab-computer.service.new" "$UNITS/oab-computer.service"
 fi
 
 systemctl --user daemon-reload
@@ -282,6 +291,10 @@ browser_step() {
   fi
 }
 browser_step
+# The daemon picks its browser backend once, at start. It started before the browser existed, so
+# restart it now: a fresh node gains the browser_* tools, and a node with a stale MCP_UPSTREAM line
+# switches to the managed browser (D5).
+if [ "$BROWSER_READY" = 1 ]; then systemctl --user restart oab-computer.service; fi
 
 # ---- the remaining root actions: printed, or run with --apply-system-changes -----------------------
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then

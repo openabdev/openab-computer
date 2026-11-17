@@ -468,7 +468,8 @@ macOS:
   ([Sign in](docs/linux-setup.md#sign-in)). The profile is obfuscated with `--password-store=basic`,
   not strongly encrypted.
 - The Linux node does use a Unix domain socket: it connects, as a client, to the Wayland socket for
-  display and pointer control. It does not listen on one.
+  display and pointer control. The daemon itself does not listen on one; the managed browser's process
+  tree holds two listening Unix sockets of its own in a private `0700` directory (see above).
 - The mint call is plain `http://` only. A `wss://` runtime with `admin_credential` is refused.
 
 ## Lending this Mac to a sandboxed agent (reverse attach)

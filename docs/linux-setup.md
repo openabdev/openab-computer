@@ -102,7 +102,7 @@ namespaces, disk and missing libraries on the host in front of you.
   `tailscaled` gives every pod tailnet egress as the node (measured, see
   [`docs/adr/reverse-attach.md`](adr/reverse-attach.md)).
 - `sudo` for the root actions the installer prints (see [Root actions](#root-actions)). The
-  installer itself never runs `sudo`. Rust ≥ 1.85 (`rustup`) is needed only to build from source.
+  installer runs `sudo` only for those actions, and only when you pass `--apply-system-changes`. Rust ≥ 1.85 (`rustup`) is needed only to build from source.
 
 ```sh
 sudo apt-get install -y grim wtype python3       # + sway for --headless-seat
@@ -157,12 +157,12 @@ downloaded unless you gave `--browser managed` or `--yes`, and the installer pri
 run later (`~/.local/oab-computer/oab-computer browser install`). The installer exits 1 when you
 asked for the browser (by flag or by answering yes) and it did not install; the daemon and the
 token are then in place. If it did everything, skip to [Verify](#6-verify-from-another-tailnet-machine);
-steps 3 to 5 describe what it did. A tarball older than the managed tier has the old behavior; see
+steps 3 to 5 describe what it did. After a successful browser install it restarts the daemon once more, because the daemon chooses its browser backend when it starts. A tarball older than the managed tier has the old behavior; see
 [Old external browser](#old-external-browser-deprecated).
 
 ### Root actions
 
-The installer does not run `sudo` on its own. It collects each action that needs root, prints the
+The installer does not run `sudo` unless you pass `--apply-system-changes`. It collects each action that needs root, prints the
 exact command and why, and runs them only with `--apply-system-changes`, in this order: the
 AppArmor profile and missing libraries (before the browser install, so its health check sees them),
 then fonts, linger and `tailscale serve` at the end. `scripts/install-linux.sh` is the only entry
@@ -185,8 +185,8 @@ tab and the reason per line, for scripts.
 ```sh
 git clone https://github.com/openabdev/openab-computer ~/repo/oab-computer
 cd ~/repo/oab-computer/poc/reverse-attach-linux
-cargo build --release              # ~30 s cold on a Pi 4/5; 2.2 MB binary
-bash smoke.sh                      # 55 checks against the bundled mock runtime; all must pass
+cargo build --release              # ~30 s cold on a Pi 4/5; the stripped binary stays under 6 MiB
+bash smoke.sh                      # checks against the bundled mock runtime; all must pass
 ```
 
 `smoke.sh` runs the binary with `MCP_INSECURE_LOCAL=1` against `mock_runtime.py` on loopback.
@@ -249,8 +249,9 @@ installer wrote it), a managed install wins over it and the daemon logs one
 The daemon serves the 32 `browser_*` tools from a **managed** Playwright MCP: Node.js, the npm
 packages and Chromium that `oab-computer browser install` downloads once, pinned by size and SHA-256
 into the binary, into your own data directory. The daemon starts it on the first `browser_*` call
-as a child talking over stdin and stdout, and stops it with the daemon. It opens no TCP, UDP or Unix
-listener and does not use port `8794`. This is the same design as macOS
+as a child talking over stdin and stdout, and stops it with the daemon. The daemon starts it with no
+TCP port to listen on and does not use port `8794`. The child's own Unix sockets are described under
+[Ports](#ports). This is the same design as macOS
 ([Browser tools](browser-tools.md)); this section is what differs on Linux.
 
 ```sh
@@ -300,8 +301,10 @@ needed, unless you install from files (see [Offline install](#offline-install)).
 - Unlike macOS, the downloaded Node.js gets no code-signature check, only the pinned SHA-256.
   There is no quarantine step on Linux.
 - The Chromium it installs is a browser: the connections it makes while running are Chromium's,
-  not the installer's. On the pinned build it opened no listening TCP or UDP socket, and it exits
-  when its stdin closes.
+  not the installer's. Whether the pinned build opens a listening TCP or UDP socket, and whether it
+  exits when its stdin closes, has not been measured yet (open verification items V2 and V3 in the
+  [ADR](adr/linux-browser-tier.md)); the daemon stops the child's whole process tree itself when it
+  stops it.
 - The install adds no unit and no listener. An update is only ever offered, never applied silently.
 - The figures come from the manifest in `release/playwright-pins/`; the release check
   (`scripts/playwright-pins.py`, run in CI) fails if they drift, and a test fails if this page
@@ -405,11 +408,11 @@ To change it, edit that file and run `OAB_UPDATE_DOCS=1 cargo test --release doc
 | Command | Flag | What it does |
 | --- | --- | --- |
 | `scripts/install-linux.sh` | `--allow-login LOGIN` | The Tailscale login that may use this node. Default: the login this node is signed in with. |
-| `scripts/install-linux.sh` | `--browser MODE` | `managed` downloads and installs the pinned browser (after showing what it downloads and asking, unless `--yes`); `none` skips it. With no terminal and neither `--browser managed` nor `--yes`, nothing is downloaded and the installer prints the command to run later. |
+| `scripts/install-linux.sh` | `--browser MODE` | `managed` shows what is downloaded and then downloads and installs the pinned browser without asking (the flag is the consent); `none` skips it. Without either, a terminal gets the question and no terminal means nothing is downloaded: the installer prints the command to run later. |
 | `scripts/install-linux.sh` | `--no-browser` | Same as `--browser none`. Cannot be combined with `--browser managed` or `--yes`. |
 | `scripts/install-linux.sh` | `--yes` | Agrees to the browser download without asking. It runs no root action. |
 | `scripts/install-linux.sh` | `--apply-system-changes` | Runs the root actions the installer prints (linger, `tailscale serve`, the AppArmor profile, missing libraries, fonts), each with `sudo`. Without it they are only printed. |
-| `scripts/install-linux.sh` | `--headless-seat` | No desktop on this node: install sway and run it headless as the user unit `oab-seat.service`. |
+| `scripts/install-linux.sh` | `--headless-seat` | No desktop on this node: run sway headless as the user unit `oab-seat.service`. sway must already be installed (`apt-get install sway`); the installer exits 78 if it is missing. |
 | `scripts/install-linux.sh` | `--port N` | The daemon's loopback port. Default 8795. |
 | `scripts/install-linux.sh` | `--serve-port N` | The HTTPS port `tailscale serve` uses. Default 8444. |
 | `oab-computer browser plan` | - | Prints what an install downloads, from where, how much, and where it goes. Downloads and writes nothing. |
@@ -428,11 +431,11 @@ To change it, edit that file and run `OAB_UPDATE_DOCS=1 cargo test --release doc
 
 | Variable | Read by | Meaning |
 | --- | --- | --- |
-| `BIND` | daemon | Listen address. The unit sets `127.0.0.1:8795`. Anything but loopback is refused unless the token and login checks are on. |
+| `BIND` | daemon | Listen address. The unit sets `127.0.0.1:8795`. The daemon does not refuse another address, so keep it on loopback and publish it with `tailscale serve`. |
 | `MCP_TOKEN` | daemon | The bearer token, inline. Prefer `MCP_TOKEN_FILE`. |
 | `MCP_TOKEN_FILE` | daemon | A file that holds the bearer token. The installer writes it with mode 600. |
-| `MCP_ALLOW_LOGIN` | daemon | The Tailscale login that may call without the token, by the `Tailscale-User-Login` header that `tailscale serve` adds. |
-| `MCP_INSECURE_LOCAL` | daemon | Allows unauthenticated loopback calls. For tests only. |
+| `MCP_ALLOW_LOGIN` | daemon | Comma list of Tailscale logins, matched against the `Tailscale-User-Login` header that `tailscale serve` adds. Every check that is configured must pass: with a token and a login set, a call needs both. |
+| `MCP_INSECURE_LOCAL` | daemon | `1` or `true` lets the daemon start with no token and no login set. It is for loopback debugging only; never set it on a node reachable through `tailscale serve`. |
 | `MCP_AUDIT_FILE` | daemon | Where the audit log is written. Default: `$XDG_STATE_HOME` or `~/.local/state`. |
 | `MCP_GRANTS_FILE` | daemon | Where lend grants are stored. Same default directory. |
 | `MCP_UPSTREAM` | daemon | `name=url` entries of tool servers the daemon forwards to. Every URL must be a literal loopback address, `http://127.0.0.1:PORT` or `http://[::1]:PORT`; any other host stops the daemon with exit 64. The installer no longer writes it. Used only for the old external browser. |
@@ -496,8 +499,9 @@ your version:
 #   enable_auth=true
 #   username=<a user name you choose>
 #   password=<a password you choose>
-#   rsa_private_key_file=rsa_key.pem    # key from: ssh-keygen -m pem -f ~/.config/wayvnc/rsa_key.pem -t rsa -N ""
-WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/$(id -u) wayvnc 127.0.0.1 5900
+#   use_relative_paths=true
+#   rsa_private_key_file=rsa_key.pem    # relative to this file; key from: ssh-keygen -m pem -f ~/.config/wayvnc/rsa_key.pem -t rsa -N ""
+WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/$(id -u) wayvnc --config ~/.config/wayvnc/config 127.0.0.1 5900
 
 # on your machine
 ssh -N -L 5900:127.0.0.1:5900 <node>     # then point a VNC viewer at 127.0.0.1:5900
@@ -534,7 +538,7 @@ curl -s -X POST $U/mcp -H "Authorization: Bearer $TOKEN" -H 'Content-Type: appli
   | python3 -c 'import sys,json;print([t["name"] for t in json.load(sys.stdin)["result"]["tools"]])'
 ```
 
-Expect the five local tools plus 32 `browser_*` (owner surface; direct `/mcp` is always owner).
+Expect the local tools plus 32 `browser_*` (with the managed browser installed; the daemon must have been restarted after the install, which the installer does) (owner surface; direct `/mcp` is always owner).
 
 **OpenAB Connect Screens pane:** Add a Mac screen with Name `<host>`, URL
 `https://<host>.<tailnet>.ts.net:8444/mcp`, Display `0`, the token above, Max FPS `1`. Frames are
@@ -649,7 +653,7 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
 - **Seat**: `sway` with `WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman`
   as `oab-seat.service`; `~/.config/sway/config` declares `output HEADLESS-1 1920x1080`. sway
   ignores `WAYLAND_DISPLAY` and takes the first free socket name — usually **`wayland-1`** — so
-  the installer reads the socket back from `/run/user/<uid>` and writes that into both units.
+  the installer reads the socket back from `/run/user/<uid>` and writes that into the daemon unit.
 - **Chromium**: the pinned Chrome for Testing build that `browser install` downloads (Ubuntu's own
   is a snap, unusable from a user unit). Ubuntu 24.04 restricts unprivileged user namespaces with
   AppArmor and Chromium's sandbox aborts with `No usable sandbox!`; `browser preflight` prints the
@@ -716,7 +720,7 @@ What a box with no desktop needed beyond the Pi, all handled by `install-linux.s
   concerns only the old external listener; the managed child has no host check to pass.
 - **A stale upstream `Mcp-Session-Id` must be dropped before re-`initialize`**, or the upstream
   404s the initialize too and the browser tools never come back after a Playwright restart.
-  Fixed in the daemon; symptom was `tools/list` shrinking to the five local tools. External path
+  Fixed in the daemon; symptom was `tools/list` shrinking to the local tools. External path
   only.
 - **The daemon's `/attach` refuses loopback callers** without `Tailscale-User-Login` by design;
   use the `tailscale serve` URL even from the node itself.
@@ -760,7 +764,7 @@ installer does on each kind of host:
 | --- | --- | --- |
 | New: nothing from before | Writes the daemon unit without `MCP_UPSTREAM`, asks about the browser. | Nothing. |
 | New-style unit: `oab-computer-pw-mcp.service` from 0.12.0, and an `MCP_UPSTREAM` line inside `oab-computer.service` | Warns, with the exact command to turn the unit off. Leaves `oab-computer.service` byte for byte as it is when it still has the `MCP_UPSTREAM` line (it rewrites it otherwise), and still replaces the binary and restarts the daemon. | After `browser status` shows the managed browser working: `systemctl --user disable --now oab-computer-pw-mcp.service`, then remove the `MCP_UPSTREAM` line (back it up first), `daemon-reload`, restart. |
-| Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line and leaves the drop-in alone. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. |
+| Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line (an existing different `oab-computer.service` is kept first as `oab-computer.service.bak-<time>`) and leaves the drop-in alone. If `oab-instance-mcp.service` (0.11 or earlier) is still live it holds port 8795: the installer warns and does not check the daemon; disable that unit first (`systemctl --user disable --now oab-instance-mcp.service`) and restart `oab-computer.service`. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. |
 
 A plain `systemctl stop` is not enough: those units come back at the next login or boot, and each
 is an unauthenticated Playwright on loopback `8794`. While the old unit and its line exist, a
@@ -781,13 +785,23 @@ Only a person does this, after the managed browser has run for about a week with
 installer never deletes any of it. Take the old paths from your inventory of the host; each command
 below is marked if it needs root.
 
-1. Disable the old unit if you have not yet, then delete its file and the drop-in, and reload.
-   No root:
+1. Find what the host has. No root:
 
    ```sh
-   systemctl --user disable --now oab-pw-mcp.service oab-computer-pw-mcp.service   # whichever you had
-   rm ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
-   rm ~/.config/systemd/user/oab-computer.service.d/*upstream*.conf       # the MCP_UPSTREAM drop-in, if any
+   ls ~/.config/systemd/user/ | grep -E 'pw-mcp|oab-instance-mcp'
+   grep -l MCP_UPSTREAM ~/.config/systemd/user/oab-computer.service.d/*.conf \
+     ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null     # the drop-in file or files
+   ```
+
+   Disable each old unit that exists, then delete exactly the files that listing printed (for
+   example `oab-pw-mcp.service`, or `oab-computer-pw-mcp.service`, and the drop-in file it named),
+   then reload. `rm -f` does not fail on a file the host never had. Do not delete a drop-in the
+   `grep` did not list: others may belong to something else. No root:
+
+   ```sh
+   systemctl --user disable --now oab-pw-mcp.service oab-computer-pw-mcp.service   # whichever exist
+   rm -f ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
+   rm -f <each drop-in file the grep printed>
    systemctl --user daemon-reload
    ```
 
@@ -795,14 +809,17 @@ below is marked if it needs root.
 
    ```sh
    du -sh ~/.local/oab-computer/pw-mcp ~/.local/oab-computer/pw-profile ~/.local/oab-instance-mcp/pw-mcp
-   rm -r ~/.local/oab-computer/pw-mcp ~/.local/oab-computer/pw-profile ~/.local/oab-computer/pw-config.json ~/.local/oab-computer/pw-mcp.sh
-   rm -r ~/.cache/ms-playwright    # only if nothing else of yours uses Playwright's cache
+   rm -rf ~/.local/oab-computer/pw-mcp ~/.local/oab-computer/pw-profile ~/.local/oab-instance-mcp/pw-mcp
+   rm -f ~/.local/oab-computer/pw-config.json ~/.local/oab-computer/pw-mcp.sh
+   rm -rf ~/.cache/ms-playwright    # only if nothing else of yours uses Playwright's cache
    ```
 
-3. Delete the old AppArmor profile that allowed `/home/*/.cache/ms-playwright/...`. **Root:**
+3. Unload the old AppArmor profile that allowed `/home/*/.cache/ms-playwright/...`, then delete
+   it (in this order: once the file is gone the profile can no longer be unloaded by name).
+   **Root:**
 
    ```sh
-   sudo rm /etc/apparmor.d/playwright-chromium && sudo apparmor_parser -R /etc/apparmor.d/playwright-chromium
+   sudo apparmor_parser -R /etc/apparmor.d/playwright-chromium && sudo rm /etc/apparmor.d/playwright-chromium
    ```
 
    The profile for the managed browser is a different file, `/etc/apparmor.d/oab-computer-chromium`,

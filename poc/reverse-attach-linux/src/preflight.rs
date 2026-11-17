@@ -526,7 +526,7 @@ pub fn evaluate(m: &Manifest, sel: &Selection<'_>, f: &Facts, needed_disk: u64) 
             .collect();
         r.root_actions.push(RootAction {
             command: format!(
-                "sudo apt-get install {}",
+                "sudo apt-get install -y {}",
                 pkgs.into_iter().collect::<Vec<_>>().join(" ")
             ),
             reason: "package names for the libraries this build links against; packages already installed are skipped"

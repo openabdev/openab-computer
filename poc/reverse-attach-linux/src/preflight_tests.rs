@@ -119,7 +119,7 @@ fn every_missing_library_is_listed_in_one_run_with_a_root_action_that_is_only_pr
     assert_eq!(r.root_actions.len(), 1);
     let a = &r.root_actions[0];
     assert!(
-        a.command.starts_with("sudo apt-get install libasound2 "),
+        a.command.starts_with("sudo apt-get install -y libasound2 "),
         "{}",
         a.command
     );
