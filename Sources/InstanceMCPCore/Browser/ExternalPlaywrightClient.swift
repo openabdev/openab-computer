@@ -68,8 +68,10 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
     }
 
     public func listTools() async throws -> [JSONValue] {
-        let r = try await rpc("tools/list", params: [:])
-        return r["tools"]?.arrayValue ?? []
+        // The client timeout is the overall deadline; see ToolListPagination for the paging rules.
+        try await ToolListPagination.collect(deadline: timeout) { params, left in
+            try await self.rpc("tools/list", params: params, timeout: left)
+        }
     }
 
     public func callTool(_ name: String, arguments: JSONValue) async throws -> JSONValue {
@@ -78,13 +80,13 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
 
     // MARK: wire
 
-    private func rpc(_ method: String, params: JSONValue) async throws -> JSONValue {
+    private func rpc(_ method: String, params: JSONValue, timeout: TimeInterval? = nil) async throws -> JSONValue {
         if sessionID == nil { try await initialize() }
-        var (status, body, _) = try await post(Self.message(method, params))
+        var (status, body, _) = try await post(Self.message(method, params), timeout: timeout)
         if status == 400 || status == 404 {
             if status == 400 { await closeSession() } else { sessionID = nil }   // 404: already gone upstream
             try await initialize()
-            (status, body, _) = try await post(Self.message(method, params))
+            (status, body, _) = try await post(Self.message(method, params), timeout: timeout)
         }
         try Self.check(status)
         return try Self.result(body)
