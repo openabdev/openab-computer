@@ -6,8 +6,11 @@
 //!   `T` is field 22 of `/proc/<pid>/stat`, so a reused PID is not mistaken for the recorded process.
 //!   `state::live_run_records` reads only `pid` and `start`; the other fields are ours.
 //! - Bounded: a record is at most `RUN_RECORD_CAP` (4 KiB), at most `MAX_RECORDS` are read, dead
-//!   ones are pruned on every write, and a `run/` with `MAX_RECORDS` or more record files or more
-//!   than `SCAN_LIMIT` entries is `saturated`: writes and the sweep refuse (fail closed). `run/` must carry its marker; without it nothing is written.
+//!   ones and `.json` files that are not a record at all (junk) are pruned on every write, and a
+//!   `run/` with more than `MAX_RECORDS` record files or more than `SCAN_LIMIT` entries is
+//!   `saturated`: the sweep refuses (fail closed), because a name past the cap is not read. A write
+//!   is refused (`run_records_full`) once `MAX_RECORDS` files remain after pruning. `run/` must
+//!   carry its marker; without it nothing is written.
 //! - Reached only through directory fds with `O_NOFOLLOW` (`state.rs`), created 0600.
 //! - A record names no profile path, URL, token or stderr text: a PID, a start time and two fixed
 //!   strings.
@@ -94,28 +97,45 @@ fn parse(name: &str, bytes: &[u8]) -> Option<Record> {
 struct Scan {
     /// Every parsable record, with the identity of the file that was read.
     records: Vec<(Record, Stat)>,
+    /// `.json` names that are neither the latch nor the refusal, with the identity of each one
+    /// that could not be read or is not a record: junk, which `prune_in` removes.
+    junk: Vec<(String, Stat)>,
     /// `.json` names that are neither the latch nor the refusal: parsable or not.
     candidates: usize,
     /// More than `SCAN_LIMIT` directory entries: the listing is incomplete.
     overflow: bool,
+    /// The directory could not be listed at all.
+    unreadable: bool,
 }
 
 impl Scan {
-    /// Full, or too large to be sure nothing is hidden. Callers fail closed on it.
+    /// Too large to be sure nothing is hidden: a name past `MAX_RECORDS` is counted, not read, and
+    /// an unreadable directory cannot be shown to be empty. The sweep fails closed on it. Exactly
+    /// `MAX_RECORDS` files are all read, so they are not saturated (#132).
     fn saturated(&self) -> bool {
-        self.overflow || self.candidates >= MAX_RECORDS
+        self.overflow || self.candidates > MAX_RECORDS
+    }
+
+    /// Whether one more record would exceed the cap, counting only what a prune would leave.
+    fn full_after_prune(&self) -> bool {
+        let dead = self.records.iter().filter(|(r, _)| !r.is_live()).count();
+        let removable = dead + self.junk.len();
+        self.overflow || self.candidates.saturating_sub(removable) >= MAX_RECORDS
     }
 }
 
 fn scan(run: &OwnedFd) -> Scan {
     let mut s = Scan {
         records: Vec::new(),
+        junk: Vec::new(),
         candidates: 0,
         overflow: false,
+        unreadable: false,
     };
     let Ok(dir) = rustix::fs::Dir::read_from(run) else {
         // An unreadable directory cannot be shown to be empty.
         s.overflow = true;
+        s.unreadable = true;
         return s;
     };
     let mut names = Vec::new();
@@ -138,9 +158,16 @@ fn scan(run: &OwnedFd) -> Scan {
         }
     }
     for n in names {
-        if let Ok((bytes, id)) = state::read_file_id(run, &n, RUN_RECORD_CAP) {
-            if let Some(r) = parse(&n, &bytes) {
-                s.records.push((r, id));
+        match state::read_file_id(run, &n, RUN_RECORD_CAP) {
+            Ok((bytes, id)) => match parse(&n, &bytes) {
+                Some(r) => s.records.push((r, id)),
+                None => s.junk.push((n, id)),
+            },
+            // Not a small regular file: junk too, if it can be identified to remove exactly it.
+            Err(_) => {
+                if let Ok(Some(id)) = state::lstat_at(run, &n) {
+                    s.junk.push((n, id));
+                }
             }
         }
     }
@@ -171,6 +198,40 @@ pub fn live(root: &Root) -> Vec<Record> {
         .collect()
 }
 
+/// Whether the run records can take one more, for `browser status`: `Ok`, `Full` (a managed start
+/// would refuse with `run_records_full` even after pruning) or `Unavailable` (`run/` missing,
+/// unmarked or unreadable). Reads only; nothing is pruned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunRecords {
+    Ok,
+    Full,
+    Unavailable,
+}
+
+impl RunRecords {
+    pub fn word(self) -> &'static str {
+        match self {
+            RunRecords::Ok => "ok",
+            RunRecords::Full => "full",
+            RunRecords::Unavailable => "unavailable",
+        }
+    }
+}
+
+pub fn state(root: &Root) -> RunRecords {
+    let Ok(run) = open_run(root) else {
+        return RunRecords::Unavailable;
+    };
+    let s = scan(&run);
+    if s.unreadable {
+        RunRecords::Unavailable
+    } else if s.full_after_prune() {
+        RunRecords::Full
+    } else {
+        RunRecords::Ok
+    }
+}
+
 /// Dead records, as `(name, unit)`, removed. The unit is returned so the caller can stop it.
 pub fn prune_dead(root: &Root) -> Vec<(String, Option<String>)> {
     let Ok(run) = open_run(root) else {
@@ -181,10 +242,17 @@ pub fn prune_dead(root: &Root) -> Vec<(String, Option<String>)> {
 
 fn prune_in(run: &OwnedFd) -> Vec<(String, Option<String>)> {
     let mut gone = Vec::new();
-    for (r, id) in read_all(run) {
+    let s = scan(run);
+    for (r, id) in s.records {
         if !r.is_live() && state::unlink_if_same(run, &r.name, &id).is_ok() {
             gone.push((r.name, r.unit));
         }
+    }
+    // A `.json` file in `run/` that is not a record (a crash that left a torn file, or a stray
+    // one) counts against the cap but could never be pruned, so it blocked every managed start for
+    // good. `run/` is marker-gated (`open_run`) and only the identity that was read is removed.
+    for (name, id) in s.junk {
+        let _ = state::unlink_if_same(run, &name, &id);
     }
     gone
 }
@@ -218,7 +286,10 @@ pub fn write(root: &Root, kind: &str, pid: u32, unit: Option<&str>) -> R<Handle>
     let start = state::proc_start_time(pid).ok_or(Fail("run_record_invalid"))?;
     let run = open_run(root)?;
     prune_in(&run);
-    if scan(&run).saturated() {
+    // One more must fit: refuse when `MAX_RECORDS` files remain, and when the listing is
+    // incomplete (fail closed).
+    let s = scan(&run);
+    if s.overflow || s.candidates >= MAX_RECORDS {
         return Err(Fail("run_records_full"));
     }
     let name = format!("{kind}-{pid}.json");
