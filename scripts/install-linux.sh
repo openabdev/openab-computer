@@ -53,8 +53,16 @@ case "$BROWSER_MODE" in ""|managed|none) ;; *) usage_err "--browser takes manage
 [ "$NO_BROWSER" = 0 ] || [ "$YES" = 0 ] || usage_err "--no-browser and --yes contradict each other"
 [ "$BROWSER_MODE" != none ] || [ "$YES" = 0 ] || usage_err "--browser none and --yes contradict each other"
 [ "$NO_BROWSER" = 0 ] || BROWSER_MODE=none
-# These values are written into unit files and shell commands: digits and a plain login only.
-case "$PORT$SERVE_PORT" in *[!0-9]*|"") usage_err "--port and --serve-port take numbers";; esac
+# These values are written into unit files and shell commands: digits and a plain login only. Each
+# port on its own: an empty one must not hide behind the other (it would write `BIND=127.0.0.1:`).
+valid_port() {
+  case "$1" in ""|*[!0-9]*) return 1;; esac
+  [ "${#1}" -le 5 ] && [ "$((10#$1))" -ge 1 ] && [ "$((10#$1))" -le 65535 ]
+}
+case "$PORT" in ""|*[!0-9]*) usage_err "--port and --serve-port take numbers";; esac
+case "$SERVE_PORT" in ""|*[!0-9]*) usage_err "--port and --serve-port take numbers";; esac
+valid_port "$PORT" || usage_err "--port takes a port number from 1 to 65535"
+valid_port "$SERVE_PORT" || usage_err "--serve-port takes a port number from 1 to 65535"
 case "$ALLOW_LOGIN" in *[[:space:]]*|*[\"\'\\\$\`]*) usage_err "--allow-login must not contain spaces or quotes";; esac
 case "$USER" in *[!A-Za-z0-9_.-]*|"") usage_err "unexpected user name '$USER'";; esac
 
@@ -68,6 +76,29 @@ want_root() { ROOT_CMDS+=("$1"); ROOT_WHY+=("$2"); }
 # flush_root: print the pending root actions; with --apply-system-changes run them with sudo.
 # Sets ROOT_RAN=1 when something ran. The list is empty afterwards.
 ROOT_RAN=0
+# run_root CMD: runs one root action without handing it to a shell, or refuses it (#132). The
+# commands come from this script and from the installer's own binary, so this is not a trust
+# boundary, but nothing needs a shell to interpret them: a plain command is split on spaces and run
+# as argv, and the one command that is a pipeline, the AppArmor profile load the preflight prints, is
+# run through `sh -c` only when it matches that exact shape (quoted profile lines, the same
+# /etc/apparmor.d file named twice). Anything else is refused, printed, and counted as failed.
+ROOT_PLAIN_RE='^[A-Za-z0-9 _./:=@%+,-]+$'
+ROOT_AA_LINE="'[A-Za-z0-9 _./<>,*{}=()@+-]*'"
+ROOT_AA_RE="^printf '%s\\\\n'( ${ROOT_AA_LINE})+ [|] sudo tee (/etc/apparmor[.]d/[A-Za-z0-9_.-]+) >/dev/null && sudo apparmor_parser -r (/etc/apparmor[.]d/[A-Za-z0-9_.-]+)\$"
+run_root() {
+  local cmd="$1" argv=()
+  if [[ $cmd =~ $ROOT_PLAIN_RE ]]; then
+    read -r -a argv <<<"$cmd"
+    "${argv[@]}"
+    return
+  fi
+  if [[ $cmd =~ $ROOT_AA_RE ]] && [ "${BASH_REMATCH[2]}" = "${BASH_REMATCH[3]}" ]; then
+    sh -c "$cmd"
+    return
+  fi
+  echo "  refused: not a plain command, and not the AppArmor profile load: $cmd" >&2
+  return 126
+}
 flush_root() {
   local i rc
   [ "${#ROOT_CMDS[@]}" -gt 0 ] || return 0
@@ -80,7 +111,7 @@ flush_root() {
     if [ "$APPLY" = 1 ]; then
       echo "  running: ${ROOT_CMDS[$i]}"
       echo "    why: ${ROOT_WHY[$i]}"
-      rc=0; sh -c "${ROOT_CMDS[$i]}" || rc=$?
+      rc=0; run_root "${ROOT_CMDS[$i]}" || rc=$?
       if [ "$rc" = 0 ]; then ROOT_RAN=1; else echo "  failed (exit $rc): ${ROOT_CMDS[$i]}" >&2; ROOT_FAILED=1; fi
     else
       echo "  ${ROOT_CMDS[$i]}"

@@ -4,7 +4,7 @@
 //! child through the production code (`Supervisor`, `Systemd`), speaks `initialize` and
 //! `tools/list`, navigates to a `data:` URL, takes a snapshot, writes the transcript summary and
 //! then waits to be killed with `SIGKILL`. The outer script proves that nothing survives.
-//! Unit names use the `oab-l2-test-` prefix. No TCP listener is opened.
+//! Unit names use the `oab-l4-test-` prefix. No TCP listener is opened.
 
 use std::io::Write;
 use std::sync::Arc;
@@ -36,8 +36,8 @@ fn e2e_daemon_harness() {
     let base = std::path::PathBuf::from(base);
     let root = crate::state::Root::open(&base, false).unwrap().unwrap();
     let mut sd = Systemd::new(Some(root.abs_path().to_path_buf()), true);
-    sd.selftest_prefix = "oab-l2-test-selftest".into();
-    sd.browser_prefix = "oab-l2-test-browser".into();
+    sd.selftest_prefix = format!("{}-selftest", crate::test_exec::TEST_UNIT_PREFIX);
+    sd.browser_prefix = format!("{}-browser", crate::test_exec::TEST_UNIT_PREFIX);
     let mech: Arc<dyn Mechanism> = Arc::new(sd);
     let avail = Arc::new(Availability::new(mech));
     let mut cfg = Config::production(base);
@@ -126,8 +126,8 @@ fn e2e_router_case() {
     let env = crate::backend::EnvIn::from_env();
     let ups = crate::backend::build_with(&env, &base, &|data_root| {
         let mut sd = Systemd::new(data_root, true);
-        sd.selftest_prefix = "oab-l2-test-selftest".into();
-        sd.browser_prefix = "oab-l2-test-browser".into();
+        sd.selftest_prefix = format!("{}-selftest", crate::test_exec::TEST_UNIT_PREFIX);
+        sd.browser_prefix = format!("{}-browser", crate::test_exec::TEST_UNIT_PREFIX);
         Arc::new(sd)
     });
     // The background verification is done within a few seconds.

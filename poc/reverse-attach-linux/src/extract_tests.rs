@@ -1514,3 +1514,42 @@ fn a_zip_symlink_with_a_wrong_crc_is_refused() {
         "symlink crc",
     );
 }
+
+/// #147: an extracted script must be runnable the moment `extract` returns. `end_file` closes the
+/// writer before the next entry, so after the other threads' forks have let go of their copies of
+/// the descriptor (`settle`), `exec` cannot hit ETXTBSY. Forks run continuously while it happens.
+#[test]
+fn an_extracted_script_runs_right_after_extract_while_other_threads_fork() {
+    use std::process::Command;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+    let stop = Arc::new(AtomicBool::new(false));
+    let forkers: Vec<_> = (0..2)
+        .map(|_| {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = Command::new("/bin/true").status();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            })
+        })
+        .collect();
+    let ents = [
+        E::D("bin"),
+        E::F("bin/run.sh", b"#!/bin/sh\nexit 0\n", 0o755),
+    ];
+    for (format, bytes) in both(&ents) {
+        for _ in 0..10 {
+            let (fx, _) = extract_ok(format, &bytes, &lim());
+            let script = fx.stage.join("bin/run.sh");
+            crate::test_exec::settle(&script);
+            let st = Command::new(&script).status().expect("first exec");
+            assert!(st.success(), "{format:?}");
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    for f in forkers {
+        f.join().unwrap();
+    }
+}

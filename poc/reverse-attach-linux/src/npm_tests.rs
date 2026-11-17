@@ -7,8 +7,7 @@ fn staging(t: &TempDir, node_script: &str) -> PathBuf {
     std::fs::create_dir_all(s.join("node/bin")).unwrap();
     std::fs::create_dir_all(s.join("pkg")).unwrap();
     let n = s.join("node/bin/node");
-    std::fs::write(&n, node_script).unwrap();
-    std::fs::set_permissions(&n, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::write_exec(&n, node_script.as_bytes());
     s
 }
 

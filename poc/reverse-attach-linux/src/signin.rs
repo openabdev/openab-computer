@@ -15,8 +15,9 @@
 //! the existing `screenshot`, `mouse` and `key` tools (D8). Nothing from a page, a tool result or
 //! stderr is printed: failures are fixed classes.
 //!
-//! Classes: `terminal_required`, `not_installed`, `no_seat`, `profile_locked`, `launch_refused`,
-//! `spawn_failed`, `invalid_url`, `cancelled`, `browser_exited`, `timed_out`, `close_failed`.
+//! Classes: `terminal_required`, `not_installed`, `no_seat`, `profile_locked`, `lock_held`,
+//! `launch_refused`, `spawn_failed`, `invalid_url`, `cancelled`, `browser_exited`, `timed_out`,
+//! `close_failed`.
 
 use std::path::Path;
 use std::sync::mpsc;
@@ -43,9 +44,13 @@ pub fn valid_url(u: &str) -> bool {
     if u == "about:blank" {
         return true;
     }
+    // Something must follow the scheme that matched: `http://a` is a target, `http://` is not. (The
+    // length check used to compare against `https://` for both schemes.)
+    let rest = u
+        .strip_prefix("https://")
+        .or_else(|| u.strip_prefix("http://"));
     u.len() <= MAX_URL
-        && (u.starts_with("http://") || u.starts_with("https://"))
-        && u.len() > "https://".len()
+        && rest.is_some_and(|r| !r.is_empty())
         && !u.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
@@ -155,6 +160,11 @@ pub fn run(
     if !s.is_terminal {
         return Err("terminal_required");
     }
+    // Held shared from the first look at the install until the browser has its run record: a
+    // concurrent `remove` (exclusive) cannot pass its live-record guard in the window between the
+    // spawn and the record, and delete what the browser runs from (#132).
+    let install_lock =
+        state::SharedLock::try_acquire(s.root, Duration::from_secs(2)).map_err(|_| "lock_held")?;
     let rec = match state::read_state(s.root) {
         Ok(State::Installed(r)) => r,
         Ok(State::NotInstalled) => return Err("not_installed"),
@@ -184,6 +194,8 @@ pub fn run(
         .launcher
         .launch(s.root, &spec, &v.version_dir)
         .map_err(|_| "spawn_failed")?;
+    // The launcher wrote the run record before it returned.
+    drop(install_lock);
     let result = drive(&mut launched.child, s, io, wait);
     launched.child.stop();
     drop(launched);

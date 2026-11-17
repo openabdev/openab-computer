@@ -193,7 +193,6 @@ fn the_stderr_ring_keeps_only_the_newest_bytes() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_detached_grandchild_under_the_scope_is_killed_and_a_lookalike_outside_survives() {
-    use std::os::unix::fs::PermissionsExt;
     let t = TempDir::new();
     let scope = t.path.join("staging");
     let outside = t.path.join("outside");
@@ -202,8 +201,7 @@ fn a_detached_grandchild_under_the_scope_is_killed_and_a_lookalike_outside_survi
     for d in [&scope, &outside] {
         std::fs::create_dir_all(d.join("bleeper")).unwrap();
         let bin = d.join("bleeper").join("sleep");
-        std::fs::copy("/bin/sleep", &bin).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_exec::copy_exec(std::path::Path::new("/bin/sleep"), &bin);
     }
     let mut look = std::process::Command::new(outside.join("bleeper/sleep"))
         .arg("300")
@@ -357,9 +355,7 @@ fn kill_matching_honours_protect_and_the_exe_test() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::create_dir_all(dir.join("sleeper")).unwrap();
     let exe = dir.join("sleeper").join("sleep");
-    std::fs::copy("/bin/sleep", &exe).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::copy_exec(std::path::Path::new("/bin/sleep"), &exe);
     let mut a = std::process::Command::new(&exe).arg("30").spawn().unwrap();
     let mut b = std::process::Command::new(&exe).arg("30").spawn().unwrap();
     let scope = t.path.join("scope");
@@ -465,4 +461,43 @@ fn a_reaped_leaders_group_number_is_not_signalled() {
         "the group of a reaped leader was signalled by number"
     );
     crate::proc::kill_pid_checked(pid, &|_| true);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refusal_printed_just_before_exit_is_never_missed() {
+    // Read the class the moment stdout ends, with no sleep in between: the stderr reader thread may
+    // still be draining, and an empty ring would call a sandbox refusal a plain failure.
+    for _ in 0..60 {
+        let t = TempDir::new();
+        let mut c = Child::spawn(
+            &sh("echo 'No usable sandbox' >&2; exit 1", &t.path),
+            false,
+            true,
+            1024,
+            &t.path,
+        )
+        .unwrap();
+        let rx = c.lines.take().unwrap();
+        let _ = rx.recv_timeout(Duration::from_secs(5));
+        assert_eq!(c.stderr_class(), StderrClass::LaunchRefused);
+        assert!(c.stderr_sandbox_refused());
+        c.stop();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_child_that_prints_nothing_on_stderr_is_classified_without_waiting_for_a_timeout() {
+    let t = TempDir::new();
+    let mut c = Child::spawn(&sh("exit 0", &t.path), false, true, 1024, &t.path).unwrap();
+    let rx = c.lines.take().unwrap();
+    let _ = rx.recv_timeout(Duration::from_secs(5));
+    let started = Instant::now();
+    assert_eq!(c.stderr_class(), StderrClass::None);
+    assert!(
+        started.elapsed() < Duration::from_millis(240),
+        "waited for the cap"
+    );
+    c.stop();
 }

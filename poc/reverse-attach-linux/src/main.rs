@@ -28,6 +28,7 @@ mod e2e_tests;
 mod elf;
 mod external;
 mod extract;
+mod hardening;
 mod health;
 mod http;
 #[cfg(test)]
@@ -52,6 +53,8 @@ mod sigstop;
 mod state;
 mod stdio_client;
 mod sweep;
+#[cfg(test)]
+mod test_exec;
 mod tools;
 mod unit;
 #[cfg(test)]

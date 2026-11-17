@@ -139,6 +139,67 @@ pub fn open_dir_at(dir: &impl AsFd, name: &str) -> R<OwnedFd> {
     Ok(fd)
 }
 
+/// Longest `XDG_RUNTIME_DIR` accepted as the base of a short temporary directory: Chromium puts a
+/// Unix socket below it, and a socket path over about 100 bytes is refused.
+const SHORT_BASE_MAX: usize = 40;
+
+/// The directory under which a short private temporary directory is created, opened as an fd so
+/// every later step works relative to what was checked.
+///
+/// `candidate` (the caller reads `XDG_RUNTIME_DIR`) is used only when it is an absolute path of at
+/// most 40 bytes that opens without following a link (`O_NOFOLLOW`) and is a directory owned by the
+/// effective user that nobody else can write to. Anything else, including a symlinked or
+/// group-writable directory, falls back to a per-user private directory `oab-<euid>` below the
+/// shared temp directory: created 0700 if absent, and refused unless it is a real directory owned
+/// by us with mode exactly 0700. The shared temp directory itself is never the base.
+pub fn open_private_base(candidate: Option<&Path>) -> R<(OwnedFd, PathBuf)> {
+    open_private_base_in(candidate, Path::new("/tmp"), euid())
+}
+
+pub(crate) fn open_private_base_in(
+    candidate: Option<&Path>,
+    shared_tmp: &Path,
+    uid: u32,
+) -> R<(OwnedFd, PathBuf)> {
+    if let Some(c) = candidate.filter(|c| c.is_absolute() && c.as_os_str().len() <= SHORT_BASE_MAX)
+    {
+        let opened = rustix::fs::open(
+            c,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        );
+        if let Ok(fd) = opened {
+            if rustix::fs::fstat(&fd).is_ok_and(|st| st.st_uid == uid && private_dir(&st)) {
+                return Ok((fd, c.to_path_buf()));
+            }
+        }
+    }
+    let tmp = rustix::fs::open(
+        shared_tmp,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| Fail("tmp_unavailable"))?;
+    let name = format!("oab-{uid}");
+    match rustix::fs::mkdirat(&tmp, name.as_str(), Mode::from_raw_mode(0o700)) {
+        Ok(()) => {}
+        Err(e) if e == rustix::io::Errno::EXIST => {}
+        Err(_) => return Err(Fail("tmp_unavailable")),
+    }
+    let fd = rustix::fs::openat(
+        &tmp,
+        name.as_str(),
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| Fail("tmp_unavailable"))?;
+    let st = rustix::fs::fstat(&fd).map_err(|_| Fail("tmp_unavailable"))?;
+    if !is_dir(&st) || st.st_uid != uid || mode_bits(&st) != 0o700 {
+        return Err(Fail("tmp_unavailable"));
+    }
+    Ok((fd, shared_tmp.join(name)))
+}
+
 /// `mkdirat` (mode 0700 unless told otherwise) then `open_dir_at`. The directory is fresh, so a
 /// refusal here means somebody raced us.
 pub fn create_dir_at(dir: &impl AsFd, name: &str) -> R<OwnedFd> {
@@ -507,6 +568,33 @@ impl Lock {
         loop {
             match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockExclusive) {
                 Ok(()) => return Ok(Lock { _fd: fd }),
+                Err(rustix::io::Errno::WOULDBLOCK) | Err(rustix::io::Errno::INTR) => {}
+                Err(_) => return Err(IO),
+            }
+            if started.elapsed() >= wait || crate::cancel::is_cancelled() {
+                return Err(Fail("lock_held"));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// A shared hold on `.install.lock`, for a process that starts a child while `install`, `update`
+/// and `remove` (which take the exclusive [`Lock`]) must not run. Any number may hold it at once.
+/// Dropping it releases it.
+pub struct SharedLock {
+    _fd: OwnedFd,
+}
+
+impl SharedLock {
+    /// Takes `.install.lock` shared, retrying a non-blocking `flock` every 100 ms for `wait`.
+    /// `lock_held` when an exclusive holder (or a cancel) outlasts it.
+    pub fn try_acquire(root: &Root, wait: Duration) -> R<SharedLock> {
+        let fd = open_lock_file(root)?;
+        let started = Instant::now();
+        loop {
+            match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockShared) {
+                Ok(()) => return Ok(SharedLock { _fd: fd }),
                 Err(rustix::io::Errno::WOULDBLOCK) | Err(rustix::io::Errno::INTR) => {}
                 Err(_) => return Err(IO),
             }

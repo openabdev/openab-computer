@@ -265,20 +265,10 @@ struct ShortTmp {
 
 impl ShortTmp {
     fn create() -> R<ShortTmp> {
-        // `XDG_RUNTIME_DIR` is private to the user where it exists; `/tmp` otherwise. Either is a
-        // short path.
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute() && p.as_os_str().len() <= 40 && p.is_dir());
-        let base = runtime.unwrap_or_else(|| PathBuf::from("/tmp"));
-        let parent = rustix::fs::open(
-            &base,
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|_| state::IO)?;
+        // `XDG_RUNTIME_DIR` where it is a private directory of ours; a per-user private directory
+        // below `/tmp` otherwise (never `/tmp` itself). Either is a short path.
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        let (parent, base) = state::open_private_base(runtime.as_deref()).map_err(|_| state::IO)?;
         let name = format!("oab-hc-{}", state::random_hex(6));
         let fd = state::create_dir_at(&parent, &name)?;
         if let Err(e) = state::write_new_file(&fd, OWNED_DATA, MARKER_TEXT, 0o600) {
@@ -546,8 +536,10 @@ fn build(
 
 // Tests only: runs between the rename into place and the record write.
 #[cfg(test)]
+type RootHook = Box<dyn Fn(&Root)>;
+#[cfg(test)]
 thread_local! {
-    pub(crate) static AFTER_RENAME: std::cell::RefCell<Option<Box<dyn Fn(&Root)>>> =
+    pub(crate) static AFTER_RENAME: std::cell::RefCell<Option<RootHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -921,6 +913,19 @@ impl Status {
         );
         m.insert("listeners".into(), self.extras.listeners.clone().into());
         m.insert("refusal".into(), self.extras.refusal.clone().into());
+        m.insert(
+            "hardening_base".into(),
+            self.extras.hardening_base.clone().into(),
+        );
+        m.insert(
+            "hardening_mount".into(),
+            self.extras.hardening_mount.clone().into(),
+        );
+        m.insert(
+            "hardening_unverified".into(),
+            self.extras.hardening_unverified.clone().into(),
+        );
+        m.insert("run_records".into(), self.extras.run_records.clone().into());
         Value::Object(m).to_string()
     }
 
@@ -942,6 +947,10 @@ impl Status {
             format!("external_configured: {}", self.extras.external_configured),
             format!("listeners: {}", self.extras.listeners),
             format!("refusal: {}", self.extras.refusal),
+            format!("hardening_base: {}", self.extras.hardening_base),
+            format!("hardening_mount: {}", self.extras.hardening_mount),
+            format!("hardening_unverified: {}", self.extras.hardening_unverified),
+            format!("run_records: {}", self.extras.run_records),
         ]
     }
 }

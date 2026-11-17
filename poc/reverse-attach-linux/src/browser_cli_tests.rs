@@ -296,7 +296,7 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
         good_facts(),
         None,
     );
-    assert_eq!(r.out.lines().count(), 14);
+    assert_eq!(r.out.lines().count(), 18);
     assert!(r.out.lines().all(|l| l.contains(": ")));
     assert!(r.out.contains("state: installed") && r.out.contains("installed_id: test-id-1"));
     let r = exec(
@@ -315,7 +315,7 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
     assert_eq!(v["update_available"], false);
     assert_eq!(v["pins_match"], true);
     assert_eq!(v["previous"], Value::Null);
-    assert_eq!(v.as_object().unwrap().len(), 14);
+    assert_eq!(v.as_object().unwrap().len(), 18);
 
     // update without a yes, then declined, then confirmed.
     let u = Cmd::Update {

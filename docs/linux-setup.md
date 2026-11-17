@@ -406,7 +406,22 @@ one, runs the health check, and keeps the old one if the check fails. Without a 
 the install path, the Chromium revision, any pending cleanup, the containment mode, whether an
 external configuration is present (yes or no, no URL), the listener count and the last recorded
 refusal, with no URL, token or page data; `--json` emits only fixed fields. `status --retry` clears
-the "unavailable after failures" latch and runs the containment check again. A listing of leftovers
+the "unavailable after failures" latch and runs the containment check and the hardening probes again.
+
+Four more fields say how far the hardening of the browser's unit is verified on this host. Each is
+checked by its effect, not by whether systemd accepted the property: `hardening_base` is `verified`
+when every base probe saw its effect, `partial` when some did not, `unverified` when the check or the
+base probe could not run, and `not_checked` unless `--retry` ran it. `hardening_mount` is `verified`,
+`partial`, `unverified` (a `--retry` check ran and failed), `dropped` (this host's user manager starts the unit but does not apply `PrivateTmp`,
+`ProtectHome` and `ProtectSystem`, or none of their effects could be observed, so the browser runs
+without that tier), `not_applicable` (nothing is installed yet) or `not_checked`.
+`hardening_unverified` names the probe tokens that did not read `1` in a tier that is applied
+(`none` when all did). `run_records` is `ok`, `full` (a managed start would be refused with
+`run_records_full`) or `unavailable`. A tier that is `partial` or `dropped` is reported, not hidden: the
+mount tier still runs without the protection the probes did not confirm. The base tier is
+different: where the full base list cannot start at all (a user manager that refuses a property such
+as `ProtectKernelModules`, as on some Ubuntu 24.04 hosts with restricted user namespaces), the
+containment check reports `unverified` and the managed browser is unavailable until that is fixed. A listing of leftovers
 from an old setup (old units, old directories with sizes, the old profile that holds cookies) is
 not in `status` yet: use the checklist under
 [Removing the old browser setup after the soak](#removing-the-old-browser-setup-after-the-soak).
@@ -492,7 +507,7 @@ its own after you press Enter: run `~/.local/oab-computer/oab-computer browser s
 the daemon) to bring it back. If the
 terminal closes before Enter (end of input, for example a dropped SSH session), the sign-in counts
 as `cancelled`, not as finished. Its failure classes are `terminal_required`, `not_installed`,
-`no_seat`, `profile_locked`, `launch_refused`, `spawn_failed`, `invalid_url`, `cancelled`,
+`no_seat`, `profile_locked`, `lock_held` (an install, update or remove holds the install lock), `launch_refused`, `spawn_failed`, `invalid_url`, `cancelled`,
 `browser_exited`, `close_failed` (the browser did not confirm its close, so the login may not be saved), `timed_out`, `install_invalid`, `state_unavailable` and `tmp_unavailable`; none prints page data. Killing the command with `kill -9` leaves its unit running until the bound (30 minutes for
 sign-in, 5 minutes for an install's health check) or the next sweep, which a later `browser`
 command that starts a child runs.

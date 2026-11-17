@@ -194,7 +194,7 @@ comment).
 | `install [--from-dir DIR]` | Installs the pinned Node.js, Playwright MCP and Chromium below `${XDG_DATA_HOME:-~/.local/share}/oab-computer/playwright/`. `--from-dir` installs from pre-fetched files in `DIR` (the basenames of the pinned URLs and of the lockfile's `resolved` URLs), hash-checked the same way, with `npm ci --offline` and no network. |
 | `update [--yes] [--from-dir DIR]` | Prompted, never silent (no terminal and no `--yes` is a refusal). Installs the new version beside the old one and keeps the old one if anything fails. |
 | `remove` | Deletes only what carries the installer's marker and prints `left in place:` for everything else. |
-| `status [--json] [--retry]` | Install state, ids, platform, whether an update is available, and (L2) `containment`, `external_configured`, `listeners` and `refusal`. `--json` has a fixed set of keys. `--retry` removes the unavailable latch and re-runs the containment self-test in this process. |
+| `status [--json] [--retry]` | Install state, ids, platform, whether an update is available, and (L2) `containment`, `external_configured`, `listeners` and `refusal`, and (L4) `hardening_base`, `hardening_mount`, `hardening_unverified` and `run_records`. `--json` has a fixed set of keys. `--retry` removes the unavailable latch and re-runs the containment self-test in this process. |
 
 Exit codes: `0` success (including a no-op), `1` the operation failed or the preflight found a
 blocker (one `browser: <command>_failed class=<token>` line on stderr), `2` a usage error. A usage
@@ -227,9 +227,9 @@ mechanism, and a router picks which Playwright serves `browser_*`. Design:
   (`KillMode=control-group`, `BindsTo` and `After` the daemon unit, `NoNewPrivileges`, `MemoryMax`,
   `TasksMax`, and the mount namespace tier where a probe shows it works). The command is
   `/usr/bin/env -i -C <dir> NAME=value ... node ...`, so the unit inherits nothing from the user
-  manager. A self-test (two fixture units, a `SIGKILL` of the parent's main process, then a check
-  that the bound unit and every process in its cgroup are gone and not revived when the parent
-  restarts under `Restart=always`) must pass on the host before any child is started. Otherwise the
+  manager. A self-test (two fixture units, the parent with the daemon's `KillMode=process`, a
+  `SIGKILL` of the parent's main process, then a check that the bound unit and every process in its
+  cgroup are gone and not revived when the parent restarts under `Restart=always`) must pass on the host before any child is started. Otherwise the
   backend is `unavailable: containment_unverified`. The daemon must be the main process of its own
   unit, or the answer is `daemon_not_unit_main`. The fixture design is this module's own: the ADR
   names the mechanism and says nothing about the fixture.
@@ -245,8 +245,9 @@ mechanism, and a router picks which Playwright serves `browser_*`. Design:
   flight, a bounded write queue, `ping` for the health check (2 s), `notifications/cancelled` on a
   timeout. Errors are fixed classes (`upstream_timeout`, `upstream_bad_body`, `upstream_rpc_error`,
   `upstream_unreachable`, `upstream_busy`); no child text reaches one.
-- `src/sweep.rs`, `src/run_record.rs`: the sweep before every child start (`.sweep.lock`, skipped
-  while another start holds it) kills same-user processes whose executable is under a version or
+- `src/sweep.rs`, `src/run_record.rs`: the sweep before every child start (`.sweep.lock`; a start
+  that goes on to spawn waits up to 10 s for it and keeps it until its record exists, and the
+  non-blocking form is skipped while another start holds it) kills same-user processes whose executable is under a version or
   staging directory of the root, through a pidfd, except what a live run record claims. The same
   rule protects a sibling when a child is stopped: `Child::stop` walks the version directory too, and
   it now leaves alone what another live run record claims (`sweep::others_live`), so a sign-in and
@@ -297,8 +298,80 @@ and the docs claim only "no TCP or UDP port").
 
 The tests: the pure parts run anywhere; process, `/proc` and `systemd` tests are Linux-only. The
 tests that need a user manager are `#[ignore]`d and run with `OAB_L2_SYSTEMD=1 cargo test --release
-containment -- --ignored`; the end-to-end harness (`src/e2e_tests.rs`) runs as the main process of a
-transient unit with `OAB_L2_E2E=1`. Their units are named `oab-l2-test-*`.
+-- --ignored --test-threads=1 containment`; the end-to-end harness (`src/e2e_tests.rs`) runs as the main
+process of a transient unit with `OAB_L2_E2E=1`. Their units are named `oab-l4-test-*`.
+
+## Managed Playwright tier, L4: hardening tiers, probes and the self-test fixture (#119)
+
+Design: `docs/adr/linux-browser-tier.md` ("Process containment", V4, V11) and
+`docs/requirements/linux-browser-tier.md` (R6.2, R6.4, section 3.1 item 7).
+
+- `src/hardening.rs`: two tiers, each checked by its effect and not by whether systemd accepted the
+  property. The **base tier** is the ADR list (`NoNewPrivileges`, `RestrictSUIDSGID`,
+  `LockPersonality`, `RestrictRealtime`, `ProtectKernelTunables`, `ProtectKernelModules`,
+  `ProtectControlGroups`, `UMask=0077`, `MemoryMax`, `TasksMax`), always applied. The **mount tier**
+  (`PrivateTmp`, `ProtectHome=read-only`, `ProtectSystem=full`, `ReadWritePaths` of the data root and
+  the child's `TMPDIR`) is applied only where its probe shows that the child can write what it needs
+  and that `ProtectHome=read-only` is not without effect (V11). The probes run in a transient unit
+  that carries the production property list (`unit::base_props` and `unit::mount_props`, the same
+  functions `run_args` uses) and print `token=1|0|na`:
+
+  | Tier | Token | What the probe observes |
+  | --- | --- | --- |
+  | base | `no_new_privs` | `NoNewPrivs: 1` in `/proc/self/status` |
+  | base | `seccomp_filter` | `Seccomp: 2` (the `Restrict*` and `LockPersonality` options install a filter) |
+  | base | `umask` | the unit's umask is `0077` |
+  | base | `memory_max`, `tasks_max` | the unit's cgroup holds `memory.max` and `pids.max` with the requested values (absent when the controller is not delegated: `na`) |
+  | base | `kernel_tunables`, `control_groups` | `/proc/sys` and `/sys/fs/cgroup` are read-only mounts |
+  | base | `kernel_modules` | the modules directory cannot be entered |
+  | mount | `private_tmp` | `/tmp` is a bind mount of a `systemd-private-*` directory |
+  | mount | `protect_home` | the home directory is not writable (only when it is writable on the host) |
+  | mount | `protect_system` | `/etc` is a read-only mount (only when it is not on the host) |
+  | mount | `rw_paths` | the data root and the child's `TMPDIR` are writable |
+
+  `1` means the effect is seen, `0` that it is absent, `na` that this host cannot show it either
+  way. A tier is `verified` only when every token is `1`; `0` and `na` both mean not verified, and
+  nothing reports a tier as active that its probe did not verify. The base probe unit must start (the
+  child's unit carries a superset of its properties and would fail the same way); the effects it finds
+  are reported, not gating. The scripts are plain `sh` builtins with host values as positional
+  parameters, and contain no `%` (whether systemd reads `%%` as `%` in a transient command depends on
+  its version); `$` is doubled.
+- The self-test fixture (`src/containment.rs`) has the daemon's shape. Its parent unit has
+  `Restart=always` and `KillMode=process`, and starts a straggler in its own cgroup that must still
+  be alive after the parent's main process is killed with `SIGKILL`; the child unit is bound to it
+  (`BindsTo`, `KillMode=control-group`), and must be gone within 5 s, with every process that was in
+  its cgroup, and must not come back when the parent restarts. Cleanup proves itself: each unit is
+  killed whole (`--kill-whom=all`), stopped and reset, and the test fails unless every unit reads
+  `inactive` or `failed`, none is listed, and no process the fixture started remains (by pid and
+  start time). Leftover fixture and probe units of a crashed run are killed the same way before the
+  next self-test. A failed `systemctl show` is a failed query: `Sys::show` returns `None`, never an
+  empty answer.
+- `browser status` gains four fixed fields, after the existing ones: `hardening_base`
+  (`not_checked`, `verified`, `partial`, `unverified`), `hardening_mount` (`not_checked`, `verified`,
+  `partial`, `dropped`, `not_applicable`), `hardening_unverified` (`not_checked`, `none`, or a comma
+  list of probe tokens) and `run_records` (`ok`, `full`, `unavailable`). They read `not_checked`
+  unless `--retry` ran the self-test and the probes in this process. The daemon logs one line after
+  its own check: `browser: hardening base=... mount=... unverified=...`.
+- Start serialization: `Supervisor::start` holds `.install.lock` shared from the read of the install
+  until the child's run record is written, and the sweep lock (waited for, up to 10 s) across the
+  spawn, so `remove`, `update` and a second start cannot act between the spawn and the record.
+  Run records that are not records (junk `.json` files) are pruned, and a full `run/` is its own
+  class, `run_records_full`.
+- `src/state.rs`: `open_private_base` is the base of the short temporary directories. `XDG_RUNTIME_DIR`
+  is used only when it opens without following a link and is a directory of ours that others cannot
+  write; otherwise `/tmp/oab-<euid>` (0700, ours), never `/tmp` itself.
+- `src/elf.rs`: every offset read from a file goes through a checked add, and a table larger than
+  its cap is refused instead of read short.
+- `src/test_exec.rs` (tests only): write, `fsync`, close, then wait until no process holds the file
+  open for writing (`settle`), because another test thread's `fork` can hold a copy of the writer's
+  descriptor until its own `exec` and make `exec` of the new file fail with `ETXTBSY` (#147). A
+  bounded retry on `ETXTBSY` exists in test helpers only; production code never retries.
+
+Real-systemd tests are `#[ignore]`d and run on a host with a user manager with
+`OAB_L2_SYSTEMD=1 cargo test --release -- --ignored --test-threads=1 containment`; every unit they
+make is named `oab-l4-test-*` and each test ends with none left (`systemctl --user list-units
+'oab-l4-test-*' --all`). An optional workflow, `.github/workflows/linux-systemd.yml`, runs them on
+the CI runners that can provide a user manager. It is not a required check.
 
 ## Not yet (vs the Swift implementation)
 

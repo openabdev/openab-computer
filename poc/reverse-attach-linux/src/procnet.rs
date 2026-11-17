@@ -119,19 +119,55 @@ fn inet_rows(src: &dyn Source, v6: bool, proto: &str) -> std::io::Result<Vec<Row
     Ok(parse_inet(&src.table(&name)?, v6))
 }
 
-/// The uid that owns the server end of the connection `client -> server`: the row of the table whose
-/// local address is `server` and whose remote address is `client`. `Err(listener_owner_unknown)` when
-/// the table cannot be read or has no such row.
+/// `a` with an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) turned into the plain IPv4 address.
+fn canonical(a: SocketAddr) -> SocketAddr {
+    SocketAddr::new(a.ip().to_canonical(), a.port())
+}
+
+/// The uid that owns the server end of the connection `client -> server`: the row whose local
+/// address is `server` and whose remote address is `client`. `Err(listener_owner_unknown)` when
+/// the table cannot be read, has no such row, or has rows of more than one uid.
+///
+/// An IPv4 server may be a dual-stack listener: an `AF_INET6` socket bound to `::` shows its IPv4
+/// peers in `tcp6` as `::ffff:a.b.c.d`. So for an IPv4 server `tcp` and `tcp6` are both searched, and
+/// addresses are compared in their canonical form; an IPv6 server searches `tcp6` only. The table of
+/// the server's own family must be readable. `tcp6` as the second table for an IPv4 server is
+/// best effort (a host without IPv6 has none): an unreadable one can only hide a row, which is
+/// `listener_owner_unknown` anyway, never turn a missing row into a match.
 pub fn peer_owner_uid(
     src: &dyn Source,
     client: SocketAddr,
     server: SocketAddr,
 ) -> Result<u32, &'static str> {
-    let rows = inet_rows(src, server.is_ipv6(), "tcp").map_err(|_| UNKNOWN)?;
-    rows.iter()
-        .find(|r| r.local == server && r.remote == client)
-        .map(|r| r.uid)
-        .ok_or(UNKNOWN)
+    let (client, server) = (canonical(client), canonical(server));
+    let mut uids: Vec<u32> = Vec::new();
+    let mut search = |v6: bool, required: bool| -> Result<(), &'static str> {
+        let rows = match inet_rows(src, v6, "tcp") {
+            Ok(r) => r,
+            Err(_) if required => return Err(UNKNOWN),
+            Err(_) => return Ok(()),
+        };
+        for r in rows {
+            if canonical(r.local) == server
+                && canonical(r.remote) == client
+                && !uids.contains(&r.uid)
+            {
+                uids.push(r.uid);
+            }
+        }
+        Ok(())
+    };
+    if server.is_ipv6() {
+        search(true, true)?;
+    } else {
+        search(false, true)?;
+        search(true, false)?;
+    }
+    match uids.as_slice() {
+        [uid] => Ok(*uid),
+        // No row, or rows that disagree about the owner: fail closed.
+        _ => Err(UNKNOWN),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

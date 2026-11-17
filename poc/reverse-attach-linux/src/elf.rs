@@ -72,11 +72,18 @@ struct Load {
     filesz: u64,
 }
 
+/// `a + b`, or `Malformed` when the sum does not fit: every offset below comes from the file.
+fn add(a: u64, b: u64) -> Result<u64, ElfError> {
+    a.checked_add(b).ok_or(ElfError::Malformed)
+}
+
+/// The file offset of virtual address `v`, `None` when no segment holds it. An offset that does
+/// not fit in 64 bits is `None` too (a header lying about where its segment sits).
 fn vaddr_to_off(loads: &[Load], v: u64) -> Option<u64> {
     loads
         .iter()
         .find(|l| v >= l.vaddr && v - l.vaddr < l.filesz)
-        .map(|l| l.off + (v - l.vaddr))
+        .and_then(|l| l.off.checked_add(v - l.vaddr))
 }
 
 /// `GLIBC_2.28` to `(2, 28)`. Patch levels (`GLIBC_2.2.5`) keep their first two numbers.
@@ -123,13 +130,11 @@ pub fn read_elf(path: &Path) -> Result<ElfInfo, ElfError> {
     let mut interp: Option<(u64, u64)> = None;
     let mut dynamic: Option<(u64, u64)> = None;
     for i in 0..phnum {
-        let o = phoff
-            .checked_add(i as u64 * phentsize)
-            .ok_or(ElfError::Malformed)?;
+        let o = add(phoff, i as u64 * phentsize)?;
         let ty = r.u32(o)?;
-        let off = r.u64(o + 8)?;
-        let vaddr = r.u64(o + 16)?;
-        let filesz = r.u64(o + 32)?;
+        let off = r.u64(add(o, 8)?)?;
+        let vaddr = r.u64(add(o, 16)?)?;
+        let filesz = r.u64(add(o, 32)?)?;
         match ty {
             1 => loads.push(Load { vaddr, off, filesz }),
             3 => interp = Some((off, filesz)),
@@ -150,14 +155,19 @@ pub fn read_elf(path: &Path) -> Result<ElfInfo, ElfError> {
     let Some((doff, dsz)) = dynamic else {
         return Ok(info);
     };
-    let count = (dsz / 16).min(MAX_DYN as u64) as usize;
+    // A table larger than its cap is refused, not read short: a truncated table would report a
+    // clean answer for a file we did not fully read. The dynamic section must also sit in the file.
+    if dsz % 16 != 0 || dsz / 16 > MAX_DYN as u64 || add(doff, dsz)? > len {
+        return Err(ElfError::Malformed);
+    }
+    let count = (dsz / 16) as usize;
     let mut needed_offs = Vec::new();
     let (mut strtab, mut strsz) = (0u64, 0u64);
     let (mut verneed, mut verneednum, mut verdef, mut verdefnum) = (0u64, 0u64, 0u64, 0u64);
     for i in 0..count {
-        let o = doff + i as u64 * 16;
+        let o = add(doff, i as u64 * 16)?;
         let tag = r.u64(o)?;
-        let val = r.u64(o + 8)?;
+        let val = r.u64(add(o, 8)?)?;
         match tag {
             0 => break,
             1 => needed_offs.push(val),
@@ -174,7 +184,13 @@ pub fn read_elf(path: &Path) -> Result<ElfInfo, ElfError> {
         return Ok(info);
     }
     let str_off = vaddr_to_off(&loads, strtab).ok_or(ElfError::Malformed)?;
-    let str_len = strsz.min(MAX_STRTAB);
+    if strsz > MAX_STRTAB
+        || verneednum > MAX_VERSION_RECORDS as u64
+        || verdefnum > MAX_VERSION_RECORDS as u64
+    {
+        return Err(ElfError::Malformed);
+    }
+    let str_len = strsz;
     let mut table = vec![0u8; str_len as usize];
     r.at(str_off, &mut table)?;
     let name_at = |o: u64| -> Result<String, ElfError> {
@@ -197,43 +213,43 @@ pub fn read_elf(path: &Path) -> Result<ElfInfo, ElfError> {
     if verneed != 0 {
         let mut o = vaddr_to_off(&loads, verneed).ok_or(ElfError::Malformed)?;
         let mut seen = 0usize;
-        for _ in 0..verneednum.min(MAX_VERSION_RECORDS as u64) {
-            let cnt = r.u16(o + 2)? as u64;
-            let aux = r.u32(o + 8)? as u64;
-            let next = r.u32(o + 12)? as u64;
-            let mut a = o.checked_add(aux).ok_or(ElfError::Malformed)?;
+        for _ in 0..verneednum {
+            let cnt = r.u16(add(o, 2)?)? as u64;
+            let aux = r.u32(add(o, 8)?)? as u64;
+            let next = r.u32(add(o, 12)?)? as u64;
+            let mut a = add(o, aux)?;
             for _ in 0..cnt {
                 seen += 1;
                 if seen > MAX_VERSION_RECORDS {
                     return Err(ElfError::Malformed);
                 }
-                let name = name_at(r.u32(a + 8)? as u64)?;
+                let name = name_at(r.u32(add(a, 8)?)? as u64)?;
                 if let Some(v) = parse_glibc_version(&name) {
                     info.glibc_need = info.glibc_need.max(Some(v));
                 }
-                let anext = r.u32(a + 12)? as u64;
+                let anext = r.u32(add(a, 12)?)? as u64;
                 if anext == 0 {
                     break;
                 }
-                a = a.checked_add(anext).ok_or(ElfError::Malformed)?;
+                a = add(a, anext)?;
             }
             if next == 0 {
                 break;
             }
-            o = o.checked_add(next).ok_or(ElfError::Malformed)?;
+            o = add(o, next)?;
         }
     }
     if verdef != 0 {
         let mut o = vaddr_to_off(&loads, verdef).ok_or(ElfError::Malformed)?;
         let mut seen = 0usize;
-        for _ in 0..verdefnum.min(MAX_VERSION_RECORDS as u64) {
+        for _ in 0..verdefnum {
             seen += 1;
             if seen > MAX_VERSION_RECORDS {
                 return Err(ElfError::Malformed);
             }
-            let aux = r.u32(o + 12)? as u64;
-            let next = r.u32(o + 16)? as u64;
-            let a = o.checked_add(aux).ok_or(ElfError::Malformed)?;
+            let aux = r.u32(add(o, 12)?)? as u64;
+            let next = r.u32(add(o, 16)?)? as u64;
+            let a = add(o, aux)?;
             let name = name_at(r.u32(a)? as u64)?;
             if let Some(v) = parse_glibc_version(&name) {
                 info.glibc_def = info.glibc_def.max(Some(v));
@@ -241,7 +257,7 @@ pub fn read_elf(path: &Path) -> Result<ElfInfo, ElfError> {
             if next == 0 {
                 break;
             }
-            o = o.checked_add(next).ok_or(ElfError::Malformed)?;
+            o = add(o, next)?;
         }
     }
     Ok(info)

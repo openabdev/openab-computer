@@ -218,22 +218,162 @@ fn a_refusal_is_one_of_two_classes_and_is_not_a_run_record() {
     assert!(text.len() < 100, "{text}");
 }
 
+fn put_junk(t: &TempDir, n: usize) {
+    for i in 0..n {
+        std::fs::write(run_dir(t).join(format!("a-{i}.json")), b"not json").unwrap();
+    }
+}
+
+fn put_live_records(t: &TempDir, n: usize) {
+    let me = std::process::id();
+    let start = crate::state::proc_start_time(me).unwrap();
+    for i in 0..n {
+        std::fs::write(
+            run_dir(t).join(format!("cli-{}.json", 1000 + i)),
+            json!({"pid": me, "start": start, "kind": "cli", "unit": null}).to_string(),
+        )
+        .unwrap();
+    }
+}
+
 #[test]
-fn unparsable_files_count_toward_the_cap_and_a_flood_fails_closed() {
+fn junk_json_files_are_pruned_on_write_and_no_longer_block_a_start() {
     let t = TempDir::new();
     let root = root_with_run(&t);
-    // Garbage that comes first in any listing cannot push real records out of view.
-    for i in 0..MAX_RECORDS {
-        std::fs::write(run_dir(&t).join(format!("a-{i}.json")), b"not json").unwrap();
-    }
-    assert!(saturated(&root));
+    // Garbage that comes first in any listing cannot push real records out of view, and it is
+    // no longer a permanent block (#132): the write prunes it.
+    put_junk(&t, MAX_RECORDS);
+    assert!(!saturated(&root), "exactly the cap, all of it read");
+    assert_eq!(state(&root), RunRecords::Ok, "everything here is prunable");
+    let mut c = sleeper();
+    let h = write(&root, "cli", c.id(), None).expect("the junk was pruned first");
+    let left: Vec<String> = std::fs::read_dir(run_dir(&t))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("a-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(live(&root).len(), 1);
+    drop(h);
+    c.kill().unwrap();
+    c.wait().unwrap();
+}
+
+#[test]
+fn a_flood_of_junk_fails_closed_and_is_cleared_a_pass_at_a_time() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    put_junk(&t, 3 * MAX_RECORDS);
+    assert!(saturated(&root), "names past the cap are not read");
     let mut c = sleeper();
     assert_eq!(
         write(&root, "cli", c.id(), None).err(),
         Some(Fail("run_records_full"))
     );
+    // Each write prunes what it read (at most the cap), so the flood does not stay forever.
+    let mut done = None;
+    for _ in 0..5 {
+        if let Ok(h) = write(&root, "cli", c.id(), None) {
+            done = Some(h);
+            break;
+        }
+    }
+    assert!(done.is_some(), "the junk was never cleared");
     c.kill().unwrap();
     c.wait().unwrap();
+}
+
+#[test]
+fn exactly_the_cap_of_live_records_is_not_saturated_and_one_more_is() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    put_live_records(&t, MAX_RECORDS);
+    assert!(!saturated(&root), "64 live records are all read");
+    assert_eq!(live(&root).len(), MAX_RECORDS);
+    // The sweep may act on a full table; a write may not add to it.
+    assert_eq!(state(&root), RunRecords::Full);
+    let mut c = sleeper();
+    assert_eq!(
+        write(&root, "cli", c.id(), None).err(),
+        Some(Fail("run_records_full"))
+    );
+    put_live_records(&t, MAX_RECORDS + 1);
+    assert!(saturated(&root), "a 65th name is counted but not read");
+    c.kill().unwrap();
+    c.wait().unwrap();
+}
+
+#[test]
+fn the_latch_and_the_refusal_are_never_pruned_or_counted() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    latch_set(&root).unwrap();
+    refusal_set(&root, "launch_refused").unwrap();
+    put_junk(&t, 10);
+    let mut c = sleeper();
+    let h = write(&root, "cli", c.id(), None).unwrap();
+    assert!(latch_is_set(&root));
+    assert_eq!(refusal_get(&root).as_deref(), Some("launch_refused"));
+    drop(h);
+    c.kill().unwrap();
+    c.wait().unwrap();
+}
+
+#[test]
+fn a_symlink_or_directory_named_like_a_record_is_junk_and_only_it_is_removed() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let outside = t.path.join("outside.txt");
+    std::fs::write(&outside, b"keep").unwrap();
+    symlink(&outside, run_dir(&t).join("link.json")).unwrap();
+    std::fs::create_dir(run_dir(&t).join("dir.json")).unwrap();
+    let mut c = sleeper();
+    let h = write(&root, "cli", c.id(), None).unwrap();
+    assert!(
+        !run_dir(&t).join("link.json").exists()
+            && run_dir(&t).join("link.json").symlink_metadata().is_err()
+    );
+    assert_eq!(
+        std::fs::read(&outside).unwrap(),
+        b"keep",
+        "the target is untouched"
+    );
+    drop(h);
+    c.kill().unwrap();
+    c.wait().unwrap();
+}
+
+#[test]
+fn the_state_names_why_a_start_would_be_refused() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    assert_eq!(state(&root), RunRecords::Ok);
+    assert_eq!(RunRecords::Ok.word(), "ok");
+    // Dead records are prunable, so they do not make it full.
+    let start = 12345u64;
+    for i in 0..MAX_RECORDS {
+        std::fs::write(
+            run_dir(&t).join(format!("cli-{}.json", 4_000_000 + i)),
+            json!({"pid": 4_000_000 + i, "start": start, "kind": "cli", "unit": null}).to_string(),
+        )
+        .unwrap();
+    }
+    assert_eq!(state(&root), RunRecords::Ok);
+    // Read-only: nothing was pruned by looking.
+    assert_eq!(
+        std::fs::read_dir(run_dir(&t)).unwrap().count() - 1,
+        MAX_RECORDS
+    );
+    put_live_records(&t, MAX_RECORDS);
+    assert_eq!(state(&root), RunRecords::Full);
+    assert_eq!(RunRecords::Full.word(), "full");
+    // No marker, or no `run/` at all: unavailable.
+    let t2 = TempDir::new();
+    let bare = t2.root();
+    assert_eq!(state(&bare), RunRecords::Unavailable);
+    std::fs::remove_file(run_dir(&t).join(OWNED_DATA)).unwrap();
+    assert_eq!(state(&root), RunRecords::Unavailable);
+    assert_eq!(RunRecords::Unavailable.word(), "unavailable");
 }
 
 #[test]
