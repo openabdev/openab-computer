@@ -381,7 +381,6 @@ fn the_credential_never_appears_in_an_error_even_when_the_runtime_echoes_it() {
     )
     .unwrap_err();
     assert!(err.starts_with("mint HTTP 401: "), "{err}");
-    assert!(err.contains("[redacted]"), "{err}");
     assert_no_credential(&err);
 
     let plain = fake(None, echo);
@@ -422,6 +421,57 @@ fn the_credential_never_appears_in_an_error_even_when_the_runtime_echoes_it() {
         let err = mint_with(&trust_for(&p), &runtime, "s", CRED, 60).unwrap_err();
         assert_no_credential(&err);
     }
+}
+
+fn json_escape_all(text: &str) -> String {
+    text.chars()
+        .map(|c| format!("\\u{:04x}", c as u32))
+        .collect()
+}
+
+#[test]
+fn a_json_escaped_credential_is_refused_as_secret_and_not_echoed_in_errors() {
+    let p = pki("escaped");
+    let esc = json_escape_all(CRED);
+    let body = format!("{{\"secret\":\"{esc}\"}}");
+    let ok = fake(Some(&p), move |_| http("200 OK", "", body.as_bytes()));
+    let err = mint_with(
+        &trust_for(&p),
+        &format!("wss://127.0.0.1:{}", ok.port),
+        "s",
+        CRED,
+        60,
+    )
+    .unwrap_err();
+    assert!(err.contains("refused"), "{err}");
+    assert_no_credential(&err);
+
+    let body = format!("{{\"secret\":\"pre-{esc}\"}}");
+    let sub = fake(None, move |_| http("200 OK", "", body.as_bytes()));
+    let err = mint_with(
+        &trust_for(&p),
+        &format!("ws://127.0.0.1:{}", sub.port),
+        "s",
+        CRED,
+        60,
+    )
+    .unwrap_err();
+    assert!(err.contains("refused"), "{err}");
+
+    let body = format!("{{\"error\":\"{esc}\"}} {}", CRED.replace('-', "%2D"));
+    let bad = fake(Some(&p), move |_| {
+        http("400 Bad Request", "", body.as_bytes())
+    });
+    let err = mint_with(
+        &trust_for(&p),
+        &format!("wss://127.0.0.1:{}", bad.port),
+        "s",
+        CRED,
+        60,
+    )
+    .unwrap_err();
+    assert_eq!(err, "mint HTTP 400: the runtime refused the request");
+    assert!(!err.contains(&esc), "{err}");
 }
 
 #[test]
@@ -494,7 +544,10 @@ fn plain_http_behaviour_is_unchanged() {
         60,
     )
     .unwrap_err();
-    assert_eq!(err, "mint HTTP 403: nope");
+    assert_eq!(
+        err,
+        "mint HTTP 403: the runtime refused the admin credential"
+    );
 
     let no_secret = fake(None, |_| http("200 OK", "", b"{}"));
     let err = mint_with(

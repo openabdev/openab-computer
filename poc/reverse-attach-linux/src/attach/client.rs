@@ -200,7 +200,7 @@ fn mint_inner(
             "mint response from {authority} exceeds {MINT_MAX_BODY} bytes; refused"
         ));
     }
-    let resp_body = redact(&String::from_utf8_lossy(&raw), admin_credential);
+    let resp_body = String::from_utf8_lossy(&raw);
 
     if (300..=399).contains(&status) {
         return Err(format!(
@@ -209,7 +209,16 @@ fn mint_inner(
         ));
     }
     if !(200..=299).contains(&status) {
-        return Err(format!("mint HTTP {status}: {}", resp_body.trim()));
+        // The body is never returned: a runtime can echo the credential in an escaped form
+        // (JSON \\uXXXX, percent-encoding) that a literal redaction does not see.
+        let hint = match status {
+            401 | 403 => "the runtime refused the admin credential",
+            404 => {
+                "the runtime has no such session or endpoint; check the runtime address and session"
+            }
+            _ => "the runtime refused the request",
+        };
+        return Err(format!("mint HTTP {status}: {hint}"));
     }
 
     let v: Value = serde_json::from_str(resp_body.trim())
@@ -220,6 +229,13 @@ fn mint_inner(
         .and_then(|s| s.as_str())
         .ok_or_else(|| "mint response missing secret".to_string())?
         .to_string();
+    // Checked on the decoded value: a JSON-escaped echo of the credential only shows up
+    // here, and would otherwise be stored in grants.json as the attach secret.
+    if !admin_credential.is_empty() && secret.contains(admin_credential) {
+        return Err(
+            "mint response carried the admin credential as the attach secret; refused".to_string(),
+        );
+    }
 
     let expires_in = v
         .get("expires_in_secs")
