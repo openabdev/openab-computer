@@ -1156,6 +1156,55 @@ fn a_foreign_record_planted_at_the_last_moment_of_an_update_is_not_overwritten()
         .all(|n| !n.contains(".tmp-") && !n.starts_with(".staging-")));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn an_update_whose_record_swap_gets_stuck_keeps_the_new_version_and_the_old_ones_cleanup_record() {
+    use crate::state::{AFTER_SWAP, BEFORE_SWAP};
+    // #132: `record_swap_stuck` leaves `install.json` naming the new version, so the new version
+    // and the data directories must stay and the old version must not be forgotten.
+    let e = Env::new(Tw::default());
+    let m1 = e.manifest("test-id-1");
+    let m2 = e.manifest("test-id-2");
+    assert!(e.install(&m1).0.is_ok());
+    // A foreign record replaces install.json just before the exchange, so the compare fails...
+    BEFORE_SWAP.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|p: &std::path::Path| {
+            std::fs::remove_file(p.join("install.json")).unwrap();
+            std::fs::write(p.join("install.json"), "foreign").unwrap();
+        }));
+    });
+    // ...and the displaced file vanishes from the temp name, so the swap back cannot be done.
+    AFTER_SWAP.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|p: &std::path::Path| {
+            for e in std::fs::read_dir(p).unwrap().flatten() {
+                if e.file_name()
+                    .to_string_lossy()
+                    .starts_with("install.json.tmp-")
+                {
+                    std::fs::remove_file(e.path()).unwrap();
+                }
+            }
+        }));
+    });
+    let (r, _, _) = e.update(&m2, Some(true), None);
+    BEFORE_SWAP.with(|h| *h.borrow_mut() = None);
+    AFTER_SWAP.with(|h| *h.borrow_mut() = None);
+    assert_eq!(r.err().map(|f| f.0), Some("record_swap_stuck"));
+    // install.json is the new record and names the new version...
+    let rec = std::fs::read_to_string(e.root().join("install.json")).unwrap();
+    assert!(
+        rec.contains("test-id-2") && !rec.contains("foreign"),
+        "{rec}"
+    );
+    // ...which, and the data directories this run kept, are still there.
+    assert!(e.root().join("test-id-2").is_dir());
+    assert!(e.root().join("profile").is_dir() && e.root().join("output").is_dir());
+    // The old version is untouched and has its cleanup record.
+    assert!(e.root().join("test-id-1").is_dir());
+    let pending = std::fs::read_to_string(e.root().join("pending-cleanup.json")).unwrap();
+    assert!(pending.contains("test-id-1"), "{pending}");
+}
+
 #[test]
 fn an_existing_pending_record_is_never_replaced_by_an_update() {
     let e = Env::new(Tw::default());
