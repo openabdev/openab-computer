@@ -12,9 +12,10 @@
 
 ### R1. Managed child
 
-- R1.1 `@playwright/mcp` runs as a stdio child of the daemon. No TCP, UDP or Unix listener exists
-  in the managed tree. Port 8794 is not used by the managed path. (Note from PR L3: the L2
-  measurement is no TCP or UDP and two private Unix sockets, so the Unix part waits on V2; see #132.)
+- R1.1 `@playwright/mcp` runs as a stdio child of the daemon. No TCP or UDP listener exists in the
+  managed tree. Port 8794 is not used by the managed path. Target: no Unix listener either. **Unmet
+  by the L2 build**, which holds two private Unix listening sockets (V2, #132); the docs claim only
+  "no TCP or UDP port".
 - R1.2 The child is started only under a kernel-enforced whole-tree stop mechanism that succeeded in a
   self-test on the host (D4). Otherwise the backend is `unavailable: containment_unverified` and no
   child is started.
@@ -189,7 +190,10 @@ together after one week of normal use on the class N host with no browser incide
    1. Stop and disable the old browser unit with `systemctl --user disable --now <old unit>`. A plain
       stop would bring the unauthenticated listener back at the next login or boot.
    2. Remove the `MCP_UPSTREAM` line (class N) or the drop-in file (class O). Edit after the backup
-      of step 1, and do not delete anything else.
+      of step 1, and do not delete anything else. A unit written before the installer's ownership
+      marker existed is never updated by the installer: for class N and O, move
+      `oab-computer.service.proposed` over `oab-computer.service` (it carries no `MCP_UPSTREAM`
+      line and the marker), so later installer runs keep the unit current.
    3. Run `systemctl --user daemon-reload`, then restart `oab-computer.service` on the new binary.
    4. Run `oab-computer browser signin` if a login is needed.
 6. **Verify.**
@@ -365,7 +369,7 @@ A person records each result against its check.
 | M6 | `browser update` with a deliberately broken pin (debug build) keeps the old version. |
 | M7 | `browser remove` with an unrelated directory inside the data root: it stays and is reported. |
 | M8 | Cutover rehearsal on a spare account for each host class, then rollback. |
-| M9 | No listener: `ss -ltnup` and `ss -lxp` during a browser call. |
+| M9 | No TCP/UDP listener (and, once V2 closes, no Unix listener): `ss -ltnup` and `ss -lxp` during a browser call. |
 | M10 | The hosts' real network: the downloads work through each host's actual egress. |
 
 ### 3.5 Facts to verify before release

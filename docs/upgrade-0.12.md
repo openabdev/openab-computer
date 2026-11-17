@@ -214,9 +214,12 @@ The new agent could not bind port 8795 while the old one held it.
 ```sh
 # macOS
 launchctl kickstart -k gui/$(id -u)/dev.openab.computer
-# Linux
+# Linux (restart alone does not enable the unit for the next login)
+systemctl --user enable oab-computer.service
 systemctl --user restart oab-computer.service
 ```
+
+After 0.12.0 the Linux installer enables the unit itself once the old one is gone; run it again after Step 4.
 
 ## Step 6: check
 

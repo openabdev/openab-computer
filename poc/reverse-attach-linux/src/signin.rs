@@ -165,12 +165,13 @@ pub fn run(
         return Err("no_seat");
     };
     // Any live run record means a browser holds the profile (the daemon's child, a health check or
-    // another sign-in). Starting a second one would only fail on the lock, and the short TMPDIR
-    // below belongs to the first.
+    // another sign-in). Starting a second one would only fail on the lock. The short TMPDIR below has
+    // its own name, so a managed start that races this check never loses its directory; the
+    // profile lock then stops whichever browser comes second.
     if !run_record::live(s.root).is_empty() {
         return Err("profile_locked");
     }
-    let tmp = RuntimeTmp::create(s.root.abs_path())?;
+    let tmp = RuntimeTmp::create_named(s.root.abs_path(), "oab-ps")?;
     let v = child::launch_vector(&rec, s.root.abs_path(), &tmp.path, Some(seat));
     child::write_config(s.root, &v.config)?;
     let spec = crate::proc::Spec {

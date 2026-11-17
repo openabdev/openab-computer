@@ -148,6 +148,10 @@ tar xzf "oab-computer-$V-linux-$A.tar.gz" && cd "oab-computer-$V-linux-$A"
 ./install-linux.sh --headless-seat    # same, on a box with no desktop (creates oab-seat.service)
 ```
 
+A unit file the installer did not write (no installer marker line) is never rewritten: the installer
+leaves it as it is and writes the unit it would have used next to it as `*.proposed`. That holds for
+`oab-computer.service` and `oab-seat.service`.
+
 `install-linux.sh` is idempotent: it keeps an existing token, detects your Tailscale login and
 writes the daemon unit, with no `MCP_UPSTREAM` line and no browser unit. It then does the browser
 step, which you can decline (`--browser none`), accept without a question (`--browser managed` or
@@ -330,8 +334,8 @@ The managed browser has no TCP or UDP port and does not use `8794`. The daemon l
 `127.0.0.1:8795`; `tailscale serve` uses `--https=8444`. Chromium needs two private Unix sockets in
 the child's own `0700` temporary directory; they are not listeners anyone can reach, but they are
 sockets, and the claim "no socket of any kind" is therefore not made. (The ADR and requirement
-R1.1 still say "no Unix listener"; the measurement amends that, and V2 is not closed until the
-release smoke measures it on both architectures.) Port `8794` is bound only by
+R1.1 state "no Unix listener" as a target that is unmet today; V2 is not closed until the release
+smoke measures it on both architectures.) Port `8794` is bound only by
 an old browser unit (unauthenticated, loopback) or by whatever you start yourself for
 `MCP_BROWSER_BACKEND=external`.
 
@@ -750,8 +754,11 @@ stop it before the new unit can bind:
 
 ```sh
 systemctl --user disable --now oab-instance-mcp.service
+systemctl --user enable oab-computer.service   # `restart` alone does not enable it for the next login
 systemctl --user restart oab-computer.service
 ```
+
+In releases after 0.12.0 the installer does the `enable` itself once the old unit is gone: run it again after the `disable --now`.
 
 An old browser unit (`oab-pw-mcp.service`) is handled as described in the next section. Full
 steps, with backup and rollback: [Upgrading from 0.11 or earlier](upgrade-0.12.md). The README has
@@ -814,6 +821,12 @@ below is marked if it needs root.
    rm -f <each drop-in file the grep printed>
    systemctl --user daemon-reload
    ```
+
+   If an earlier installer run left `~/.config/systemd/user/oab-computer.service.proposed` (it keeps
+   a unit that has no installer marker, see
+   [Upgrading a host that already has a browser unit](#upgrading-a-host-that-already-has-a-browser-unit)),
+   either adopt it (review it, `mv` it over `oab-computer.service`, `daemon-reload`, restart) or
+   delete it. Same for `oab-seat.service.proposed`. No root.
 
 2. Delete the old directories, after looking inside: the old profile holds cookies. No root:
 

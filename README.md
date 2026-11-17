@@ -796,8 +796,11 @@ To upgrade:
    rm ~/.config/systemd/user/oab-pw-mcp.service
    systemctl --user daemon-reload
    # then restart the new unit, which could not bind port 8795 while the old one held it:
+   systemctl --user enable oab-computer.service   # restart alone does not enable it for the next login
    systemctl --user restart oab-computer.service
    ```
+
+   (After 0.12.0 the installer enables the unit itself once the old one is gone; run it again after the `disable --now`.)
 
    After the new agent works you can delete the old directories.
 

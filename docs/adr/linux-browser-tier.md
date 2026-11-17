@@ -16,10 +16,9 @@ The old unit also survives a daemon stop and has no pinned downloads.
 Goal: the same managed tier on Linux, on amd64 and arm64.
 
 1. `@playwright/mcp` runs as a **stdio child** of the daemon. It and its Chromium open no
-   listening socket (TCP, UDP or Unix). Port 8794 is retired for the managed path.
-   (Note from PR L3, #132: the measurement on the L2 build shows no TCP or UDP socket and two
-   private Unix sockets in the child's `0700` `TMPDIR`, so the "or Unix" part is open under V2; the
-   Linux docs claim only "no TCP or UDP port".)
+   TCP or UDP port. Port 8794 is retired for the managed path. Target: no Unix listener either.
+   That target is **not met** by the L2 build: it holds two private Unix listening sockets in the
+   child's `0700` `TMPDIR` (open under V2 and #132). The Linux docs claim only "no TCP or UDP port".
 2. Node, the npm packages and Chromium come from **pinned URLs with pinned sizes and SHA-256
    digests** in a manifest embedded in the release binary. The binary never fetches pins.
 3. **Update is side by side with a health check** and keeps the old version on failure. It is
@@ -473,8 +472,9 @@ Rejected:
 
 ## Security notes
 
-- **No listener.** The managed tree opens no TCP, UDP or Unix socket. (Note from PR L3: measured as
-  no TCP or UDP and two private Unix sockets; the Unix part is open under V2 and #132.) `browser status` runs a
+- **No TCP or UDP listener.** The managed tree opens no TCP or UDP port. Two private Unix
+  listening sockets remain in its `0700` `TMPDIR` (measured; open under V2 and #132), so the
+  target "no Unix listener" is unmet. `browser status` runs a
   self-check over `/proc/net/{tcp,tcp6,udp,udp6,unix}` and reports listeners owned by the managed
   tree, and the release smoke runs the same check on both architectures. The launch vector never
   contains `--port`, `--host`, `--allowed-hosts` or `--no-sandbox`.

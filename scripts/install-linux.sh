@@ -141,7 +141,8 @@ output HEADLESS-1 resolution 1920x1080 position 0,0
 default_border none
 focus_follows_mouse no
 SWAY
-  cat >"$UNITS/oab-seat.service" <<'UNIT'
+  cat >"$UNITS/oab-seat.service.new" <<'UNIT'
+# oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.
 [Unit]
 Description=Headless sway seat for the oab-computer hands node
 
@@ -158,6 +159,14 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 UNIT
+  # Ownership (D5): only a unit with the marker is rewritten. Any other existing oab-seat.service is
+  # left byte for byte as it is and the unit this run would have written is put next to it.
+  if [ -f "$UNITS/oab-seat.service" ] && ! grep -qF '# oab-computer-installer:' "$UNITS/oab-seat.service"; then
+    mv "$UNITS/oab-seat.service.new" "$UNITS/oab-seat.service.proposed"
+    echo "install: note: $UNITS/oab-seat.service was not written by this installer, so it was left as it is. The unit this run would have written is $UNITS/oab-seat.service.proposed; to adopt it, review it, move it over oab-seat.service, then daemon-reload and restart." >&2
+  else
+    mv "$UNITS/oab-seat.service.new" "$UNITS/oab-seat.service"
+  fi
   systemctl --user daemon-reload
   systemctl --user enable --now oab-seat.service
   sleep 2
@@ -225,6 +234,14 @@ UNIT
   if [ -f "$UNITS/oab-computer.service" ] && ! grep -qF '# oab-computer-installer:' "$UNITS/oab-computer.service"; then
     mv "$UNITS/oab-computer.service.new" "$UNITS/oab-computer.service.proposed"
     echo "install: note: $UNITS/oab-computer.service was not written by this installer, so it was left as it is (so --port and --allow-login did not change it)." >&2
+    # The health check and the tailscale serve line must follow the unit that actually runs.
+    KEPT_BIND="$(sed -n 's/^Environment=BIND=127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$UNITS/oab-computer.service" | tail -1)"
+    if [ -n "$KEPT_BIND" ] && [ "$KEPT_BIND" != "$PORT" ]; then
+      echo "install: note: the kept unit listens on port $KEPT_BIND, so the health check and the tailscale serve command below use $KEPT_BIND, not --port $PORT." >&2
+      PORT="$KEPT_BIND"
+    elif [ -z "$KEPT_BIND" ]; then
+      echo "install: note: could not read a 127.0.0.1 BIND port from the kept unit; the health check and tailscale serve command use port $PORT and may not match it." >&2
+    fi
     echo "The unit this run would have written is $UNITS/oab-computer.service.proposed. To adopt it: review it, move it over oab-computer.service, then daemon-reload and restart." >&2
     if grep -qE 'MCP_UPSTREAM=' "$UNITS/oab-computer.service"; then
       echo "That unit still sets MCP_UPSTREAM; a managed browser wins over it (D5). Remove the line at cutover (docs/linux-setup.md)." >&2

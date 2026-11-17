@@ -116,6 +116,7 @@ KillMode=process
 WantedBy=default.target
 EOF
 cat >"$T/expected-oab-seat.service" <<'EOF'
+# oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.
 [Unit]
 Description=Headless sway seat for the oab-computer hands node
 
@@ -313,6 +314,24 @@ has ownquoted "MCP_UPSTREAM" err
 run ownmarked --browser none
 run ownmarked --browser none --port 8801
 grep -q 'BIND=127.0.0.1:8801' "$(UNITD ownmarked)/oab-computer.service" || fail "ownmarked: a unit with the marker was not rewritten"
+
+# 9e. An unmarked oab-seat.service is left byte for byte, and a kept daemon unit's port drives the
+# health check and the serve command (not --port).
+mkdir -p "$(UNITD ownseat)"
+printf '[Service]\nExecStart=/my/sway\n' >"$(UNITD ownseat)/oab-seat.service"
+cp "$(UNITD ownseat)/oab-seat.service" "$T/ownseat.orig"
+run ownseat --browser none --headless-seat
+cmp -s "$T/ownseat.orig" "$(UNITD ownseat)/oab-seat.service" || fail "ownseat: an unmarked seat unit was rewritten"
+[ -f "$(UNITD ownseat)/oab-seat.service.proposed" ] || fail "ownseat: no .proposed seat unit"
+has ownseat "oab-seat.service was not written by this installer" err
+run ownmarked2 --browser none --headless-seat
+run ownmarked2 --browser none --headless-seat
+expect ownmarked2 oab-seat.service ci-user 8795
+mkdir -p "$(UNITD ownport)"
+printf '[Service]\nExecStart=/mine\nEnvironment=BIND=127.0.0.1:8123\n' >"$(UNITD ownport)/oab-computer.service"
+run ownport --browser none --port 9001 --apply-system-changes
+has ownport "kept unit listens on port 8123" err
+has ownport "--https=8444 http://127.0.0.1:8123" out
 
 # 10. The generated docs table lists the installer's flags, no more and no fewer.
 doc="$HERE/../docs/linux-setup.md"
