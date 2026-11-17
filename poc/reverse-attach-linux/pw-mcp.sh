@@ -1,4 +1,10 @@
 #!/bin/bash
+# DEPRECATED (ADR D14, requirement R7.1). This script ships for one more minor release and is then
+# removed. The installer no longer writes a unit that runs it. It opens an unauthenticated Playwright
+# MCP listener on 127.0.0.1:8794 that any local user can reach and that serves
+# browser_run_code_unsafe. Replacement: `oab-computer browser install` (the managed tier, no port).
+# Cutover and rollback steps: docs/linux-cutover.md.
+#
 # Playwright MCP beside the Linux hands node. Loopback only; the daemon re-serves it
 # via --upstream (never exposed directly). Mirrors poc/pw-mcp/pw-mcp.sh for macOS.
 #
@@ -18,7 +24,10 @@ export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 export DISPLAY="${DISPLAY:-:0}"
 CHROMIUM="${PW_CHROMIUM:-/usr/bin/chromium}"
 PW_CONFIG="${PW_CONFIG:-$([ -f "$BASE/pw-config.json" ] && echo "$BASE/pw-config.json")}"
+# shellcheck disable=SC2164 # unchanged since it shipped: a failed cd falls through to a failed exec
 cd "$BASE/pw-mcp"
+# Runtime notice for the journal of the old unit. Fixed text, stderr only; the launch below is unchanged.
+echo "pw-mcp.sh is DEPRECATED: it opens an unauthenticated listener on 127.0.0.1:8794 that any local user can reach (browser_run_code_unsafe included). Replace it with 'oab-computer browser install'; see docs/linux-cutover.md." >&2
 exec ./node_modules/.bin/playwright-mcp \
   --host 127.0.0.1 --port 8794 \
   --allowed-hosts "127.0.0.1,localhost,127.0.0.1:8794,localhost:8794" \
