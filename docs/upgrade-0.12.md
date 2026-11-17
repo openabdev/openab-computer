@@ -232,7 +232,7 @@ Confirm that the new agent, not a leftover, owns the port.
 lsof -nP -iTCP:8795 -sTCP:LISTEN
 # Linux
 ss -ltnp 'sport = :8795'
-ss -ltnp 'sport = :8794'   # only on a node with the old browser unit (0.12.0): that unit should own it; right after a start, wait a few seconds for it to bind
+ss -ltnp 'sport = :8794'   # only on a node with the old browser unit (0.12.0): that unit should own it; if it was only just (re)started, for example by a reboot or by you, give it a few seconds to bind
 ```
 
 You should see one `oab-computer` process (macOS may shorten the name). Then `curl -s http://127.0.0.1:8795/healthz` prints `ok`,
@@ -295,6 +295,7 @@ mv ~/Library/LaunchAgents/dev.openab.computer.plist ~/oab-instance-mcp-backup/  
 cp ~/oab-instance-mcp-backup/dev.openab.instance-mcp*.plist ~/Library/LaunchAgents/
 # only if you had the old Playwright agent: start it first (see the note below)
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist
+# wait a few seconds for the agent to bind the port
 lsof -nP -iTCP:8794 -sTCP:LISTEN   # only then: the old Playwright agent must own the port
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.plist
 ```
