@@ -307,8 +307,9 @@ transient unit with `OAB_L2_E2E=1`. Their units are named `oab-l2-test-*`.
   it lags until the pointer reconnects. `screenshot` reads the outputs itself (no input device)
   unless a pointer is live, in which case it reports that pointer's layout so the two agree.
 - `wss://` runtimes: the dial uses rustls with the ring provider (#66). Tests cover only the failure
-  side (a TLS failure redials and ends at the deadline, never falls back to plaintext); a successful
-  TLS handshake and certificate verification are not tested yet. Mint over https does not work.
+  side (a TLS failure redials and ends at the deadline, never falls back to plaintext). Mint over
+  https is covered by a local fake TLS server (`src/attach/mint_tests.rs`); a successful dial
+  handshake against a real runtime is not tested yet.
 - Real-runtime test against a live openab-pty pod is pending: the test host was not on the
   tailnet, and the pod's `PTY_ADMIN_HASH` is a hash, so the admin credential must come from the
   operator.

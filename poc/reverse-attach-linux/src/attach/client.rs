@@ -126,6 +126,18 @@ fn mint_inner(
     if admin_credential.chars().any(|c| c.is_control()) {
         return Err("admin credential contains a control character".to_string());
     }
+    // The runtime and session are stored in grants.json and shown by the grant list, so the
+    // admin credential must not be a substring of either: refuse before any request, and
+    // without echoing either value.
+    if !admin_credential.is_empty()
+        && (runtime.contains(admin_credential) || session.contains(admin_credential))
+    {
+        return Err(
+            "runtime and session must not contain the admin credential; the runtime address \
+             is stored and listed"
+                .to_string(),
+        );
+    }
     let authority = rest.split('/').next().unwrap_or(rest).to_string();
     let url = format!(
         "{}://{}/admin/sessions/{}/tools-attach",
