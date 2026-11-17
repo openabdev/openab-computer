@@ -436,7 +436,7 @@ permissions block.
 ### macOS app and Linux node
 
 The Linux node (`poc/reverse-attach-linux/`) has one daemon listener (`127.0.0.1:8795` when installed
-by `install-linux.sh`). After 0.12.0 the browser is a managed child with no port of its own (it holds
+by `install-linux.sh`). After 0.12.0 the browser is a managed child with no TCP or UDP port of its own (it holds
 two private Unix sockets in its own `0700` temporary directory, see
 [Linux setup](docs/linux-setup.md#ports)); 0.12.0 and earlier, and any host that still runs the old
 browser unit, also have a Playwright listener on `8794` with no authentication. The differences from

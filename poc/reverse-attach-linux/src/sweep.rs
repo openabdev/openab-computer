@@ -65,7 +65,8 @@ pub(crate) fn claimed(pid: u32, live: &[Record]) -> bool {
 /// The live run records of every child but `own_pid`, read afresh each time it is called. A
 /// `Child::stop` asks for them so that its tree walk spares a sibling's processes. The root is
 /// reopened from its path, so the closure owns no descriptor; if it cannot be reopened the answer
-/// is empty and the walk is as before.
+/// is `None` and the walk is skipped (fail closed: it could end a sibling's helpers; the next sweep
+/// finds any straggler).
 pub fn others_live(root: &Root, own_pid: u32) -> proc::OthersLive {
     let base = root
         .abs_path()
@@ -74,15 +75,17 @@ pub fn others_live(root: &Root, own_pid: u32) -> proc::OthersLive {
         .map(Path::to_path_buf);
     Box::new(move || {
         let Some(base) = &base else {
-            return Vec::new();
+            return None;
         };
         let Ok(Some(root)) = Root::open(base, false) else {
-            return Vec::new();
+            return None;
         };
-        run_record::live(&root)
-            .into_iter()
-            .filter(|r| r.pid != own_pid)
-            .collect()
+        Some(
+            run_record::live(&root)
+                .into_iter()
+                .filter(|r| r.pid != own_pid)
+                .collect(),
+        )
     })
 }
 

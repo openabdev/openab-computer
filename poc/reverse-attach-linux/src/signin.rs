@@ -250,13 +250,17 @@ fn drive(
 
 /// The production wait: a line on stdin, a signal, the child ending, or the bound.
 pub fn wait_for_enter(child: &mut Child) -> Ended {
-    let (tx, rx) = mpsc::channel::<()>();
+    let (tx, rx) = mpsc::channel::<bool>();
     std::thread::spawn(move || {
         use std::io::{BufRead, Read};
         let mut line = String::new();
         // At most 64 bytes: only "a line" matters, not what it says.
-        let _ = std::io::stdin().lock().take(64).read_line(&mut line);
-        let _ = tx.send(());
+        // `true` only when a line was read; end of input (a dropped session) is not Enter.
+        let got = matches!(
+            std::io::stdin().lock().take(64).read_line(&mut line),
+            Ok(n) if n > 0
+        );
+        let _ = tx.send(got);
     });
     wait_loop(
         || child.has_exited(),
@@ -269,7 +273,7 @@ pub fn wait_for_enter(child: &mut Child) -> Ended {
 /// The decision part of the wait, apart from stdin and the real child so it can be tested.
 fn wait_loop(
     mut child_exited: impl FnMut() -> bool,
-    rx: &mpsc::Receiver<()>,
+    rx: &mpsc::Receiver<bool>,
     end: Instant,
     tick: Duration,
 ) -> Ended {
@@ -281,7 +285,9 @@ fn wait_loop(
             return Ended::ChildExited;
         }
         match rx.recv_timeout(tick) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ended::Enter,
+            Ok(true) => return Ended::Enter,
+            // Input ended without a line: nobody pressed Enter, so the sign-in is not confirmed.
+            Ok(false) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ended::Cancelled,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }

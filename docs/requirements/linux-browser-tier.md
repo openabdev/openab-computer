@@ -13,7 +13,8 @@
 ### R1. Managed child
 
 - R1.1 `@playwright/mcp` runs as a stdio child of the daemon. No TCP, UDP or Unix listener exists
-  in the managed tree. Port 8794 is not used by the managed path.
+  in the managed tree. Port 8794 is not used by the managed path. (Note from PR L3: the L2
+  measurement is no TCP or UDP and two private Unix sockets, so the Unix part waits on V2; see #132.)
 - R1.2 The child is started only under a kernel-enforced whole-tree stop mechanism that succeeded in a
   self-test on the host (D4). Otherwise the backend is `unavailable: containment_unverified` and no
   child is started.

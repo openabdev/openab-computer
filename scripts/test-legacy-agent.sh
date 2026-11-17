@@ -150,7 +150,7 @@ has "$e" "WARNING" && has "$e" "port 8795" \
   && ok "linux: active old unit warns with the port and the disable --now command, and no rm line" \
   || { cat "$e" >&2; fail "linux active: warning text incomplete"; }
 
-if grep -q 'daemon: ok' "$T/lin-active.out" || ! grep -q 'daemon: not checked' "$e"; then fail "linux active: the installer vouched for the daemon while the old unit may hold the port"; else ok "linux: no 'daemon: ok' while the old unit is present"; fi
+if grep -q 'daemon: ok' "$T/lin-active.out" || ! grep -q 'daemon: not started and not checked' "$e"; then fail "linux active: the installer vouched for the daemon while the old unit may hold the port"; else ok "linux: no 'daemon: ok' while the old unit is present"; fi
 if grep -q 'daemon: ok' "$T/lin-clean.out"; then ok "linux: 'daemon: ok' printed when no old unit exists"; else fail "linux clean: daemon check missing"; fi
 
 # Token: an old token is copied (old file untouched, new mode 600); a new token is never overwritten;

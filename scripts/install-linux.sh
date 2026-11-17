@@ -97,7 +97,8 @@ unit_live() { systemctl --user is-active --quiet "$1" >/dev/null 2>&1 || systemc
 if unit_live oab-instance-mcp.service; then
   {
     echo "install: WARNING: the old unit oab-instance-mcp.service (0.11 or earlier) is still active or enabled."
-    echo "It listens on port 8795 (the default); if the new oab-computer.service uses the same port ($PORT), they will fight over it."
+    echo "It listens on port 8795 (the default); if the new oab-computer.service uses the same port ($PORT), they would fight over it."
+    echo "So this installer writes the new unit but does NOT enable, start or restart oab-computer.service while that old unit is live."
     echo "This installer does not touch it. To stop it for good, run: systemctl --user disable --now oab-instance-mcp.service"
     echo "(a plain stop is not enough: it comes back at the next login or boot)."
   } >&2
@@ -120,8 +121,6 @@ for U in oab-pw-mcp.service oab-computer-pw-mcp.service; do
 done
 # An MCP_UPSTREAM line from an older install keeps pointing the daemon at that old listener. With a
 # managed install present the managed browser wins over it. Nothing here edits such a line.
-UPSTREAM_IN_UNIT=0
-if [ -f "$UNITS/oab-computer.service" ] && grep -q '^Environment=MCP_UPSTREAM=' "$UNITS/oab-computer.service"; then UPSTREAM_IN_UNIT=1; fi
 for D in "$UNITS/oab-computer.service.d" "$UNITS/oab-instance-mcp.service.d"; do
   [ -d "$D" ] || continue
   for F in "$D"/*.conf; do
@@ -197,10 +196,13 @@ fi
 # cutover removes it: docs/linux-setup.md).
 # Unquoted heredoc so $VARS expand: escape any literal backtick or $ in it (#90).
 # scripts/test-install-linux.sh diffs the written units against their expected text.
-if [ "$UPSTREAM_IN_UNIT" = 1 ]; then
-  echo "install: note: $UNITS/oab-computer.service still sets MCP_UPSTREAM (written by an older installer). It was left as it is, so --port and --allow-login did not change it. A managed browser wins over that line; remove the line at cutover (docs/linux-setup.md)." >&2
-else
+# Ownership (D5): this script rewrites only a unit that carries its own marker line. A unit without
+# it (hand-written, or from an installer that did not mark it) is left byte for byte as it is, and
+# the unit this run would have written is put next to it as oab-computer.service.proposed.
+OWNER_MARK='# oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.'
+{
   cat >"$UNITS/oab-computer.service.new" <<UNIT
+$OWNER_MARK
 [Unit]
 Description=oab-computer (Linux hands node: /mcp + /attach)
 After=graphical-session.target
@@ -220,18 +222,25 @@ KillMode=process
 [Install]
 WantedBy=default.target
 UNIT
-  # A unit this script did not write (a hand-written one) is kept as a dated backup first.
-  if [ -f "$UNITS/oab-computer.service" ] && ! cmp -s "$UNITS/oab-computer.service" "$UNITS/oab-computer.service.new"; then
-    BAK="$UNITS/oab-computer.service.bak-$(date +%Y%m%d%H%M%S)"
-    cp -p "$UNITS/oab-computer.service" "$BAK"
-    echo "install: the existing $UNITS/oab-computer.service differed and was replaced; the old copy is at $BAK" >&2
+  if [ -f "$UNITS/oab-computer.service" ] && ! grep -qF '# oab-computer-installer:' "$UNITS/oab-computer.service"; then
+    mv "$UNITS/oab-computer.service.new" "$UNITS/oab-computer.service.proposed"
+    echo "install: note: $UNITS/oab-computer.service was not written by this installer, so it was left as it is (so --port and --allow-login did not change it)." >&2
+    echo "The unit this run would have written is $UNITS/oab-computer.service.proposed. To adopt it: review it, move it over oab-computer.service, then daemon-reload and restart." >&2
+    if grep -qE 'MCP_UPSTREAM=' "$UNITS/oab-computer.service"; then
+      echo "That unit still sets MCP_UPSTREAM; a managed browser wins over it (D5). Remove the line at cutover (docs/linux-setup.md)." >&2
+    fi
+  else
+    mv "$UNITS/oab-computer.service.new" "$UNITS/oab-computer.service"
   fi
-  mv "$UNITS/oab-computer.service.new" "$UNITS/oab-computer.service"
-fi
+}
 
 systemctl --user daemon-reload
-systemctl --user enable --now oab-computer.service
-systemctl --user restart oab-computer.service
+if [ "$INSTANCE_UNIT_LIVE" = 1 ]; then
+  echo "install: oab-computer.service was NOT enabled or started: the old oab-instance-mcp.service is live (see the warning above). After turning it off: systemctl --user enable --now oab-computer.service" >&2
+else
+  systemctl --user enable --now oab-computer.service
+  systemctl --user restart oab-computer.service
+fi
 
 # ---- the browser (Playwright and Chromium), a separate and optional step --------------------------
 BROWSER_WANTED=0; BROWSER_FAILED=0; BROWSER_READY=0; PRE_ACTIONS=0
@@ -294,7 +303,7 @@ browser_step
 # The daemon picks its browser backend once, at start. It started before the browser existed, so
 # restart it now: a fresh node gains the browser_* tools, and a node with a stale MCP_UPSTREAM line
 # switches to the managed browser (D5).
-if [ "$BROWSER_READY" = 1 ]; then systemctl --user restart oab-computer.service; fi
+if [ "$BROWSER_READY" = 1 ] && [ "$INSTANCE_UNIT_LIVE" = 0 ]; then systemctl --user restart oab-computer.service; fi
 
 # ---- the remaining root actions: printed, or run with --apply-system-changes -----------------------
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then
@@ -305,7 +314,7 @@ flush_root
 
 sleep 1
 if [ "$INSTANCE_UNIT_LIVE" = 1 ]; then
-  echo "daemon: not checked. The old unit oab-instance-mcp.service may hold port $PORT; turn it off as warned above, then run: systemctl --user restart oab-computer.service" >&2
+  echo "daemon: not started and not checked. The old unit oab-instance-mcp.service may hold port $PORT; turn it off as warned above, then run: systemctl --user enable --now oab-computer.service" >&2
 else
   curl -fsS "127.0.0.1:$PORT/healthz" >/dev/null && echo "daemon: ok"
 fi

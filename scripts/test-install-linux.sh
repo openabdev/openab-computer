@@ -95,6 +95,7 @@ no_old_browser() {
 no_root_ran() { if grep -q '^sudo ' "$T/$1/calls"; then fail "$1: a root command ran without --apply-system-changes"; fi; }
 
 cat >"$T/expected-oab-computer.service" <<'EOF'
+# oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.
 [Unit]
 Description=oab-computer (Linux hands node: /mcp + /attach)
 After=graphical-session.target
@@ -288,7 +289,30 @@ if grep -qE 'systemctl --user (disable|stop|mask|kill)' "$T/classo/calls"; then 
 # 9c. The 0.11 unit on port 8795 keeps its warning and the daemon is not probed.
 STUB_ACTIVE="oab-instance-mcp.service" run class11 --browser none
 has class11 "disable --now oab-instance-mcp.service" err
-has class11 "daemon: not checked" err
+has class11 "daemon: not started and not checked" err
+has class11 "NOT enable, start or restart" err
+if grep -qE 'systemctl --user (enable|restart|start)' "$T/class11/calls"; then fail "class11: oab-computer.service was enabled or restarted while the old unit is live"; fi
+[ -f "$(UNITD class11)/oab-computer.service" ] || fail "class11: the new unit was not written"
+# The same with the browser installed: the post-install restart is skipped too.
+STUB_ACTIVE="oab-instance-mcp.service" run class11b --browser managed
+if grep -qE 'systemctl --user (enable|restart|start)' "$T/class11b/calls"; then fail "class11b: oab-computer.service was enabled or restarted after the browser install"; fi
+# 9d. Ownership (D5): a unit without the installer's marker is left byte for byte, even when it has
+# a quoted MCP_UPSTREAM or none; the unit this run would write is put beside it. A marked unit is rewritten.
+for shape in plain quoted; do
+  mkdir -p "$(UNITD own$shape)"
+  if [ "$shape" = quoted ]; then printf '[Service]\nExecStart=/mine\nEnvironment="MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"\n' >"$(UNITD own$shape)/oab-computer.service"
+  else printf '[Service]\nExecStart=/mine\n' >"$(UNITD own$shape)/oab-computer.service"; fi
+  cp "$(UNITD own$shape)/oab-computer.service" "$T/own$shape.orig"
+  run own$shape --browser none
+  cmp -s "$T/own$shape.orig" "$(UNITD own$shape)/oab-computer.service" || fail "own$shape: an unmarked unit was rewritten"
+  [ -f "$(UNITD own$shape)/oab-computer.service.proposed" ] || fail "own$shape: no .proposed unit was written"
+  has own$shape "was not written by this installer" err
+  if compgen -G "$(UNITD own$shape)/*.bak-*" >/dev/null; then fail "own$shape: a backup copy was made"; fi
+done
+has ownquoted "MCP_UPSTREAM" err
+run ownmarked --browser none
+run ownmarked --browser none --port 8801
+grep -q 'BIND=127.0.0.1:8801' "$(UNITD ownmarked)/oab-computer.service" || fail "ownmarked: a unit with the marker was not rewritten"
 
 # 10. The generated docs table lists the installer's flags, no more and no fewer.
 doc="$HERE/../docs/linux-setup.md"

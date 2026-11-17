@@ -65,8 +65,8 @@ const FLAGS: &[Flag] = &[
     f("`oab-computer browser status`", "`--json`", "Prints the state as one JSON object.", &["status", "--json"]),
     f("`oab-computer browser status`", "`--retry`", "Clears the unavailable latch and runs the containment check again.", &["status", "--retry"]),
     f("`oab-computer browser signin`", "`--url URL`", "Opens a window on the node's seat on the persistent profile, at URL (`http://` or `https://`, default a blank page), and waits for Enter. Run it over `ssh -t`.", &["signin", "--url", "https://example.com/"]),
-    f("`oab-computer browser install`, `update`, `remove`, `status`", "`--apply-system-changes`", "Refused with exit 2. This flag belongs to the installer script.", &[]),
-    f("`oab-computer browser install`, `update`", "`--use-system-chromium`", "Refused with exit 2: not available in this build.", &[]),
+    f("`oab-computer browser` (every subcommand)", "`--apply-system-changes`", "Refused with exit 2. This flag belongs to the installer script.", &[]),
+    f("`oab-computer browser` (every subcommand)", "`--use-system-chromium`", "Refused with exit 2: not available in this build.", &[]),
 ];
 
 /// `(name, read by, meaning)`.

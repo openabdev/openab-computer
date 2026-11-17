@@ -291,7 +291,8 @@ is outside this control.
 Known limit (V2): with the pinned Playwright and Chromium the managed tree opens no TCP or UDP
 socket, but it does hold two listening Unix sockets inside its private `0700` `TMPDIR`
 (Playwright's browser socket and Chromium's `SingletonSocket`). `browser status` reports them as
-`listeners: tcp=0 udp=0 unix=2`. R1.1 says none, so this is open against the requirement.
+`listeners: tcp=0 udp=0 unix=2`. R1.1 says none, so this is open against the requirement (the ADR,
+R1.1 and the Linux docs now carry a note, and the docs claim only "no TCP or UDP port").
 
 The tests: the pure parts run anywhere; process, `/proc` and `systemd` tests are Linux-only. The
 tests that need a user manager are `#[ignore]`d and run with `OAB_L2_SYSTEMD=1 cargo test --release

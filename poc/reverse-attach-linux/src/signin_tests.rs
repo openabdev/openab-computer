@@ -304,10 +304,10 @@ fn only_enter_counts_as_a_finished_sign_in() {
     use std::sync::mpsc;
     let tick = Duration::from_millis(5);
     let far = Instant::now() + Duration::from_secs(5);
-    let (tx, rx) = mpsc::channel::<()>();
-    tx.send(()).unwrap();
+    let (tx, rx) = mpsc::channel::<bool>();
+    tx.send(true).unwrap();
     assert_eq!(wait_loop(|| false, &rx, far, tick), Ended::Enter);
-    let (_tx2, rx2) = mpsc::channel::<()>();
+    let (_tx2, rx2) = mpsc::channel::<bool>();
     assert_eq!(wait_loop(|| true, &rx2, far, tick), Ended::ChildExited);
     assert_eq!(
         wait_loop(
@@ -318,6 +318,19 @@ fn only_enter_counts_as_a_finished_sign_in() {
         ),
         Ended::TimedOut
     );
+}
+
+#[test]
+fn end_of_input_without_a_line_is_not_enter() {
+    use std::sync::mpsc;
+    let tick = Duration::from_millis(5);
+    let far = Instant::now() + Duration::from_secs(5);
+    let (tx, rx) = mpsc::channel::<bool>();
+    tx.send(false).unwrap();
+    assert_eq!(wait_loop(|| false, &rx, far, tick), Ended::Cancelled);
+    let (tx2, rx2) = mpsc::channel::<bool>();
+    drop(tx2);
+    assert_eq!(wait_loop(|| false, &rx2, far, tick), Ended::Cancelled);
 }
 
 #[test]

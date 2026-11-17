@@ -137,7 +137,7 @@ verified (**open**).
 | Sweep before a start | markers only | kills same-user processes whose executable is under a version or staging directory of the install root, even one started by hand (`sweep_tests`) | drift, recorded in the ADR |
 | Saved passwords | the macOS Keychain | `--password-store=basic`: obfuscation under a `0700` profile directory, not strong encryption (D11); `child_tests`, `docs_table` | drift, by decision |
 | Offline | `--from-dir` equivalent not offered | `browser install --from-dir DIR`; no network preflight; no `--use-system-chromium` yet (D17) | drift, by decision; the fallback is open |
-| Commit order versus R7.2 | n/a | as implemented in `install.rs`; the ordering in R7.2 is not re-verified by this PR | open |
+| Install commit order | n/a | as implemented in `install.rs`; this PR does not re-verify it, and R7.2 (the release job that re-checks the downloads) arrives with L5 | open |
 | Sign-in on a headless seat | the app's own window | `browser signin` plus `screenshot`, `mouse`, `key`; a `wayvnc` recipe that this project does not install or test (D8); the listener-gone check after it is in the docs | open (V13) |
 | Headed Chromium on a headless Wayland seat | n/a | the first real run is unverified (V6) | open |
 

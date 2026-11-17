@@ -157,7 +157,7 @@ downloaded unless you gave `--browser managed` or `--yes`, and the installer pri
 run later (`~/.local/oab-computer/oab-computer browser install`). The installer exits 1 when you
 asked for the browser (by flag or by answering yes) and it did not install; the daemon and the
 token are then in place. If it did everything, skip to [Verify](#6-verify-from-another-tailnet-machine);
-steps 3 to 5 describe what it did. After a successful browser install it restarts the daemon once more, because the daemon chooses its browser backend when it starts. A tarball older than the managed tier has the old behavior; see
+steps 3 to 5 describe what it did. After a successful browser install it restarts the daemon once more (not while an old `oab-instance-mcp.service` is live), because the daemon chooses its browser backend when it starts. A tarball older than the managed tier has the old behavior; see
 [Old external browser](#old-external-browser-deprecated).
 
 ### Root actions
@@ -301,11 +301,12 @@ needed, unless you install from files (see [Offline install](#offline-install)).
 - Unlike macOS, the downloaded Node.js gets no code-signature check, only the pinned SHA-256.
   There is no quarantine step on Linux.
 - The Chromium it installs is a browser: the connections it makes while running are Chromium's,
-  not the installer's. Whether the pinned build opens a listening TCP or UDP socket, and whether it
-  exits when its stdin closes, has not been measured yet (open verification items V2 and V3 in the
-  [ADR](adr/linux-browser-tier.md)); the daemon stops the child's whole process tree itself when it
-  stops it.
-- The install adds no unit and no listener. An update is only ever offered, never applied silently.
+  not the installer's. In the project's own measurement of the pinned build the managed tree held no
+  TCP or UDP socket and two private Unix sockets (see [Ports](#ports)); that is still an open
+  release gate (V2 in the [ADR](adr/linux-browser-tier.md)), and whether the browser exits when its
+  stdin closes (V3) has not been measured. The daemon stops the child's whole process tree itself
+  when it stops it.
+- The install adds no unit and no network port. An update is only ever offered, never applied silently.
 - The figures come from the manifest in `release/playwright-pins/`; the release check
   (`scripts/playwright-pins.py`, run in CI) fails if they drift, and a test fails if this page
   stops matching it.
@@ -321,14 +322,16 @@ the lock file. A hand-made or unreadable `install.json` is never replaced or rem
 the profile and output folders stay. `remove` refuses while a managed browser is running
 (`browser_running`). It never touches the old locations: `~/.local/oab-computer/pw-mcp`,
 `~/.local/oab-computer/pw-profile`, `~/.local/oab-computer/pw-config.json`,
-`~/.cache/ms-playwright`, the old units and drop-ins, or the old AppArmor profile.
+`~/.local/oab-instance-mcp/pw-mcp`, `~/.cache/ms-playwright`, the old units and drop-ins, or the old AppArmor profile.
 
 ### Ports
 
-The managed browser has no listener and does not use `8794`. The daemon listens on
+The managed browser has no TCP or UDP port and does not use `8794`. The daemon listens on
 `127.0.0.1:8795`; `tailscale serve` uses `--https=8444`. Chromium needs two private Unix sockets in
 the child's own `0700` temporary directory; they are not listeners anyone can reach, but they are
-sockets, and the claim "no socket of any kind" is therefore not made. Port `8794` is bound only by
+sockets, and the claim "no socket of any kind" is therefore not made. (The ADR and requirement
+R1.1 still say "no Unix listener"; the measurement amends that, and V2 is not closed until the
+release smoke measures it on both architectures.) Port `8794` is bound only by
 an old browser unit (unauthenticated, loopback) or by whatever you start yourself for
 `MCP_BROWSER_BACKEND=external`.
 
@@ -426,8 +429,8 @@ To change it, edit that file and run `OAB_UPDATE_DOCS=1 cargo test --release doc
 | `oab-computer browser status` | `--json` | Prints the state as one JSON object. |
 | `oab-computer browser status` | `--retry` | Clears the unavailable latch and runs the containment check again. |
 | `oab-computer browser signin` | `--url URL` | Opens a window on the node's seat on the persistent profile, at URL (`http://` or `https://`, default a blank page), and waits for Enter. Run it over `ssh -t`. |
-| `oab-computer browser install`, `update`, `remove`, `status` | `--apply-system-changes` | Refused with exit 2. This flag belongs to the installer script. |
-| `oab-computer browser install`, `update` | `--use-system-chromium` | Refused with exit 2: not available in this build. |
+| `oab-computer browser` (every subcommand) | `--apply-system-changes` | Refused with exit 2. This flag belongs to the installer script. |
+| `oab-computer browser` (every subcommand) | `--use-system-chromium` | Refused with exit 2: not available in this build. |
 
 | Variable | Read by | Meaning |
 | --- | --- | --- |
@@ -469,10 +472,15 @@ same pinned browser, headed, as a child of the command (in its own unit with a 3
 daemon restart does not close it), opens the page, prints `Sign in in the browser window. Press
 Enter here when finished.`, and waits. Press Enter, interrupt it, or wait out the bound; the browser
 is then closed so it writes its cookies, and everything it started is stopped. If a browser already
-holds the profile (the daemon's browser ends 30 minutes after its last call, or restart the daemon),
-it reports `profile_locked`. Its failure classes are `terminal_required`, `not_installed`,
-`no_seat`, `profile_locked`, `launch_refused`, `spawn_failed` and `invalid_url`; none prints page
-data. Killing the command with `kill -9` leaves its unit running until the bound (30 minutes for
+holds the profile it reports `profile_locked`. The daemon's own browser is not stopped when it is
+idle, so restart the daemon (`systemctl --user restart oab-computer.service`) to release it. While
+a sign-in runs it holds the profile, so a `browser_*` call through the daemon fails with
+`profile_locked` until you press Enter; the daemon's browser starts again on its next call. If the
+terminal closes before Enter (end of input, for example a dropped SSH session), the sign-in counts
+as `cancelled`, not as finished. Its failure classes are `terminal_required`, `not_installed`,
+`no_seat`, `profile_locked`, `launch_refused`, `spawn_failed`, `invalid_url`, `cancelled`,
+`browser_exited`, `timed_out`, `install_invalid`, `state_unavailable` and the temporary-directory
+errors (`RuntimeTmp`); none prints page data. Killing the command with `kill -9` leaves its unit running until the bound (30 minutes for
 sign-in, 5 minutes for an install's health check) or the next sweep, which a later `browser`
 command that starts a child runs.
 
@@ -763,8 +771,8 @@ installer does on each kind of host:
 | Host | What the installer does | What you do at cutover |
 | --- | --- | --- |
 | New: nothing from before | Writes the daemon unit without `MCP_UPSTREAM`, asks about the browser. | Nothing. |
-| New-style unit: `oab-computer-pw-mcp.service` from 0.12.0, and an `MCP_UPSTREAM` line inside `oab-computer.service` | Warns, with the exact command to turn the unit off. Leaves `oab-computer.service` byte for byte as it is when it still has the `MCP_UPSTREAM` line (it rewrites it otherwise), and still replaces the binary and restarts the daemon. | After `browser status` shows the managed browser working: `systemctl --user disable --now oab-computer-pw-mcp.service`, then remove the `MCP_UPSTREAM` line (back it up first), `daemon-reload`, restart. |
-| Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line (an existing different `oab-computer.service` is kept first as `oab-computer.service.bak-<time>`) and leaves the drop-in alone. If `oab-instance-mcp.service` (0.11 or earlier) is still live it holds port 8795: the installer warns and does not check the daemon; disable that unit first (`systemctl --user disable --now oab-instance-mcp.service`) and restart `oab-computer.service`. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. |
+| New-style unit: `oab-computer-pw-mcp.service` from 0.12.0, and an `MCP_UPSTREAM` line inside `oab-computer.service` | Warns, with the exact command to turn the unit off. The installer rewrites `oab-computer.service` only when the unit carries its own marker line (`# oab-computer-installer:`). A unit without it, which includes any unit from before the marker existed, is left byte for byte as it is (whatever it contains, `MCP_UPSTREAM` included); the unit this run would have written is put beside it as `oab-computer.service.proposed`. The binary is still replaced and the daemon restarted. | After `browser status` shows the managed browser working: `systemctl --user disable --now oab-computer-pw-mcp.service`, then remove the `MCP_UPSTREAM` line (back it up first), or review and move `.proposed` over the unit, `daemon-reload`, restart. |
+| Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line when there is none or it carries the installer's marker (an unmarked existing one is left as it is, with `.proposed` beside it; no backup copy is made) and leaves the drop-in alone. If `oab-instance-mcp.service` (0.11 or earlier) is still live it holds port 8795: the installer warns, writes the new unit but does not enable, start or restart `oab-computer.service` and does not check the daemon; disable that unit first (`systemctl --user disable --now oab-instance-mcp.service`), then `systemctl --user enable --now oab-computer.service`. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. |
 
 A plain `systemctl stop` is not enough: those units come back at the next login or boot, and each
 is an unauthenticated Playwright on loopback `8794`. While the old unit and its line exist, a
@@ -799,7 +807,9 @@ below is marked if it needs root.
    `grep` did not list: others may belong to something else. No root:
 
    ```sh
-   systemctl --user disable --now oab-pw-mcp.service oab-computer-pw-mcp.service   # whichever exist
+   for u in oab-pw-mcp.service oab-computer-pw-mcp.service; do
+     if systemctl --user cat "$u" >/dev/null 2>&1; then systemctl --user disable --now "$u"; fi
+   done
    rm -f ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
    rm -f <each drop-in file the grep printed>
    systemctl --user daemon-reload
@@ -832,8 +842,8 @@ below is marked if it needs root.
 
 0.12.0 and earlier started Playwright as a separate unit, `oab-computer-pw-mcp.service`, on
 `127.0.0.1:8794`, with `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp` in the daemon unit, started
-by `poc/reverse-attach-linux/pw-mcp.sh` (kept in the tarball one more release, marked deprecated, so
-that a binary rollback has a script to restore). That path has no authentication on the listener
+by `poc/reverse-attach-linux/pw-mcp.sh` (kept in the tarball for one more release, to be marked
+deprecated by the release PR L5, so that a binary rollback has a script to restore). That path has no authentication on the listener
 and no pinned downloads; it is only for a host that has not moved, or for
 `MCP_BROWSER_BACKEND=external`. Its pieces: `PW_CHROMIUM` and `PW_NODE_BIN` (the script's own
 environment, default `/usr/bin/chromium`), a persistent profile under

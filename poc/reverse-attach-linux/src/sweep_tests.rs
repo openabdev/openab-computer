@@ -247,3 +247,20 @@ fn a_look_alike_outside_the_root_is_untouched_by_a_stop_with_a_provider() {
     outside.kill().unwrap();
     outside.wait().unwrap();
 }
+
+#[test]
+fn a_stop_whose_live_records_cannot_be_read_skips_the_walk() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let v = root.abs_path().join("pw-1");
+    let mut helper = detached(&sleeper_at(&v.join("node/bin"), "helper"));
+    let mut mine = child_in(&v, &t);
+    mine.set_others(Box::new(|| None));
+    mine.stop();
+    assert!(
+        alive(&mut helper),
+        "the walk ran although the live records were unknown"
+    );
+    helper.kill().unwrap();
+    helper.wait().unwrap();
+}

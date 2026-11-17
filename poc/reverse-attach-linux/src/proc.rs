@@ -78,7 +78,8 @@ pub struct Child {
 }
 
 /// Returns the live run records of every child but this one.
-pub type OthersLive = Box<dyn Fn() -> Vec<crate::run_record::Record> + Send + Sync>;
+/// `None` means the live records could not be read: the walk then does not run (fail closed).
+pub type OthersLive = Box<dyn Fn() -> Option<Vec<crate::run_record::Record>> + Send + Sync>;
 
 /// Reads one newline-terminated line of at most `cap` bytes (the newline excluded).
 fn read_line_capped<R: BufRead>(r: &mut R, cap: usize) -> std::io::Result<Line> {
@@ -361,11 +362,14 @@ impl Child {
         let scope = self.scope.clone();
         match &self.others {
             None => kill_under(&scope),
+            // Unknown live records: the walk could end a sibling's helpers, so it is skipped. The
+            // process group and the unit are already stopped, and the next sweep finds the rest.
             Some(f) => {
-                let live = f();
-                kill_matching(&|exe| exe.starts_with(&scope), &|pid| {
-                    crate::sweep::claimed(pid, &live)
-                });
+                if let Some(live) = f() {
+                    kill_matching(&|exe| exe.starts_with(&scope), &|pid| {
+                        crate::sweep::claimed(pid, &live)
+                    });
+                }
             }
         }
         let _ = self.child.wait();
