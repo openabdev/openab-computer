@@ -109,6 +109,9 @@ Environment=WAYLAND_DISPLAY=wayland-1
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Restart=always
 RestartSec=2
+# Exit 64 means a configuration the daemon refuses (for example a non-loopback upstream URL):
+# restarting cannot fix it, so systemd must not loop on it.
+RestartPreventExitStatus=64
 # Apps opened via `bash` belong to the desktop, not to this daemon: a restart must not kill them.
 KillMode=process
 

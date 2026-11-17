@@ -143,7 +143,7 @@ ends with the daemon. It has no port and no `MCP_UPSTREAM` line. What is downloa
 the root actions an install may ask for, offline install, sign-in and what `remove` deletes are in
 [Linux setup](linux-setup.md#4-browser-tools-playwrightmcp); the figures are the same ones the
 [macOS table](../README.md#what-the-app-downloads) uses, for the Linux builds (about 259 MB to
-download, about 630 MB on disk, about 890 MB of free space while it runs).
+download, about 632 MB on disk (629 MB on arm64), about 891 MB of free space while it runs (888 MB on arm64)).
 
 - `install-linux.sh` shows what an install downloads and asks first. With no terminal it downloads
   nothing unless you pass `--browser managed` or `--yes`.
@@ -196,7 +196,7 @@ The Linux external pass-through is described in [Tool profiles](tool-profiles.md
 - **macOS refuses to run the downloaded Chromium:** the install stops with that message. The app never
   adds or removes the `com.apple.quarantine` attribute, and the installed-Chrome fallback is not built
   ([#128](https://github.com/openabdev/openab-computer/issues/128)).
-- **No `browser_*` tools on Linux:** run `oab-computer browser status` and read `sys_info.browser`. `not_installed` means run
+- **No `browser_*` tools on Linux:** run `~/.local/oab-computer/oab-computer browser status` (the binary is not on `PATH`; later `oab-computer` commands here mean that path) and read `sys_info.browser`. `not_installed` means run
   `oab-computer browser install`; `containment_unverified` means this host has no working user
   manager, and the managed browser will not start without one; `off` means `OAB_BROWSER=off`. On an
   old external install, check `systemctl --user status oab-computer-pw-mcp.service`.

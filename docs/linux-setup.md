@@ -73,7 +73,7 @@ effort. Alpine and other musl systems are refused with a clear message.
 | System | glibc | amd64 and arm64 | Automated check | Manual run per release |
 | --- | --- | --- | --- | --- |
 | Debian 12 | 2.36 | supported | not yet (arrives with the release work, L5) | not yet |
-| Raspberry Pi OS (Debian 12 based) | 2.36 | supported (arm64) | not yet | not yet |
+| Raspberry Pi OS (Debian 12 or 13 based) | 2.36 (Debian 12), 2.41 (Debian 13) | supported (arm64) | not yet | not yet |
 | Ubuntu 22.04 | 2.35 | supported | not yet | not yet |
 | Ubuntu 24.04 | 2.39 | supported | not yet | not yet |
 | Debian 13 and newer, newer Ubuntu | 2.41 and newer | supported by the rule above, not listed as run | not yet | not yet |
@@ -222,6 +222,8 @@ Environment=WAYLAND_DISPLAY=wayland-0
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Restart=always
 RestartSec=2
+# Exit 64 is a configuration the daemon refuses; restarting cannot fix it.
+RestartPreventExitStatus=64
 # Apps opened via `bash` belong to the desktop, not to this daemon: a restart must not kill them.
 KillMode=process
 
@@ -257,6 +259,10 @@ as a child talking over stdin and stdout, and stops it with the daemon. The daem
 TCP port to listen on and does not use port `8794`. The child's own Unix sockets are described under
 [Ports](#ports). This is the same design as macOS
 ([Browser tools](browser-tools.md)); this section is what differs on Linux.
+
+The installer puts the binary at `~/.local/oab-computer/oab-computer`, which is not on `PATH`. The
+commands below write `oab-computer` for short; run them with that full path, or set
+`alias oab-computer=~/.local/oab-computer/oab-computer` first.
 
 ```sh
 oab-computer browser plan        # what is downloaded, from where, how much, where it goes. Writes nothing
@@ -331,11 +337,11 @@ the profile and output folders stay. `remove` refuses while a managed browser is
 ### Ports
 
 The managed browser has no TCP or UDP port and does not use `8794`. The daemon listens on
-`127.0.0.1:8795`; `tailscale serve` uses `--https=8444`. Chromium needs two private Unix sockets in
-the child's own `0700` temporary directory; they are not listeners anyone can reach, but they are
-sockets, and the claim "no socket of any kind" is therefore not made. (The ADR and requirement
-R1.1 state "no Unix listener" as a target that is unmet today; V2 is not closed until the release
-smoke measures it on both architectures.) Port `8794` is bound only by
+`127.0.0.1:8795`; `tailscale serve` uses `--https=8444`. Chromium holds two Unix listening sockets in the child's own `0700` temporary directory. They
+are not TCP or UDP ports, but they are listeners: another process of the same user can connect to
+them, so the claim "no socket of any kind" is not made. (The ADR and requirement R1.1 state "no Unix
+listener" as a target that is unmet today; V2 is not closed until the release smoke measures it on
+both architectures.) Port `8794` is bound only by
 an old browser unit (unauthenticated, loopback) or by whatever you start yourself for
 `MCP_BROWSER_BACKEND=external`.
 
@@ -445,7 +451,7 @@ To change it, edit that file and run `OAB_UPDATE_DOCS=1 cargo test --release doc
 | `MCP_INSECURE_LOCAL` | daemon | `1` or `true` lets the daemon start with no token and no login set. It is for loopback debugging only; never set it on a node reachable through `tailscale serve`. |
 | `MCP_AUDIT_FILE` | daemon | Where the audit log is written. Default: `$XDG_STATE_HOME` or `~/.local/state`. |
 | `MCP_GRANTS_FILE` | daemon | Where lend grants are stored. Same default directory. |
-| `MCP_UPSTREAM` | daemon | `name=url` entries of tool servers the daemon forwards to. Every URL must be a literal loopback address, `http://127.0.0.1:PORT` or `http://[::1]:PORT`; any other host stops the daemon with exit 64. The installer no longer writes it. Used only for the old external browser. |
+| `MCP_UPSTREAM` | daemon | `name=url` entries of tool servers the daemon forwards to. Every entry the daemon uses must be a literal loopback address, `http://127.0.0.1:PORT` or `http://[::1]:PORT`; any other host stops the daemon with exit 64. A `browser=` entry that a managed install ignores is not checked. The installer no longer writes it. Used only for the old external browser. |
 | `MCP_BROWSER_BACKEND` | daemon | `external` is the explicit decision to use the `browser=` entry of `MCP_UPSTREAM` even when a managed install exists. Unset: a managed install wins. |
 | `OAB_BROWSER` | daemon | `off` switches the managed tier off. With a managed install the result is no `browser_*` tools at all, and a stale `MCP_UPSTREAM` line is ignored. With nothing installed, a lone `MCP_UPSTREAM browser=` line still serves as external. |
 | `WAYLAND_DISPLAY` | daemon, `browser signin` | The seat's socket name. The units set it. `signin` falls back to the highest `wayland-N` socket in `XDG_RUNTIME_DIR`. |
@@ -479,7 +485,9 @@ is then closed so it writes its cookies, and everything it started is stopped. I
 holds the profile it reports `profile_locked`. The daemon's own browser is not stopped when it is
 idle, so restart the daemon (`systemctl --user restart oab-computer.service`) to release it. While
 a sign-in runs it holds the profile, so a `browser_*` call through the daemon fails with
-`profile_locked` until you press Enter; the daemon's browser starts again on its next call. If the
+`profile_locked`, and the daemon then treats the managed browser as unavailable. It does not retry on
+its own after you press Enter: run `~/.local/oab-computer/oab-computer browser status --retry` (or restart
+the daemon) to bring it back. If the
 terminal closes before Enter (end of input, for example a dropped SSH session), the sign-in counts
 as `cancelled`, not as finished. Its failure classes are `terminal_required`, `not_installed`,
 `no_seat`, `profile_locked`, `launch_refused`, `spawn_failed`, `invalid_url`, `cancelled`,
@@ -602,6 +610,7 @@ exec_cancel` + 32 `browser_*` + the runtime's `instance_status`.
 ## Operate
 
 ```sh
+# `oab-computer` below is ~/.local/oab-computer/oab-computer (not on PATH; see section 4)
 systemctl --user status oab-computer
 oab-computer browser status                       # the managed browser: state, containment, display
 journalctl --user -u oab-computer -f            # one line per deny / upstream error
@@ -791,8 +800,9 @@ explicit decision to trust it). `OAB_BROWSER=off` switches the managed tier off.
 means no `browser_*` tools at all, and a stale line is ignored; it is not a way back to the external
 path. With nothing installed, a lone `MCP_UPSTREAM browser=` line still serves as external even with
 `OAB_BROWSER=off`. Every `name=url`
-entry of `MCP_UPSTREAM` must be a literal loopback `http://127.0.0.1:PORT` or `http://[::1]:PORT`
-URL; any other host stops the daemon with exit 64.
+entry the daemon uses must be a literal loopback `http://127.0.0.1:PORT` or `http://[::1]:PORT`
+URL; any other host stops the daemon with exit 64 (the installer's unit sets `RestartPreventExitStatus=64`,
+so it does not loop). A `browser=` entry that a managed install ignores is not checked.
 
 ## Removing the old browser setup after the soak
 

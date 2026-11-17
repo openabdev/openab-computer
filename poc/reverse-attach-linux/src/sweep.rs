@@ -59,7 +59,28 @@ pub(crate) fn claimed(pid: u32, live: &[Record]) -> bool {
         pid == r.pid
             || sf.is_some_and(|f| f.pgrp == r.pid || f.session == r.pid)
             || (r.unit.is_some() && r.unit == unit)
+            || descends_from(pid, r.pid)
     })
+}
+
+/// Is `leader` an ancestor of `pid`? Without a unit (the plain fallback) a helper that called
+/// `setsid` is in neither the leader's group nor its session, but while the leader lives it is
+/// still in its parent chain. The walk is bounded, and stops at init.
+fn descends_from(pid: u32, leader: u32) -> bool {
+    let mut cur = pid;
+    for _ in 0..64 {
+        let Some(f) = proc::stat_fields(cur) else {
+            return false;
+        };
+        if f.ppid == leader {
+            return true;
+        }
+        if f.ppid <= 1 {
+            return false;
+        }
+        cur = f.ppid;
+    }
+    false
 }
 
 /// The live run records of every child but `own_pid`, read afresh each time it is called. A

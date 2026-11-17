@@ -304,3 +304,51 @@ fn a_stop_whose_live_records_cannot_be_read_skips_the_walk() {
     helper.kill().unwrap();
     helper.wait().unwrap();
 }
+
+/// The plain fallback has no unit: a recorded leader's `setsid` grandchild is in neither its group
+/// nor its session, and only the parent chain claims it.
+#[test]
+fn a_detached_grandchild_of_a_recorded_leader_is_claimed_and_a_stray_is_not() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let v = root.abs_path().join("pw-1/node/bin");
+    let exe = sleeper_at(&v, "grandchild");
+    let mut stray = detached(&sleeper_at(&v, "stray"));
+    // The leader runs the helper in a new session and waits for it: leader -> setsid -> helper.
+    let mut leader = Command::new("sh")
+        .arg("-c")
+        .arg(format!("setsid -w {} 60", exe.display()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let find = || {
+        proc::proc_pids().into_iter().find(|p| {
+            std::fs::read_link(format!("/proc/{p}/exe")).is_ok_and(|e| e == exe)
+        })
+    };
+    let end = Instant::now() + Duration::from_secs(5);
+    let mut helper = None;
+    while helper.is_none() && Instant::now() < end {
+        helper = find();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let helper = helper.expect("the helper did not start");
+    let live = vec![run_record::Record {
+        name: "test".into(),
+        kind: "cli".into(),
+        pid: leader.id(),
+        unit: None,
+        start: 0,
+    }];
+    assert!(claimed(helper, &live), "the parent chain did not claim it");
+    assert!(!claimed(stray.id(), &live), "a stray was claimed");
+    let _ = rustix::process::kill_process(
+        rustix::process::Pid::from_raw(helper as i32).unwrap(),
+        rustix::process::Signal::KILL,
+    );
+    leader.kill().unwrap();
+    let _ = leader.wait();
+    stray.kill().unwrap();
+    stray.wait().unwrap();
+}

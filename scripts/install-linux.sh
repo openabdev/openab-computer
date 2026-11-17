@@ -132,6 +132,21 @@ for D in "$UNITS/oab-computer.service.d" "$UNITS/oab-instance-mcp.service.d"; do
 done
 
 mkdir -p "$BASE" "$CFG" "$UNITS"
+# Unit files are written to a fresh private temp file (mktemp creates it exclusively and never follows
+# a symlink), then renamed over the target. A target that is a symlink, or has no marker, is not ours:
+# it is left alone and the new text goes next to it as <unit>.proposed. A <unit>.proposed that is not
+# one of ours (no marker, or a symlink) is never overwritten: a timestamped name is used instead.
+UNIT_MARK='# oab-computer-installer:'
+new_unit_tmp() { local t; t="$(mktemp "$UNITS/.oab-install.XXXXXX")" || exit 74; chmod 644 "$t"; echo "$t"; }
+unit_is_ours() { [ -f "$1" ] && [ ! -L "$1" ] && grep -qF "$UNIT_MARK" "$1"; }
+unit_is_foreign() { { [ -e "$1" ] || [ -L "$1" ]; } && ! unit_is_ours "$1"; }
+place_proposed() {
+  PROPOSED="$2.proposed"
+  if { [ -e "$PROPOSED" ] || [ -L "$PROPOSED" ]; } && ! unit_is_ours "$PROPOSED"; then
+    PROPOSED="$2.proposed.$(date +%Y%m%d%H%M%S).$$"
+  fi
+  mv -fT "$1" "$PROPOSED"
+}
 if [ "$HEADLESS_SEAT" = 1 ]; then
   need sway sway
   mkdir -p "$HOME/.config/sway"
@@ -142,7 +157,8 @@ default_border none
 focus_follows_mouse no
 SWAY
   SEAT_UNOWNED=
-  cat >"$UNITS/oab-seat.service.new" <<'UNIT'
+  SEAT_TMP="$(new_unit_tmp)"
+  cat >"$SEAT_TMP" <<'UNIT'
 # oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.
 [Unit]
 Description=Headless sway seat for the oab-computer hands node
@@ -162,12 +178,12 @@ WantedBy=default.target
 UNIT
   # Ownership (D5): only a unit with the marker is rewritten. Any other existing oab-seat.service is
   # left byte for byte as it is and the unit this run would have written is put next to it.
-  if [ -f "$UNITS/oab-seat.service" ] && ! grep -qF '# oab-computer-installer:' "$UNITS/oab-seat.service"; then
-    mv "$UNITS/oab-seat.service.new" "$UNITS/oab-seat.service.proposed"
+  if unit_is_foreign "$UNITS/oab-seat.service"; then
+    place_proposed "$SEAT_TMP" "$UNITS/oab-seat.service"
     SEAT_UNOWNED=1
-    echo "install: note: $UNITS/oab-seat.service was not written by this installer, so it was left as it is. The unit this run would have written is $UNITS/oab-seat.service.proposed; to adopt it, review it, move it over oab-seat.service, then daemon-reload and restart." >&2
+    echo "install: note: $UNITS/oab-seat.service was not written by this installer, so it was left as it is. The unit this run would have written is $PROPOSED; to adopt it, review it, move it over oab-seat.service, then daemon-reload and restart." >&2
   else
-    mv "$UNITS/oab-seat.service.new" "$UNITS/oab-seat.service"
+    mv -fT "$SEAT_TMP" "$UNITS/oab-seat.service"
   fi
   systemctl --user daemon-reload
   if [ -n "$SEAT_UNOWNED" ]; then
@@ -217,7 +233,8 @@ fi
 # the unit this run would have written is put next to it as oab-computer.service.proposed.
 OWNER_MARK='# oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.'
 {
-  cat >"$UNITS/oab-computer.service.new" <<UNIT
+  UNIT_TMP="$(new_unit_tmp)"
+  cat >"$UNIT_TMP" <<UNIT
 $OWNER_MARK
 [Unit]
 Description=oab-computer (Linux hands node: /mcp + /attach)
@@ -232,14 +249,17 @@ Environment=WAYLAND_DISPLAY=$WL
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Restart=always
 RestartSec=2
+# Exit 64 means a configuration the daemon refuses (for example a non-loopback upstream URL):
+# restarting cannot fix it, so systemd must not loop on it.
+RestartPreventExitStatus=64
 # Apps opened via \`bash\` belong to the desktop, not to this daemon: a restart must not kill them.
 KillMode=process
 
 [Install]
 WantedBy=default.target
 UNIT
-  if [ -f "$UNITS/oab-computer.service" ] && ! grep -qF '# oab-computer-installer:' "$UNITS/oab-computer.service"; then
-    mv "$UNITS/oab-computer.service.new" "$UNITS/oab-computer.service.proposed"
+  if unit_is_foreign "$UNITS/oab-computer.service"; then
+    place_proposed "$UNIT_TMP" "$UNITS/oab-computer.service"
     echo "install: note: $UNITS/oab-computer.service was not written by this installer, so it was left as it is (so --port and --allow-login did not change it)." >&2
     # The health check and the tailscale serve line must follow the unit that actually runs.
     KEPT_BIND="$(sed -n 's/^Environment=BIND=127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$UNITS/oab-computer.service" | tail -1)"
@@ -249,12 +269,12 @@ UNIT
     elif [ -z "$KEPT_BIND" ]; then
       echo "install: note: could not read a 127.0.0.1 BIND port from the kept unit; the health check and tailscale serve command use port $PORT and may not match it." >&2
     fi
-    echo "The unit this run would have written is $UNITS/oab-computer.service.proposed. To adopt it: review it, move it over oab-computer.service, then daemon-reload and restart." >&2
+    echo "The unit this run would have written is $PROPOSED. To adopt it: review it, move it over oab-computer.service, then daemon-reload and restart." >&2
     if grep -qE 'MCP_UPSTREAM=' "$UNITS/oab-computer.service"; then
       echo "That unit still sets MCP_UPSTREAM; a managed browser wins over it (D5). Remove the line at cutover (docs/linux-setup.md)." >&2
     fi
   else
-    mv "$UNITS/oab-computer.service.new" "$UNITS/oab-computer.service"
+    mv -fT "$UNIT_TMP" "$UNITS/oab-computer.service"
   fi
 }
 
