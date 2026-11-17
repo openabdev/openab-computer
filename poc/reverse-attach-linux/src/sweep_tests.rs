@@ -323,9 +323,9 @@ fn a_detached_grandchild_of_a_recorded_leader_is_claimed_and_a_stray_is_not() {
         .spawn()
         .unwrap();
     let find = || {
-        proc::proc_pids().into_iter().find(|p| {
-            std::fs::read_link(format!("/proc/{p}/exe")).is_ok_and(|e| e == exe)
-        })
+        proc::proc_pids()
+            .into_iter()
+            .find(|p| std::fs::read_link(format!("/proc/{p}/exe")).is_ok_and(|e| e == exe))
     };
     let end = Instant::now() + Duration::from_secs(5);
     let mut helper = None;

@@ -145,7 +145,7 @@ place_proposed() {
   if { [ -e "$PROPOSED" ] || [ -L "$PROPOSED" ]; } && ! unit_is_ours "$PROPOSED"; then
     PROPOSED="$2.proposed.$(date +%Y%m%d%H%M%S).$$"
   fi
-  mv -fT "$1" "$PROPOSED"
+  mv -f "$1" "$PROPOSED"
 }
 if [ "$HEADLESS_SEAT" = 1 ]; then
   need sway sway
@@ -183,7 +183,7 @@ UNIT
     SEAT_UNOWNED=1
     echo "install: note: $UNITS/oab-seat.service was not written by this installer, so it was left as it is. The unit this run would have written is $PROPOSED; to adopt it, review it, move it over oab-seat.service, then daemon-reload and restart." >&2
   else
-    mv -fT "$SEAT_TMP" "$UNITS/oab-seat.service"
+    mv -f "$SEAT_TMP" "$UNITS/oab-seat.service"
   fi
   systemctl --user daemon-reload
   if [ -n "$SEAT_UNOWNED" ]; then
@@ -274,7 +274,7 @@ UNIT
       echo "That unit still sets MCP_UPSTREAM; a managed browser wins over it (D5). Remove the line at cutover (docs/linux-setup.md)." >&2
     fi
   else
-    mv -fT "$UNIT_TMP" "$UNITS/oab-computer.service"
+    mv -f "$UNIT_TMP" "$UNITS/oab-computer.service"
   fi
 }
 
