@@ -27,3 +27,8 @@ ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 # The system root store for the https mint (#140). Already in the tree through tungstenite's
 # rustls-tls-native-roots, same locked version, so no new code in the binary.
 rustls-native-certs = "0.7"
+
+[dev-dependencies]
+# Test-only certificate generation for the wss mint tests (#157), so `cargo test` needs no
+# `openssl` command line tool. ring backend only (aws-lc-rs is banned by CI); not in the release binary.
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }

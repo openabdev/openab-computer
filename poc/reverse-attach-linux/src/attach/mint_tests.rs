@@ -1,90 +1,59 @@
 //! `mint` against local fake runtimes on loopback ephemeral ports. The TLS ones present a
-//! self-signed certificate generated here with the `openssl` command line tool, and the client
-//! trusts exactly that certificate through the test-only `MintTrust::with_root_der`. Nothing a
+//! certificate signed by a throwaway CA generated in memory with `rcgen`, and the client
+//! trusts exactly that CA through the test-only `MintTrust::with_root_der`. Nothing a
 //! production process reads (environment, files) can select that trust.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use rcgen::{
+    BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose, SanType,
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use super::{mint_with, MintTrust};
 
 const CRED: &str = "adm-9f3c-SECRET-credential";
 
+/// A throwaway CA and one leaf it signed, generated in memory with `rcgen` (pure Rust, no
+/// `openssl` command line tool). Test only: the keys exist for the life of one test.
 struct Pki {
-    dir: PathBuf,
+    ca_der: Vec<u8>,
     cert_der: Vec<u8>,
     key_der: Vec<u8>,
 }
 
-impl Drop for Pki {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+/// A fresh CA and a leaf for 127.0.0.1 signed by it.
+fn pki() -> Pki {
+    pki_for(SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)))
 }
 
-fn run(dir: &Path, args: &[&str]) {
-    let out = Command::new("openssl")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("openssl is needed by the mint tests");
-    assert!(
-        out.status.success(),
-        "openssl {:?}: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
+/// A fresh CA and a leaf carrying only the given subject alternative name.
+fn pki_for(san: SanType) -> Pki {
+    let ca_key = KeyPair::generate().unwrap();
+    let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "oab-mint-test-ca");
+    let ca = ca_params.self_signed(&ca_key).unwrap();
 
-/// A fresh self-signed certificate for 127.0.0.1, valid for a day, in a private temp dir.
-fn pki(tag: &str) -> Pki {
-    let dir = std::env::temp_dir().join(format!("oab-mint-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join("c.cnf"),
-        "[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n\
-         [dn]\nCN=oab-mint-test\n\
-         [ext]\nsubjectAltName=IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\n",
-    )
-    .unwrap();
-    run(
-        &dir,
-        &[
-            "ecparam",
-            "-name",
-            "prime256v1",
-            "-genkey",
-            "-noout",
-            "-out",
-            "k.pem",
-        ],
-    );
-    run(
-        &dir,
-        &[
-            "req", "-new", "-x509", "-key", "k.pem", "-days", "1", "-config", "c.cnf", "-outform",
-            "DER", "-out", "c.der",
-        ],
-    );
-    run(
-        &dir,
-        &[
-            "pkcs8", "-topk8", "-nocrypt", "-in", "k.pem", "-outform", "DER", "-out", "k.der",
-        ],
-    );
+    let key = KeyPair::generate().unwrap();
+    let mut params = CertificateParams::new(Vec::new()).unwrap();
+    params.subject_alt_names = vec![san];
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "oab-mint-test");
+    let cert = params.signed_by(&key, &ca, &ca_key).unwrap();
     Pki {
-        cert_der: std::fs::read(dir.join("c.der")).unwrap(),
-        key_der: std::fs::read(dir.join("k.der")).unwrap(),
-        dir,
+        ca_der: ca.der().to_vec(),
+        cert_der: cert.der().to_vec(),
+        key_der: key.serialize_der(),
     }
 }
 
@@ -240,7 +209,7 @@ fn ok_reply(_: &str) -> Vec<u8> {
 }
 
 fn trust_for(p: &Pki) -> MintTrust {
-    MintTrust::with_root_der(&p.cert_der)
+    MintTrust::with_root_der(&p.ca_der)
 }
 
 fn assert_no_credential(text: &str) {
@@ -249,7 +218,7 @@ fn assert_no_credential(text: &str) {
 
 #[test]
 fn wss_mint_succeeds_and_sends_the_contract_request() {
-    let p = pki("ok");
+    let p = pki();
     let server = fake(Some(&p), ok_reply);
     let runtime = format!("wss://127.0.0.1:{}", server.port);
     let got = mint_with(&trust_for(&p), &runtime, "sess-1", CRED, 300).expect("wss mint");
@@ -267,7 +236,7 @@ fn wss_mint_succeeds_and_sends_the_contract_request() {
 
 #[test]
 fn wss_mint_keeps_a_runtime_path_prefix_and_trailing_slash() {
-    let p = pki("prefix");
+    let p = pki();
     let server = fake(Some(&p), ok_reply);
     let runtime = format!("wss://127.0.0.1:{}/pod-a/", server.port);
     mint_with(&trust_for(&p), &runtime, "s", CRED, 60).expect("wss mint");
@@ -276,8 +245,8 @@ fn wss_mint_keeps_a_runtime_path_prefix_and_trailing_slash() {
 
 #[test]
 fn a_certificate_the_client_does_not_trust_is_refused() {
-    let trusted = pki("trusted");
-    let served = pki("other");
+    let trusted = pki();
+    let served = pki();
     let server = fake(Some(&served), ok_reply);
     let runtime = format!("wss://127.0.0.1:{}", server.port);
     let err = mint_with(&trust_for(&trusted), &runtime, "s", CRED, 60).unwrap_err();
@@ -291,8 +260,28 @@ fn a_certificate_the_client_does_not_trust_is_refused() {
 }
 
 #[test]
+fn a_certificate_for_another_host_from_a_trusted_root_is_refused() {
+    // Chains to the trusted CA, but names 127.0.0.2 and a DNS name, not the 127.0.0.1 dialed.
+    for san in [
+        SanType::IpAddress(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2))),
+        SanType::DnsName("wrong.invalid".try_into().unwrap()),
+    ] {
+        let p = pki_for(san);
+        let server = fake(Some(&p), ok_reply);
+        let runtime = format!("wss://127.0.0.1:{}", server.port);
+        let err = mint_with(&trust_for(&p), &runtime, "s", CRED, 60).unwrap_err();
+        assert!(err.contains("certificate"), "{err}");
+        assert_no_credential(&err);
+        assert!(
+            server.requests().is_empty(),
+            "the request went out to a host the certificate does not name"
+        );
+    }
+}
+
+#[test]
 fn wss_to_a_plaintext_server_fails_without_sending_the_credential() {
-    let p = pki("plainsrv");
+    let p = pki();
     let server = fake(None, ok_reply);
     let runtime = format!("wss://127.0.0.1:{}", server.port);
     let err = mint_with(&trust_for(&p), &runtime, "s", CRED, 60).unwrap_err();
@@ -302,7 +291,7 @@ fn wss_to_a_plaintext_server_fails_without_sending_the_credential() {
 
 #[test]
 fn a_redirect_to_another_host_is_refused_and_not_followed() {
-    let p = pki("redir");
+    let p = pki();
     let elsewhere = fake(Some(&p), ok_reply);
     let target = format!("https://127.0.0.1:{}/steal", elsewhere.port);
     for status in [
@@ -329,7 +318,7 @@ fn a_redirect_to_another_host_is_refused_and_not_followed() {
 
 #[test]
 fn a_redirect_from_a_plain_http_runtime_is_refused_too() {
-    let p = pki("redir-plain");
+    let p = pki();
     let elsewhere = fake(None, ok_reply);
     let location = format!("Location: http://127.0.0.1:{}/x\r\n", elsewhere.port);
     let server = fake(None, move |_| http("302 Found", &location, b""));
@@ -341,7 +330,7 @@ fn a_redirect_from_a_plain_http_runtime_is_refused_too() {
 
 #[test]
 fn an_oversized_response_is_refused() {
-    let p = pki("big");
+    let p = pki();
     let big = vec![b'x'; 1024 * 1024];
     let server = fake(Some(&p), move |_| http("200 OK", "", &big));
     let runtime = format!("wss://127.0.0.1:{}", server.port);
@@ -352,7 +341,7 @@ fn an_oversized_response_is_refused() {
 
 #[test]
 fn an_oversized_plain_http_response_is_refused() {
-    let p = pki("big-plain");
+    let p = pki();
     let big = vec![b'x'; 1024 * 1024];
     let server = fake(None, move |_| http("200 OK", "", &big));
     let runtime = format!("ws://127.0.0.1:{}", server.port);
@@ -362,7 +351,7 @@ fn an_oversized_plain_http_response_is_refused() {
 
 #[test]
 fn the_credential_never_appears_in_an_error_even_when_the_runtime_echoes_it() {
-    let p = pki("echo");
+    let p = pki();
     let echo = |req: &str| {
         let line = req
             .lines()
@@ -431,7 +420,7 @@ fn json_escape_all(text: &str) -> String {
 
 #[test]
 fn a_json_escaped_credential_is_refused_as_secret_and_not_echoed_in_errors() {
-    let p = pki("escaped");
+    let p = pki();
     let esc = json_escape_all(CRED);
     let body = format!("{{\"secret\":\"{esc}\"}}");
     let ok = fake(Some(&p), move |_| http("200 OK", "", body.as_bytes()));
@@ -478,7 +467,7 @@ fn a_json_escaped_credential_is_refused_as_secret_and_not_echoed_in_errors() {
 fn a_credential_inside_the_runtime_or_session_is_refused_before_any_request() {
     // The runtime and session are persisted in grants.json, so a credential embedded in
     // either must never reach a request, a grant or an error string.
-    let p = pki("authority");
+    let p = pki();
     let server = fake(None, ok_reply);
     for (runtime, session) in [
         (format!("ws://{CRED}.invalid:9"), "s".to_string()),
@@ -518,7 +507,7 @@ fn a_credential_inside_the_runtime_or_session_is_refused_before_any_request() {
 fn a_credential_with_a_control_character_is_refused_before_any_request() {
     let server = fake(None, ok_reply);
     let runtime = format!("ws://127.0.0.1:{}", server.port);
-    let p = pki("ctl");
+    let p = pki();
     let err = mint_with(&trust_for(&p), &runtime, "s", "a\r\nX-Evil: 1", 60).unwrap_err();
     assert!(err.contains("control character"), "{err}");
     assert!(server.requests().is_empty());
@@ -526,7 +515,7 @@ fn a_credential_with_a_control_character_is_refused_before_any_request() {
 
 #[test]
 fn plain_http_behaviour_is_unchanged() {
-    let p = pki("plain");
+    let p = pki();
     let server = fake(None, ok_reply);
     let runtime = format!("ws://127.0.0.1:{}/", server.port);
     let got = mint_with(&trust_for(&p), &runtime, "sess-2", CRED, 120).expect("ws mint");
@@ -575,7 +564,7 @@ fn plain_http_behaviour_is_unchanged() {
 
 #[test]
 fn only_ws_and_wss_runtimes_are_accepted() {
-    let p = pki("scheme");
+    let p = pki();
     for runtime in [
         "http://127.0.0.1:1",
         "https://127.0.0.1:1",
