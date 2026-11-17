@@ -10,6 +10,16 @@ use std::sync::Arc;
 /// A stub Playwright MCP server. It logs every line it receives and its arguments beside itself, and
 /// answers like `child_tests::GOOD`. `nav` is the body of the `tools/call` answer.
 fn node(nav: &str, stderr: &str) -> String {
+    node_close(nav, stderr, r#"{"content":[]}"#)
+}
+
+/// Like `node`, with `close` as the whole `result` or `error` member of the `browser_close` answer.
+fn node_close(nav: &str, stderr: &str, close: &str) -> String {
+    let close = if close.starts_with("{\"code\"") {
+        format!("\"error\":{close}")
+    } else {
+        format!("\"result\":{close}")
+    };
     format!(
         r#"#!/bin/sh
 d=$(dirname "$0")
@@ -20,7 +30,7 @@ while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"serverInfo":{{"name":"Playwright"}}}}}}\n' "$id";;
-    *'"name":"browser_close"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"content":[]}}}}\n' "$id";;
+    *'"name":"browser_close"'*) printf '{{"jsonrpc":"2.0","id":%s,%s}}\n' "$id" '{close}';;
     *'"method":"tools/call"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{nav}}}\n' "$id";;
   esac
 done
@@ -344,6 +354,19 @@ fn a_wait_that_did_not_end_on_enter_is_not_success() {
         let o = go_ended(&fx, true, seat(), "about:blank", ended);
         assert_eq!(o.result, Err(class));
         assert_eq!(o.waits, 1);
+        assert!(crate::run_record::live(&fx.root()).is_empty());
+    }
+}
+
+#[test]
+fn a_close_that_failed_is_not_reported_as_a_finished_sign_in() {
+    for close in [
+        r#"{"isError":true,"content":[]}"#,
+        r#"{"code":-32000,"message":"no"}"#,
+    ] {
+        let fx = Fx::new(&node_close(OK_NAV, "", close));
+        let r = go(&fx, true, seat(), "about:blank");
+        assert_eq!(r.result, Err("close_failed"), "{close}");
         assert!(crate::run_record::live(&fx.root()).is_empty());
     }
 }

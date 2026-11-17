@@ -17,7 +17,7 @@ details are in the README sections
 |---|---|---|
 | Who runs Playwright | The app, as a child process over stdio (**managed**), or an operator-run listener you point it at (**external**) | After 0.12.0: the daemon, as a child over stdio in its own systemd user unit (**managed**). In 0.12.0 and earlier, and on a host that still has the old unit: `oab-computer-pw-mcp.service` (**external**) |
 | Listening port | Managed: none. External: `127.0.0.1:8794` | Managed: none. External: `127.0.0.1:8794`, no authentication |
-| How you install it | Setup wizard page or menu item | `install-linux.sh` asks (`--browser managed` or `--yes` to agree, `--browser none` or `--no-browser` to skip), or `oab-computer browser install` |
+| How you install it | Setup wizard page or menu item | After 0.12.0: `install-linux.sh` asks (`--browser managed` or `--yes` to agree, `--browser none` or `--no-browser` to skip), or `oab-computer browser install` |
 | Browser | A pinned Chromium (Chrome for Testing) the app downloads | A pinned Chromium (Chrome for Testing) the install downloads, with a pinned Node.js |
 | Update and remove | Menu items | `oab-computer browser update` and `remove` |
 | Sign-in window | Menu item **Open Playwright window to sign in…** | `oab-computer browser signin`, run over `ssh -t`; the window is on the node's seat |
@@ -183,7 +183,7 @@ command. The steps to turn it off and to remove what is left are in
 | The router and the `OAB-Browser-Backend` header | yes | | |
 | Profile filtering of upstream tools against the built-in catalog | yes (a tool Playwright adds later stays hidden until the catalog is updated) | | |
 | Pass-through of whatever the external upstream lists (the managed backend filters to the catalog) | | yes | |
-| `--browser managed\|none`, `--yes` and `--apply-system-changes` installer options, and the 8794 caveat of an old unit | | yes | |
+| After 0.12.0: `--browser managed\|none`, `--yes` and `--apply-system-changes` installer options; the 8794 caveat of an old unit | | yes | |
 | External Playwright on loopback 8794 | | | yes, on Linux only for an old install or `MCP_BROWSER_BACKEND=external` |
 | `owner`-only access, persistent profile with cookies | | | yes |
 

@@ -16,7 +16,7 @@
 //! stderr is printed: failures are fixed classes.
 //!
 //! Classes: `terminal_required`, `not_installed`, `no_seat`, `profile_locked`, `launch_refused`,
-//! `spawn_failed`, `invalid_url`, `cancelled`, `browser_exited`, `timed_out`.
+//! `spawn_failed`, `invalid_url`, `cancelled`, `browser_exited`, `timed_out`, `close_failed`.
 
 use std::path::Path;
 use std::sync::mpsc;
@@ -236,13 +236,16 @@ fn drive(
     io.say("Sign in in the browser window. Press Enter here when finished.");
     let ended = wait(rpc.child);
     // `browser_close` lets Chromium flush its cookies before the tree is stopped.
-    let _ = rpc.call(
+    let closed = rpc.call(
         "tools/call",
         json!({"name": "browser_close", "arguments": {}}),
         s.timeouts.close,
     );
+    let closed_ok = matches!(&closed, Ok(r) if !is_error_result(r));
     match ended {
-        Ended::Enter => Ok(()),
+        // A close that failed was not confirmed to have flushed the cookies, so it is not a success.
+        Ended::Enter if closed_ok => Ok(()),
+        Ended::Enter => Err("close_failed"),
         Ended::Cancelled => Err("cancelled"),
         Ended::ChildExited => Err("browser_exited"),
         Ended::TimedOut => Err("timed_out"),

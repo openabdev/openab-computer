@@ -2,7 +2,7 @@
 
 Start with the [project README](../README.md): what OpenAB Computer is, quick start, tools, auth, ports
 and the install and upgrade sections. This page lists every document under `docs/` with one line each
-and its status. Status is as of v0.12.0.
+and its status. Status is as of v0.12.0, except the Linux browser tier rows, which are as of `main` after it.
 
 ## Guides
 

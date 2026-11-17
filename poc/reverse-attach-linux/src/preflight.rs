@@ -364,7 +364,10 @@ pub fn apparmor_profile(data_base: &Path) -> Option<Vec<String>> {
         vec![
             "abi <abi/4.0>,".to_string(),
             "include <tunables/global>".to_string(),
-            format!("profile {} {p}/*/chromium/**/chrome flags=(unconfined) {{", apparmor_name(p)),
+            format!(
+                "profile {} {p}/*/chromium/**/chrome flags=(unconfined) {{",
+                apparmor_name(p)
+            ),
             "  userns,".to_string(),
             "}".to_string(),
         ]

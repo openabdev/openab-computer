@@ -281,7 +281,7 @@ profile (below).
 
 ## Network interfaces and ports
 
-This section describes v0.12.0 (and `main` at the time of writing). Checked by reading the code and by a read-only look at a running agent
+This section describes v0.12.0 (and `main` at the time of writing). Where the Linux bullets say "after 0.12.0", they describe `main`, not the 0.12.0 release. Checked by reading the code and by a read-only look at a running agent
 (an older 0.10.1 install) and a bare 0.12.0 launch. The menu bar item's Network section shows the
 same facts (see [What the menu shows](#what-the-menu-shows)).
 
@@ -447,10 +447,13 @@ macOS:
   `scripts/install-linux.sh` sets `127.0.0.1:8795`.
 - `/attach` is always on. There is no `--no-attach`.
 - There is no switchboard and no menu bar.
-- `install-linux.sh` never runs `sudo` on its own. It prints each root action (linger,
+- 0.12.0 and earlier: `install-linux.sh` runs `sudo tailscale serve` when passwordless sudo exists, and installs
+  `oab-computer-pw-mcp.service` on unauthenticated `127.0.0.1:8794` plus an `MCP_UPSTREAM` line when
+  `node` and `npm` exist, unless `--no-browser` is given.
+- After 0.12.0, `install-linux.sh` never runs `sudo` on its own. It prints each root action (linger,
   `tailscale serve` for `:8444`, the AppArmor profile, missing libraries, fonts) with its exact
   command and reason, and runs them only with `--apply-system-changes`.
-- `install-linux.sh` downloads nothing without consent. On a terminal it shows what the browser
+- After 0.12.0, `install-linux.sh` downloads nothing without consent. On a terminal it shows what the browser
   install downloads and asks `[Y/n]`; with no terminal it downloads only with `--browser managed` or
   `--yes`; `--browser none` (or `--no-browser`) skips it. It writes no browser unit and no
   `MCP_UPSTREAM` line. What is downloaded, how big and where it goes is in
@@ -465,7 +468,7 @@ macOS:
   this node can call every browser tool there, including `browser_run_code_unsafe` (arbitrary Node
   code). The installer warns with the exact `systemctl --user disable --now <unit>` command and does
   not touch the unit; see [Upgrading a host that already has a browser unit](docs/linux-setup.md#upgrading-a-host-that-already-has-a-browser-unit).
-- Sign in once, for a login the browser keeps: `ssh -t <node> '~/.local/oab-computer/oab-computer browser signin'`
+- After 0.12.0, sign in once, for a login the browser keeps: `ssh -t <node> '~/.local/oab-computer/oab-computer browser signin'`
   ([Sign in](docs/linux-setup.md#sign-in)). The profile is obfuscated with `--password-store=basic`,
   not strongly encrypted.
 - The Linux node does use a Unix domain socket: it connects, as a client, to the Wayland socket for
@@ -803,7 +806,7 @@ To upgrade:
    systemctl --user restart oab-computer.service
    ```
 
-   (After 0.12.0 the installer enables the unit itself once the old one is gone; run it again after the `disable --now`.)
+   (After 0.12.0 the installer enables the unit itself once the old one is gone, if the unit carries the installer's marker line; run it again after the `disable --now`. For a unit it did not write, it prints the `enable --now` command instead.)
 
    After the new agent works you can delete the old directories.
 

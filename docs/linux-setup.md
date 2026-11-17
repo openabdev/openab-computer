@@ -493,8 +493,7 @@ the daemon) to bring it back. If the
 terminal closes before Enter (end of input, for example a dropped SSH session), the sign-in counts
 as `cancelled`, not as finished. Its failure classes are `terminal_required`, `not_installed`,
 `no_seat`, `profile_locked`, `launch_refused`, `spawn_failed`, `invalid_url`, `cancelled`,
-`browser_exited`, `timed_out`, `install_invalid`, `state_unavailable` and the temporary-directory
-errors (`RuntimeTmp`); none prints page data. Killing the command with `kill -9` leaves its unit running until the bound (30 minutes for
+`browser_exited`, `close_failed` (the browser did not confirm its close, so the login may not be saved), `timed_out`, `install_invalid`, `state_unavailable` and `tmp_unavailable`; none prints page data. Killing the command with `kill -9` leaves its unit running until the bound (30 minutes for
 sign-in, 5 minutes for an install's health check) or the next sweep, which a later `browser`
 command that starts a child runs.
 
@@ -769,7 +768,7 @@ systemctl --user enable oab-computer.service   # `restart` alone does not enable
 systemctl --user restart oab-computer.service
 ```
 
-In releases after 0.12.0 the installer does the `enable` itself once the old unit is gone: run it again after the `disable --now`.
+In releases after 0.12.0 the installer does the `enable` itself once the old unit is gone, when `oab-computer.service` carries the installer's marker line (a unit written by the 0.12.0 installer does not): run it again after the `disable --now`, and for an unmarked unit run the `enable --now` command it prints.
 
 An old browser unit (`oab-pw-mcp.service`) is handled as described in the next section. Full
 steps, with backup and rollback: [Upgrading from 0.11 or earlier](upgrade-0.12.md). The README has
@@ -790,7 +789,7 @@ installer does on each kind of host:
 | --- | --- | --- |
 | New: nothing from before | Writes the daemon unit without `MCP_UPSTREAM`, asks about the browser. | Nothing. |
 | New-style unit: `oab-computer-pw-mcp.service` from 0.12.0, and an `MCP_UPSTREAM` line inside `oab-computer.service` | Warns, with the exact command to turn the unit off. The installer rewrites `oab-computer.service` only when the unit carries its own marker line (`# oab-computer-installer:`). A unit without it, which includes any unit from before the marker existed, is left byte for byte as it is (whatever it contains, `MCP_UPSTREAM` included); the unit this run would have written is put beside it as `oab-computer.service.proposed`. The binary is still replaced. The installer restarts that unit only if it is already running, and never enables or starts it (the same rule as for `oab-seat.service`). | After `browser status` shows the managed browser working: `systemctl --user disable --now oab-computer-pw-mcp.service`, then remove the `MCP_UPSTREAM` line (back it up first), or review and move `.proposed` over the unit, `daemon-reload`, restart. |
-| Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line when there is none or it carries the installer's marker (an unmarked existing one is left as it is, with `.proposed` beside it; no backup copy is made) and leaves the drop-in alone. If `oab-instance-mcp.service` (0.11 or earlier) is still live it holds port 8795: the installer warns, writes the new unit but does not enable, start or restart `oab-computer.service` and does not check the daemon; disable that unit first (`systemctl --user disable --now oab-instance-mcp.service`), then `systemctl --user enable --now oab-computer.service`. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. If a `.proposed` file sits beside `oab-computer.service`, adopt it too (review it, move it over the unit): until then later installer runs leave the unmarked unit alone. |
+| Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line when there is none or it carries the installer's marker (an unmarked existing one is left as it is, with `.proposed` beside it, and is restarted only if it is already running, never enabled or started; no backup copy is made) and leaves the drop-in alone. If `oab-instance-mcp.service` (0.11 or earlier) is still live it holds port 8795: the installer warns, writes the new unit but does not enable, start or restart `oab-computer.service` and does not check the daemon; disable that unit first (`systemctl --user disable --now oab-instance-mcp.service`), then `systemctl --user enable --now oab-computer.service`. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. If a `.proposed` file sits beside `oab-computer.service`, adopt it too (review it, move it over the unit): until then later installer runs leave the unmarked unit alone. |
 
 A plain `systemctl stop` is not enough: those units come back at the next login or boot, and each
 is an unauthenticated Playwright on loopback `8794`. While the old unit and its line exist, a
@@ -858,7 +857,8 @@ below is marked if it needs root.
    ```
 
    The profile for the managed browser is a different file, `/etc/apparmor.d/oab-computer-chromium-<id>` (`<id>` is a short hash of the install
-   path, so each user on a host has their own), and stays.
+   path, so each user on a host has their own), and stays. A host that ran a pre-release `main` build
+   may also have an unsuffixed `/etc/apparmor.d/oab-computer-chromium`; no release shipped it, and it can be removed the same way as the file above (`sudo apparmor_parser -R` it, then `sudo rm` it).
 
 4. Delete the old Chromium policy file the old installer wrote. **Root:**
    `sudo rm /etc/chromium/policies/managed/oab-computer.json`. Installers from the 0.11 era named

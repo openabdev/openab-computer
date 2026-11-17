@@ -145,6 +145,7 @@ fn hint(class: &str) -> Option<&'static str> {
         "spawn_failed" => "the browser did not start; run `oab-computer browser status`",
         "invalid_url" => "--url takes an http:// or https:// address of at most 2048 bytes, with no spaces",
         "browser_exited" => "the browser ended before you pressed Enter; nothing was saved for certain. Run `oab-computer browser signin` again",
+        "close_failed" => "the browser did not confirm that it closed, so the login may not have been saved; run `oab-computer browser signin` again",
         "timed_out" => "the sign-in window stayed open for 30 minutes and was closed; run `oab-computer browser signin` again",
         "cancelled" => "the sign-in was interrupted or its input closed before Enter; the browser was stopped and nothing is confirmed",
         "root_not_directory" => "the install root or a directory above it is a link, is not yours, or is writable by others; nothing below it was touched",

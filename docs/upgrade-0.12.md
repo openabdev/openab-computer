@@ -221,7 +221,7 @@ systemctl --user enable oab-computer.service
 systemctl --user restart oab-computer.service
 ```
 
-After 0.12.0 the Linux installer enables the unit itself once the old one is gone; run it again after Step 4.
+After 0.12.0 the Linux installer enables the unit itself once the old one is gone, when the unit carries the installer's marker line (a unit written by the 0.12.0 installer does not); run it again after Step 4, and for an unmarked unit run the `enable --now` command it prints.
 
 ## Step 6: check
 

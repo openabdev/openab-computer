@@ -341,8 +341,14 @@ fn apparmor_restriction_prints_the_exact_command_and_never_runs_it() {
     assert_eq!(r.root_actions.len(), 1);
     let a = &r.root_actions[0];
     let name = apparmor_name("/home/u/.local/share/oab-computer/playwright");
-    assert!(name.starts_with("oab-computer-chromium-") && name.len() == "oab-computer-chromium-".len() + 8);
-    assert_ne!(name, apparmor_name("/home/v/.local/share/oab-computer/playwright"));
+    assert!(
+        name.starts_with("oab-computer-chromium-")
+            && name.len() == "oab-computer-chromium-".len() + 8
+    );
+    assert_ne!(
+        name,
+        apparmor_name("/home/v/.local/share/oab-computer/playwright")
+    );
     assert_eq!(
         a.command,
         format!(
