@@ -13,7 +13,7 @@
 //! - Errors are fixed classes (`Class`). No text of the child, of stderr or of a tool result is ever
 //!   copied into an error. A successful result is returned as it came.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
@@ -28,6 +28,9 @@ pub const MAX_LINE: usize = crate::health::MAX_LINE;
 pub const MAX_PENDING: usize = 64;
 /// Bytes that may wait for the writer thread at once.
 const WRITE_BUDGET: usize = 32 * 1024 * 1024;
+/// Bounds of a paged `tools/list`, the same as the Swift client.
+pub const MAX_LIST_PAGES: usize = 50;
+pub const MAX_LIST_TOOLS: usize = 2000;
 /// Lines that are not JSON-RPC at all, tolerated before the client gives up.
 const MAX_STRAY_LINES: usize = 1000;
 
@@ -252,6 +255,78 @@ impl Client {
             };
             let _ = tx.try_send(reply);
         }
+    }
+}
+
+/// Collects every page of `tools/list`, following `nextCursor` until it is absent, null or the empty
+/// string. `call(params, timeout)` issues one request. Each request gets `min(per_request, time left)`
+/// and the whole walk is bounded by one monotonic `overall` deadline: when it has passed before a
+/// page is requested the walk fails with `timeout`. At most `MAX_LIST_PAGES` pages and `MAX_LIST_TOOLS`
+/// raw tools (counted before de-duplication); a repeated cursor, a cursor that is not a string, or
+/// too many pages or tools fails closed with `bad`, an error of the server and not of the child. A
+/// failing page drops what earlier pages returned. A page without a `tools` array counts as empty.
+/// Order is kept; tools are de-duplicated by string `name`, the first one wins, and an entry without
+/// a string name is kept as it is.
+pub fn list_tools_paged<E: Copy>(
+    per_request: Duration,
+    overall: Duration,
+    mut call: impl FnMut(Value, Duration) -> Result<Value, E>,
+    bad: E,
+    timeout: E,
+) -> Result<Vec<Value>, E> {
+    let start = Instant::now();
+    let mut tools: Vec<Value> = Vec::new();
+    let mut names: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut raw = 0usize;
+    let mut params = json!({});
+    for _ in 0..MAX_LIST_PAGES {
+        let left = overall.saturating_sub(start.elapsed());
+        if left.is_zero() {
+            return Err(timeout);
+        }
+        let page = call(params, per_request.min(left))?;
+        if let Some(a) = page.get("tools").and_then(Value::as_array) {
+            raw += a.len();
+            if raw > MAX_LIST_TOOLS {
+                return Err(bad);
+            }
+            for t in a {
+                if let Some(n) = t.get("name").and_then(Value::as_str) {
+                    if !names.insert(n.to_string()) {
+                        continue;
+                    }
+                }
+                tools.push(t.clone());
+            }
+        }
+        match page.get("nextCursor") {
+            None | Some(Value::Null) => return Ok(tools),
+            Some(Value::String(c)) if c.is_empty() => return Ok(tools),
+            Some(Value::String(c)) => {
+                if !seen.insert(c.clone()) {
+                    return Err(bad);
+                }
+                params = json!({"cursor": c});
+            }
+            Some(_) => return Err(bad),
+        }
+    }
+    Err(bad)
+}
+
+impl Client {
+    /// Every tool the server lists, following `nextCursor` (see `list_tools_paged`). `timeout` bounds
+    /// each request and the whole listing.
+    #[allow(dead_code)]
+    pub fn list_tools(&self, timeout: Duration) -> Result<Vec<Value>, Class> {
+        list_tools_paged(
+            timeout,
+            timeout,
+            |p, t| self.call("tools/list", p, t),
+            Class::BadBody,
+            Class::Timeout,
+        )
     }
 }
 
