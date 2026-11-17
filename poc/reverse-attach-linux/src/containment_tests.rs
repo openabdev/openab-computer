@@ -594,6 +594,108 @@ fn kill_all_names_the_unit_and_never_a_pid_or_a_non_unit_name() {
     assert_eq!(after, log, "a refused name reached systemctl");
 }
 
+/// A fake `systemctl` that answers every `show` with `state` and fails every `kill`.
+fn failing_kill_tools(t: &TempDir, state: &str) -> Sys {
+    let bin = t.path.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    write_exec(
+        &bin.join("systemctl"),
+        format!(
+            "#!/bin/sh\ncase \" $* \" in\n  *\" show \"*) echo {state}; exit 0;;\n  *\" kill \"*) exit 1;;\n  *) exit 0;;\nesac\n"
+        )
+        .as_bytes(),
+    );
+    Sys {
+        path: vec![bin],
+        runtime_dir: Some(t.path.clone()),
+        bus: None,
+    }
+}
+
+#[test]
+fn a_cleanup_whose_kill_failed_and_whose_unit_is_still_active_is_a_failed_cleanup() {
+    let t = TempDir::new();
+    let sys = failing_kill_tools(&t, "active");
+    let mut fx = Fixture {
+        sys: &sys,
+        units: vec!["oab-l4-test-selftest-ab-p.service".into()],
+        recorded: Vec::new(),
+        daemon_unit: None,
+        bind_child: true,
+    };
+    assert!(!fx.cleanup(), "a unit that is still active passed cleanup");
+    assert!(fx.units.is_empty(), "the unit list is spent either way");
+    // A failed `kill` for a unit that is already gone is not a failure: the state check decides.
+    let t = TempDir::new();
+    let sys = failing_kill_tools(&t, "inactive");
+    let mut fx = Fixture {
+        sys: &sys,
+        units: vec!["oab-l4-test-selftest-ab-p.service".into()],
+        recorded: Vec::new(),
+        daemon_unit: None,
+        bind_child: true,
+    };
+    assert!(fx.cleanup());
+}
+
+#[test]
+fn cleanup_fails_while_a_recorded_process_lives() {
+    let t = TempDir::new();
+    let sys = failing_kill_tools(&t, "inactive");
+    let me = std::process::id();
+    let mut fx = Fixture {
+        sys: &sys,
+        units: Vec::new(),
+        // This process, by pid and start time: it does not exit, so cleanup must say so.
+        recorded: vec![(me, crate::state::proc_start_time(me).unwrap())],
+        daemon_unit: None,
+        bind_child: true,
+    };
+    assert!(!fx.cleanup());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "needs a systemd user manager; OAB_L2_SYSTEMD=1"]
+fn cleanup_records_and_kills_the_straggler_of_the_restarted_parent() {
+    if !enabled() {
+        return;
+    }
+    let sys = Sys::from_env();
+    // L5 test units carry their own prefix, so a leftover is attributable to this test.
+    let prefix = "oab-l5-test-rec";
+    let base = format!("{prefix}-{}", crate::state::random_hex(4));
+    let parent_u = format!("{base}-p.service");
+    let mut fx = Fixture {
+        sys: &sys,
+        units: Vec::new(),
+        recorded: Vec::new(),
+        daemon_unit: None,
+        bind_child: true,
+    };
+    assert!(fx.run(&base), "the fixture did not pass");
+    // The parent restarted after the kill of its main process (`Restart=always`): its new main
+    // process and new straggler were never recorded by the run.
+    let mut now: Vec<(u32, u64)> = Vec::new();
+    assert!(fx.wait(Duration::from_secs(6), || {
+        now = fx.inside(&parent_u);
+        now.len() >= 2
+    }));
+    assert!(
+        now.iter().any(|p| !fx.recorded.contains(p)),
+        "the restart added nothing to record, so this test shows nothing"
+    );
+    assert!(fx.cleanup());
+    for (p, t) in &now {
+        assert_ne!(
+            crate::state::proc_start_time(*p),
+            Some(*t),
+            "a process of the restarted parent outlived cleanup"
+        );
+    }
+    assert_eq!(sys.list_prefixed(prefix), Some(Vec::new()));
+}
+
 #[test]
 fn the_mode_follows_what_the_mount_probe_applied() {
     use crate::hardening::Val;

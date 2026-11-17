@@ -300,6 +300,30 @@ fn host_starts_the_base_probe() -> bool {
     ok
 }
 
+/// The fallback the two unit-mode tests would otherwise skip over: where the base probe cannot
+/// start, `verify` fails closed and a CLI child runs plain (#132). Asserted instead of returned
+/// from: the child has a run record with no unit, no unit was made, and SIGTERM still ends the
+/// child and its detached grandchild through the process-tree layers.
+#[cfg(target_os = "linux")]
+fn assert_unit_mode_falls_back_to_plain() {
+    let t = TempDir::new();
+    let mut h = start_helper(&t, "systemd");
+    let root = Root::open(&t.base(), false).unwrap().unwrap();
+    let live = run_record::live(&root);
+    assert_eq!(live.len(), 1, "the run record");
+    assert_eq!(
+        live[0].unit, None,
+        "a unit was made on a host that cannot verify"
+    );
+    assert_eq!(units_left(), 0, "a unit is left");
+    assert!(h.child_alive() && h.grand_alive());
+    h.signal("TERM");
+    h.wait_exit();
+    assert!(h.until(|h| !h.child_alive()), "plain: child");
+    assert!(h.until(|h| !h.grand_alive()), "plain: detached grandchild");
+    assert!(run_record::live(&root).is_empty());
+}
+
 #[cfg(target_os = "linux")]
 fn units_left() -> usize {
     test_systemd()
@@ -312,7 +336,11 @@ fn units_left() -> usize {
 #[test]
 #[ignore = "needs a systemd user manager; OAB_L2_SYSTEMD=1"]
 fn a_cli_child_in_a_real_unit_is_stopped_by_hup_term_and_int() {
-    if std::env::var_os("OAB_L2_SYSTEMD").is_none() || !host_starts_the_base_probe() {
+    if std::env::var_os("OAB_L2_SYSTEMD").is_none() {
+        return;
+    }
+    if !host_starts_the_base_probe() {
+        assert_unit_mode_falls_back_to_plain();
         return;
     }
     for sig in ["HUP", "TERM", "INT"] {
@@ -343,7 +371,11 @@ fn a_cli_child_in_a_real_unit_is_stopped_by_hup_term_and_int() {
 #[test]
 #[ignore = "needs a systemd user manager; OAB_L2_SYSTEMD=1"]
 fn sigkill_of_a_cli_leaves_its_unit_and_the_next_starts_sweep_stops_it() {
-    if std::env::var_os("OAB_L2_SYSTEMD").is_none() || !host_starts_the_base_probe() {
+    if std::env::var_os("OAB_L2_SYSTEMD").is_none() {
+        return;
+    }
+    if !host_starts_the_base_probe() {
+        assert_unit_mode_falls_back_to_plain();
         return;
     }
     let t = TempDir::new();
