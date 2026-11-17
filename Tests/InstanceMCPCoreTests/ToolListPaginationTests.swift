@@ -222,18 +222,27 @@ final class ExternalListToolsPaginationTests: XCTestCase {
         (try? JSONCoding.decoder.decode(JSONRPCRequest.self, from: r.body))?.method
     }
 
-    /// A server whose every request takes `delay`; pages chain forever so only the budget stops the walk.
-    private func slowServer(delay: TimeInterval, resetFirstList: Bool = false) throws -> StubHTTPServer {
+    /// A server where `initialize` and `tools/list` take `delay` each (notifications are instant);
+    /// pages chain forever so only the budget stops the walk. `events` records what was served.
+    private func slowServer(delay: TimeInterval, resetFirstList: Bool = false,
+                            events: EventLog = EventLog()) throws -> StubHTTPServer {
         let lock = NSLock(); nonisolated(unsafe) var lists = 0
         return try StubHTTPServer { [self] req in
             let m = methodName(req)
-            Thread.sleep(forTimeInterval: delay)
-            if m == "initialize" { return sse(["jsonrpc": "2.0", "id": 0, "result": [:]]) }
+            if m == "initialize" || m == "tools/list" { Thread.sleep(forTimeInterval: delay) }
+            if m == "initialize" { events.add("initialize"); return sse(["jsonrpc": "2.0", "id": 0, "result": [:]]) }
             guard m == "tools/list" else { return .init(status: 202) }
             let n = lock.withLock { lists += 1; return lists }
-            if resetFirstList && n == 1 { return .init(status: 404) }
+            if resetFirstList && n == 1 { events.add("list-404"); return .init(status: 404) }
+            events.add("list")
             return sse(["jsonrpc": "2.0", "id": 1, "result": ["tools": toolObjs(n..<(n + 1)), "nextCursor": .string("c\(n)")]])
         }
+    }
+
+    final class EventLog: @unchecked Sendable {
+        private let lock = NSLock(); private var items: [String] = []
+        func add(_ e: String) { lock.withLock { items.append(e) } }
+        var all: [String] { lock.withLock { items } }
     }
 
     func testSlowPagesSummingAboveTheBudgetFailWithTheBudgetError() async throws {
@@ -247,14 +256,17 @@ final class ExternalListToolsPaginationTests: XCTestCase {
     }
 
     func testSessionResetMidListingStillHonorsTheOverallBudget() async throws {
-        // initialize 0.5 s, the first tools/list 404s after 0.5 s, the re-initialize and retry need
-        // another 1.0 s: 2.0 s of work against a 1.2 s budget.
-        let s = try slowServer(delay: 0.5, resetFirstList: true)
+        // initialize 0.4 s, the first tools/list 404s after 0.4 s (0.8 s in), the re-initialize ends at
+        // 1.2 s and the retry would end at 1.6 s: it runs past the 1.5 s budget.
+        let events = EventLog()
+        let s = try slowServer(delay: 0.4, resetFirstList: true, events: events)
         defer { s.stop() }
-        let c = ExternalPlaywrightClient(url: URL(string: "http://127.0.0.1:\(s.port)/mcp")!, timeout: 1.2)
+        let c = ExternalPlaywrightClient(url: URL(string: "http://127.0.0.1:\(s.port)/mcp")!, timeout: 1.5)
         let t0 = ContinuousClock.now
         let k = await errClass { try await c.listTools() }
         XCTAssertEqual(k, "playwright_timeout")
-        XCTAssertLessThan(t0.duration(to: .now), .seconds(2.0))
+        XCTAssertLessThan(t0.duration(to: .now), .seconds(2.3))
+        let seen = events.all
+        XCTAssertEqual(Array(seen.prefix(3)), ["initialize", "list-404", "initialize"], "the reset path ran")
     }
 }

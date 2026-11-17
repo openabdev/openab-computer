@@ -69,10 +69,15 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
 
     public func listTools() async throws -> [JSONValue] {
         // The client timeout is the overall budget: one monotonic deadline covers initialize, a
-        // session reset, the retry and every page. See ToolListPagination for the paging rules.
-        try await ToolListPagination.collect(deadline: timeout) { params, deadline in
+        // session reset, the retry and every page. `collect` is given no budget of its own (its
+        // wall-clock check never fires), so the monotonic deadline here is the only one; see
+        // ToolListPagination for the paging rules.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
+        let tools = try await ToolListPagination.collect(deadline: .infinity) { params, _ in
             try await self.rpc("tools/list", params: params, deadline: deadline)
         }
+        try Self.checkBudget(deadline)
+        return tools
     }
 
     public func callTool(_ name: String, arguments: JSONValue) async throws -> JSONValue {
@@ -80,6 +85,18 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
     }
 
     // MARK: wire
+
+    /// The one error for "the overall budget ran out", the same name the stdio client uses.
+    static let budgetExhausted = "playwright_timeout"
+
+    private static func remaining(until deadline: ContinuousClock.Instant) -> TimeInterval {
+        let d = ContinuousClock.now.duration(to: deadline).components
+        return TimeInterval(d.seconds) + TimeInterval(d.attoseconds) / 1e18
+    }
+
+    private static func checkBudget(_ deadline: ContinuousClock.Instant?) throws {
+        if let deadline, remaining(until: deadline) <= 0 { throw ExternalPlaywrightError(errorClass: budgetExhausted) }
+    }
 
     private func rpc(_ method: String, params: JSONValue, deadline: ContinuousClock.Instant? = nil) async throws -> JSONValue {
         if sessionID == nil { try await initialize(deadline: deadline) }
@@ -90,7 +107,9 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
             (status, body, _) = try await post(Self.message(method, params), deadline: deadline)
         }
         try Self.check(status)
-        return try Self.result(body)
+        let result = try Self.result(body)
+        try Self.checkBudget(deadline)   // decoding a big page counts against the budget too
+        return result
     }
 
     private func initialize(timeout: TimeInterval? = nil, deadline: ContinuousClock.Instant? = nil) async throws {
@@ -114,7 +133,7 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
         req.httpMethod = "DELETE"
         req.timeoutInterval = Self.healthTimeout
         if let deadline {
-            let left = ToolListPagination.remaining(until: deadline)
+            let left = Self.remaining(until: deadline)
             guard left > 0 else { return }
             req.timeoutInterval = min(Self.healthTimeout, left)
         }
@@ -145,7 +164,7 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
             group.addTask { try await Task.sleep(until: deadline, clock: ContinuousClock()); return nil }
             defer { group.cancelAll() }
             guard let first = try await group.next() else { throw URLError(.timedOut) }
-            guard let done = first else { throw ExternalPlaywrightError(errorClass: ToolListPagination.budgetExhausted) }
+            guard let done = first else { throw ExternalPlaywrightError(errorClass: Self.budgetExhausted) }
             return done
         }
     }
@@ -160,8 +179,8 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
         var requestTimeout = timeout ?? self.timeout
         var budgetBound = false   // the deadline, not the per-request timeout, is what limits this request
         if let deadline {
-            let left = ToolListPagination.remaining(until: deadline)
-            guard left > 0 else { throw ExternalPlaywrightError(errorClass: ToolListPagination.budgetExhausted) }
+            let left = Self.remaining(until: deadline)
+            guard left > 0 else { throw ExternalPlaywrightError(errorClass: Self.budgetExhausted) }
             if left <= requestTimeout { requestTimeout = left; budgetBound = true }
         }
         req.timeoutInterval = requestTimeout
@@ -176,7 +195,7 @@ public actor ExternalPlaywrightClient: PlaywrightTransport {
         } catch let e as ExternalPlaywrightError {
             throw e
         } catch let e as URLError where e.code == .timedOut {
-            throw ExternalPlaywrightError(errorClass: budgetBound ? ToolListPagination.budgetExhausted : "upstream_timeout")
+            throw ExternalPlaywrightError(errorClass: budgetBound ? Self.budgetExhausted : "upstream_timeout")
         } catch {
             throw ExternalPlaywrightError(errorClass: "upstream_unreachable")
         }

@@ -63,10 +63,8 @@ public actor StdioMCPClient {
 
     public func listTools(timeout: TimeInterval = StdioMCPClient.callTimeout) async throws -> [JSONValue] {
         // `timeout` is the overall deadline; see ToolListPagination for the paging rules.
-        try await ToolListPagination.collect(deadline: timeout) { params, deadline in
-            let left = ToolListPagination.remaining(until: deadline)
-            guard left > 0 else { throw PlaywrightTransportError(errorClass: ToolListPagination.budgetExhausted) }
-            return try await self.request("tools/list", params, timeout: left)
+        try await ToolListPagination.collect(deadline: timeout) { params, left in
+            try await self.request("tools/list", params, timeout: left)
         }
     }
 
