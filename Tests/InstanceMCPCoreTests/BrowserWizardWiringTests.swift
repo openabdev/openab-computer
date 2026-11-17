@@ -101,8 +101,8 @@ final class BrowserWizardWiringTests: InstallerTestCase {
 
         let second = c.startInstall { _, _ in finished.value += ["second"] }
         XCTAssertFalse(second, "the guard on model.beginInstall() refuses it")
-        // No fixed sleep: the refusal above is the guard, and the first install is still parked in the downloader.
-        // A second runInstall would end at once with `.lockHeld` and call its `finished`.
+        // The first install is still parked in the downloader. A second runInstall would end at once with
+        // `.lockHeld` and call its `finished`.
         XCTAssertEqual(finished.value, [], "no second runInstall ran and the first is still going")
         XCTAssertEqual(dl.calls.value, 1)
 

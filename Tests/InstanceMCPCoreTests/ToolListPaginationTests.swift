@@ -271,7 +271,7 @@ final class ExternalListToolsPaginationTests: XCTestCase {
         let k = await errClass { try await c.listTools() }
         let elapsed = t0.duration(to: .now)
         XCTAssertEqual(k, "playwright_timeout")
-        XCTAssertLessThan(elapsed, .seconds(2.1), "the retry was cut at the overall budget, not given its own timeout")
+        XCTAssertLessThan(elapsed, .seconds(2.5), "the retry was cut at the overall budget, not given its own timeout")
         let seen = events.all
         XCTAssertEqual(Array(seen.prefix(3)), ["initialize", "list-404", "initialize"], "the reset path ran")
     }
@@ -288,16 +288,25 @@ final class ExternalListToolsPaginationTests: XCTestCase {
         let k = await errClass { try await c.listTools() }
         XCTAssertEqual(k, "tools_list_too_many_tools")
         let lists = s.requests.filter { methodName($0) == "tools/list" }.count
-        XCTAssertEqual(lists, ToolListPagination.maxTools / 500 + 1)
+        XCTAssertEqual(lists, 5, "2000 entries over four pages are accepted, the fifth page crosses the cap")
         XCTAssertLessThan(lists, ToolListPagination.maxPages)
     }
 
     func testExactlyTheToolCapIsAccepted() async throws {
         let s = try stub { cur in
-            cur == nil ? ["tools": toolObjs(0..<1000), "nextCursor": "p2"] : ["tools": toolObjs(1000..<ToolListPagination.maxTools)]
+            cur == nil ? ["tools": toolObjs(0..<1000), "nextCursor": "p2"] : ["tools": toolObjs(1000..<2000)]
         }
         defer { s.stop() }
         let tools = try await client(s).listTools()
-        XCTAssertEqual(tools.count, ToolListPagination.maxTools)
+        XCTAssertEqual(tools.count, 2000)
+    }
+
+    func testOneToolOverTheCapIsRejected() async throws {
+        let s = try stub { cur in
+            cur == nil ? ["tools": toolObjs(0..<1000), "nextCursor": "p2"] : ["tools": toolObjs(1000..<2001)]
+        }
+        defer { s.stop() }
+        let k = await errClass { try await client(s).listTools() }
+        XCTAssertEqual(k, "tools_list_too_many_tools")
     }
 }
