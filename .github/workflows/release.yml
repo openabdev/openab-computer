@@ -228,7 +228,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.RELEASE_TAG }}
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        # Pinned by commit: this job now holds id-token: write and contents: write.
+        with:
+          toolchain: stable
       - name: Validate tag against the version source
         # Same gate as the macOS job: the tag must equal `let version` in main.swift. The tag
         # is then compiled into the Linux binary, so it cannot report another version (#74).
