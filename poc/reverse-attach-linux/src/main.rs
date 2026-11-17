@@ -20,6 +20,8 @@ mod catalog;
 mod child;
 mod consent;
 mod containment;
+#[cfg(test)]
+mod docs_table;
 mod download;
 #[cfg(test)]
 mod e2e_tests;

@@ -91,13 +91,13 @@ fi
 # ---------------------------------------------------------------- Linux
 PKG="$T/pkg"; mkdir -p "$PKG"
 cp "$HERE/install-linux.sh" "$PKG/"
-cp "$ROOT/poc/reverse-attach-linux/pw-mcp.sh" "$PKG/"
 printf '#!/bin/sh\nexit 0\n' >"$PKG/oab-computer"
-chmod 755 "$PKG/install-linux.sh" "$PKG/pw-mcp.sh" "$PKG/oab-computer"
+chmod 755 "$PKG/install-linux.sh" "$PKG/oab-computer"
 STUBS="$T/stubs"; mkdir -p "$STUBS"
 LOG="$T/calls.log"
 stub() { printf '#!/bin/bash\necho "%s $*" >>"%s"\n%s\n' "$1" "$LOG" "${2:-exit 0}" >"$STUBS/$1"; chmod 755 "$STUBS/$1"; }
-for c in grim wlrctl wtype sway loginctl curl node npm npx chromium; do stub "$c"; done
+# No wlrctl stub: nothing uses it (#130).
+for c in grim wtype sway loginctl curl; do stub "$c"; done
 stub sudo 'exit 1'
 stub fc-list 'echo "DejaVuSans.ttf: DejaVu Sans:style=Book"'
 stub tailscale '[ "$1 $2" = "status --json" ] && echo '"'"'{"Self":{"UserID":7,"DNSName":"node.example.ts.net."},"User":{"7":{"LoginName":"ci-user"}}}'"'"'
@@ -110,12 +110,14 @@ stub systemctl 'case "$*" in "--user is-active"*|"--user is-enabled"*) unit="${@
 
 linux_case() { # linux_case NAME UNITS_ACTIVE WITH_OLD_UNIT_FILES(0|1)
   local name="$1" units="$2" withfiles="$3" home="$T/lin-$1/home"
-  mkdir -p "$home/.config/systemd/user" "$home/.local/oab-computer/pw-mcp/node_modules/.bin"
-  printf '#!/bin/sh\n' >"$home/.local/oab-computer/pw-mcp/node_modules/.bin/playwright-mcp"
-  chmod 755 "$home/.local/oab-computer/pw-mcp/node_modules/.bin/playwright-mcp"
+  mkdir -p "$home/.config/systemd/user"
   if [ "$withfiles" = 1 ]; then
     printf '%s' "$OLD_SENTINEL" >"$home/.config/systemd/user/oab-instance-mcp.service"
     printf '%s' "$OLD_SENTINEL" >"$home/.config/systemd/user/oab-pw-mcp.service"
+    printf '%s' "$OLD_SENTINEL" >"$home/.config/systemd/user/oab-computer-pw-mcp.service"
+    mkdir -p "$home/.config/systemd/user/oab-instance-mcp.service.d"
+    printf '[Service]\nEnvironment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp\n' >"$home/.config/systemd/user/oab-instance-mcp.service.d/upstream.conf"
+    cp "$home/.config/systemd/user/oab-instance-mcp.service.d/upstream.conf" "$home/dropin.orig"
   fi
   : >"$LOG"
   (cd "$PKG" && HOME="$home" USER="${USER:-$(id -un)}" PATH="$STUBS:$PATH" STUB_UNITS="$units" \
@@ -125,13 +127,14 @@ linux_case() { # linux_case NAME UNITS_ACTIVE WITH_OLD_UNIT_FILES(0|1)
   [ "$rc" = 0 ] || { cat "$T/lin-$name.err" >&2; fail "linux $name: installer exited $rc"; }
   [ -f "$home/.config/systemd/user/oab-computer.service" ] || fail "linux $name: new unit not written"
   # Only is-active / is-enabled may name an old unit.
-  if grep -E 'oab-instance-mcp|oab-pw-mcp' "$T/lin-$name.calls" | grep -vqE '^systemctl --user is-(active|enabled) --quiet '; then
-    fail "linux $name: a non-query systemctl call named an old unit: $(grep -E 'oab-instance-mcp|oab-pw-mcp' "$T/lin-$name.calls" | grep -vE '^systemctl --user is-(active|enabled) --quiet ' | head -1)"
+  if grep -E 'oab-instance-mcp|oab-pw-mcp|oab-computer-pw-mcp' "$T/lin-$name.calls" | grep -vqE '^systemctl --user is-(active|enabled) --quiet '; then
+    fail "linux $name: a non-query systemctl call named an old unit: $(grep -E 'oab-instance-mcp|oab-pw-mcp|oab-computer-pw-mcp' "$T/lin-$name.calls" | grep -vE '^systemctl --user is-(active|enabled) --quiet ' | head -1)"
   fi
   if [ "$withfiles" = 1 ]; then
-    for u in oab-instance-mcp.service oab-pw-mcp.service; do
+    for u in oab-instance-mcp.service oab-pw-mcp.service oab-computer-pw-mcp.service; do
       [ "$(cat "$home/.config/systemd/user/$u" 2>/dev/null)" = "$OLD_SENTINEL" ] || fail "linux $name: old unit file $u was changed or removed"
     done
+    cmp -s "$home/dropin.orig" "$home/.config/systemd/user/oab-instance-mcp.service.d/upstream.conf" || fail "linux $name: the MCP_UPSTREAM drop-in changed"
   fi
 }
 
@@ -142,10 +145,9 @@ linux_case active "oab-instance-mcp.service" 1
 e="$T/lin-active.err"
 home="$T/lin-active/home"
 has "$e" "WARNING" && has "$e" "port 8795" \
-  && has_line "$e" "  systemctl --user disable --now oab-instance-mcp.service" \
-  && has "$e" "rm $home/.config/systemd/user/oab-instance-mcp.service" \
-  && has_line "$e" "  systemctl --user daemon-reload" \
-  && ok "linux: active old unit warns with the port, disable and rm commands" \
+  && has "$e" "systemctl --user disable --now oab-instance-mcp.service" \
+  && ! grep -qE '(^|[[:space:]])rm ' "$e" \
+  && ok "linux: active old unit warns with the port and the disable --now command, and no rm line" \
   || { cat "$e" >&2; fail "linux active: warning text incomplete"; }
 
 if grep -q 'daemon: ok' "$T/lin-active.out" || ! grep -q 'daemon: not checked' "$e"; then fail "linux active: the installer vouched for the daemon while the old unit may hold the port"; else ok "linux: no 'daemon: ok' while the old unit is present"; fi
@@ -158,7 +160,7 @@ tok_case() { # tok_case NAME OLD_TOKEN|- NEW_TOKEN|-
   mkdir -p "$home/.config/oab-instance-mcp" "$home/.config/oab-computer"
   [ "$old" = - ] || printf '%s' "$old" >"$home/.config/oab-instance-mcp/token"
   [ "$new" = - ] || printf '%s' "$new" >"$home/.config/oab-computer/token"
-  rm -rf "$home/.local"; mkdir -p "$home/.local/oab-computer/pw-mcp/node_modules/.bin" "$home/.config/systemd/user"
+  rm -rf "$home/.local"; mkdir -p "$home/.config/systemd/user"
   : >"$LOG"
   (cd "$PKG" && HOME="$home" USER="${USER:-$(id -un)}" PATH="$STUBS:$PATH" STUB_UNITS="" \
      ./install-linux.sh --no-browser) </dev/null >"$T/lin-tok-$name.out" 2>&1 || { cat "$T/lin-tok-$name.out" >&2; fail "linux token $name: installer failed"; }
@@ -176,7 +178,16 @@ tok_case gen - -
   && ok "linux: token generated when neither exists" || fail "linux token gen: no token generated"
 
 linux_case pwonly "oab-pw-mcp.service" 1
-has "$T/lin-pwonly.err" "WARNING" && has "$T/lin-pwonly.err" "oab-pw-mcp.service" \
-  && ok "linux: old pw-mcp unit alone warns" || fail "linux pwonly: no warning"
+e="$T/lin-pwonly.err"
+has "$e" "WARNING" && has "$e" "systemctl --user disable --now oab-pw-mcp.service" && has "$e" "8794" \
+  && ! grep -qE '(^|[[:space:]])rm ' "$e" \
+  && ok "linux: old pw-mcp unit alone warns with disable --now, the port, and no rm line" || { cat "$e" >&2; fail "linux pwonly: warning wrong"; }
+# The upstream drop-in is reported and left as it is.
+has "$e" "upstream.conf" && ok "linux: the MCP_UPSTREAM drop-in is named and left alone" || fail "linux pwonly: the drop-in was not reported"
+
+linux_case newpw "oab-computer-pw-mcp.service" 1
+e="$T/lin-newpw.err"
+has "$e" "systemctl --user disable --now oab-computer-pw-mcp.service" && ! grep -qE '(^|[[:space:]])rm ' "$e" \
+  && ok "linux: the new-style browser unit warns with disable --now and no rm line" || { cat "$e" >&2; fail "linux newpw: warning wrong"; }
 
 [ "$FAIL" = 0 ] && echo "legacy-agent: all checks passed" || { echo "legacy-agent: FAILED" >&2; exit 1; }
