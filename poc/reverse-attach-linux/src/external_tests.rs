@@ -690,10 +690,33 @@ mod paging {
         let started = Instant::now();
         assert!(e.tools().is_empty());
         assert!(
-            started.elapsed() < Duration::from_secs(3),
+            started.elapsed() < Duration::from_millis(1500),
             "{:?}",
             started.elapsed()
         );
         assert!(lists.load(Ordering::SeqCst) < crate::stdio_client::MAX_LIST_PAGES);
+    }
+
+    #[test]
+    fn a_server_that_stops_reading_ends_the_request_by_the_deadline() {
+        // Accepts and never reads: a request larger than the socket buffers cannot be written.
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", l.local_addr().unwrap());
+        let t = std::thread::spawn(move || {
+            let held = l.accept().map(|(s, _)| s);
+            std::thread::sleep(Duration::from_secs(4));
+            drop(held);
+        });
+        let e = External::for_test("browser", &url).with_deadline(Duration::from_millis(500));
+        let big = json!({"cursor": "a".repeat(64 << 20)});
+        let started = Instant::now();
+        let r = e.post(&big, Duration::from_secs(30));
+        assert_eq!(r.err().as_deref(), Some("upstream_timeout"));
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+        t.join().unwrap();
     }
 }

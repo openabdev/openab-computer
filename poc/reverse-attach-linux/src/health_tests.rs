@@ -295,3 +295,25 @@ fn a_failing_later_page_fails_the_check() {
     );
     assert_eq!(run(&paged_server(&arms)), Err(Failure::Check));
 }
+
+#[test]
+fn a_child_that_stops_reading_ends_the_check_by_the_deadline() {
+    // Page one names a cursor larger than the pipe; the child then reads nothing more, so the
+    // request for page two cannot be written. The call deadline must still end the check.
+    let script = r#"IFS= read -r line
+printf '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"Playwright"},"capabilities":{}}}\n'
+IFS= read -r line
+IFS= read -r line
+printf '{"jsonrpc":"2.0","id":2,"result":{"tools":[],"nextCursor":"'
+head -c 1048576 /dev/zero | tr '\0' a
+printf '"}}\n'
+exec sleep 30
+"#;
+    let started = Instant::now();
+    assert_eq!(run(script), Err(Failure::Check));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}

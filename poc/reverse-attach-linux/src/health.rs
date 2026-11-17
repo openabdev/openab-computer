@@ -122,19 +122,39 @@ pub(crate) struct Rpc<'a> {
 }
 
 impl Rpc<'_> {
-    fn send(&mut self, v: &Value) -> Result<(), RpcError> {
-        use std::io::Write;
+    /// Writes one line before `end`. The pipe is made nonblocking and polled, so a child that stops
+    /// reading its stdin cannot hold the caller past `end`, whatever the size of the line.
+    fn send(&mut self, v: &Value, end: Instant) -> Result<(), RpcError> {
+        use std::io::{ErrorKind, Write};
         let stdin = self.child.stdin.as_mut().ok_or(RpcError::Exited)?;
         let mut line = v.to_string();
         line.push('\n');
-        stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| stdin.flush())
-            .map_err(|_| RpcError::Exited)
+        rustix::fs::fcntl_setfl(&*stdin, rustix::fs::OFlags::NONBLOCK)
+            .map_err(|_| RpcError::Exited)?;
+        let mut rest = line.as_bytes();
+        while !rest.is_empty() {
+            if crate::cancel::is_cancelled() {
+                return Err(RpcError::Cancelled);
+            }
+            match stdin.write(rest) {
+                Ok(0) => return Err(RpcError::Exited),
+                Ok(n) => rest = &rest[n..],
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    if Instant::now() >= end {
+                        return Err(RpcError::Timeout);
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(_) => return Err(RpcError::Exited),
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn notify(&mut self, method: &str) -> Result<(), RpcError> {
-        self.send(&json!({"jsonrpc": "2.0", "method": method}))
+        let end = Instant::now() + Duration::from_secs(5);
+        self.send(&json!({"jsonrpc": "2.0", "method": method}), end)
     }
 
     /// One request; returns `result`. Notifications and answers to other ids are skipped, with a
@@ -147,8 +167,12 @@ impl Rpc<'_> {
     ) -> Result<Value, RpcError> {
         self.next += 1;
         let id = self.next;
-        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
+        // The deadline starts before the write: a child that stops reading must not outlast it.
         let deadline = Instant::now() + timeout;
+        self.send(
+            &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+            deadline,
+        )?;
         let mut skipped = 0;
         loop {
             if crate::cancel::is_cancelled() {

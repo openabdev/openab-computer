@@ -219,7 +219,6 @@ impl External {
         self.owner
             .check(local, self.target.addr)
             .map_err(str::to_string)?;
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
         let host = match self.target.addr {
             SocketAddr::V4(a) => format!("127.0.0.1:{}", a.port()),
             SocketAddr::V6(a) => format!("[::1]:{}", a.port()),
@@ -235,10 +234,10 @@ impl External {
             head.push_str(&format!("Mcp-Session-Id: {s}\r\n"));
         }
         head.push_str("\r\n");
-        stream
-            .write_all(head.as_bytes())
-            .and_then(|_| stream.write_all(body.as_bytes()))
-            .map_err(|_| "upstream_unreachable".to_string())?;
+        // One absolute deadline for connect, owner check, write and read: each write waits only for
+        // what is left of `end`, so a server that stops reading cannot hold the request past it.
+        write_before(&mut stream, head.as_bytes(), end)?;
+        write_before(&mut stream, body.as_bytes(), end)?;
         read_reply(&mut stream, end)
     }
 
@@ -386,6 +385,33 @@ fn parse_mcp_body(body: &str) -> Option<Value> {
     t.lines()
         .filter_map(|l| l.strip_prefix("data:"))
         .find_map(|d| serde_json::from_str::<Value>(d.trim()).ok())
+}
+
+/// Writes all of `data` before `end`. The write timeout is set again from the time left before every
+/// write, so partial progress does not extend the bound. Expiry is `upstream_timeout`.
+fn write_before(stream: &mut TcpStream, mut data: &[u8], end: Instant) -> Result<(), String> {
+    use std::io::ErrorKind;
+    while !data.is_empty() {
+        if timed_out(end) {
+            return Err("upstream_timeout".into());
+        }
+        let left = end
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1));
+        stream
+            .set_write_timeout(Some(left))
+            .map_err(|_| "upstream_unreachable".to_string())?;
+        match stream.write(data) {
+            Ok(0) => return Err("upstream_unreachable".into()),
+            Ok(n) => data = &data[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err("upstream_timeout".into())
+            }
+            Err(_) => return Err("upstream_unreachable".into()),
+        }
+    }
+    Ok(())
 }
 
 fn timed_out(end: Instant) -> bool {
