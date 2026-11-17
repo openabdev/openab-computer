@@ -1,0 +1,94 @@
+name: Linux systemd units (optional)
+
+# The tests that need a real `systemd --user` manager: the containment self-test, the hardening
+# probes and the CLI-child signal tests (docs/requirements/linux-browser-tier.md, section 3.3,
+# "optional per-PR systemd job"). They are `#[ignore]`d in `cargo test` and run here with
+# OAB_L2_SYSTEMD=1.
+#
+# Optional on purpose: a separate workflow, not a job of `CI`, so it cannot change the result of a
+# required check, and it is not itself required. Where the runner cannot provide a user manager the
+# job says so and passes: the release smoke (L5), not this job, is what fails a release for a missing
+# manager. A probe that reports "mount tier dropped" on a runner is a pass: these tests assert that
+# the report is truthful, not that a tier is available.
+
+on:
+  pull_request:
+    paths:
+      - "poc/reverse-attach-linux/**"
+      - ".github/workflows/linux-systemd.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-systemd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  transient-units:
+    name: Transient units (${{ matrix.arch }}, optional)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: poc/reverse-attach-linux
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: poc/reverse-attach-linux
+          key: systemd-${{ matrix.arch }}
+      - id: um
+        name: Provide a user manager (linger, the per-user service of the runner uid, XDG_RUNTIME_DIR)
+        # Never fails the job: it only answers whether a manager is there.
+        run: |
+          set -u
+          uid=$(id -u)
+          rt="/run/user/$uid"
+          available=false
+          if [ -d /run/systemd/system ]; then
+            sudo loginctl enable-linger "$USER" || true
+            sudo systemctl start "user@${uid}.service" || true
+            for _ in $(seq 1 30); do
+              state=$(XDG_RUNTIME_DIR="$rt" systemctl --user is-system-running 2>/dev/null || true)
+              if [ -S "$rt/bus" ] && { [ "$state" = running ] || [ "$state" = degraded ]; }; then
+                available=true
+                break
+              fi
+              sleep 2
+            done
+          fi
+          if [ "$available" = true ]; then
+            {
+              echo "XDG_RUNTIME_DIR=$rt"
+              echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$rt/bus"
+            } >> "$GITHUB_ENV"
+          fi
+          echo "available=$available" >> "$GITHUB_OUTPUT"
+      - name: No user manager on this runner
+        if: steps.um.outputs.available != 'true'
+        run: echo "::notice::no systemd user manager on this runner; the transient-unit tests were skipped (this job is optional)"
+      - name: Transient-unit tests (self-test fixture, hardening probes, CLI-child signals)
+        if: steps.um.outputs.available == 'true'
+        # `--ignored` selects only the tests that need a manager; `containment` and `sigstop` pick the
+        # modules. `e2e_tests` needs a real Chromium and OAB_L2_E2E and is not selected. The
+        # sigstop helper tests re-exec the test binary, so one thread at a time.
+        run: OAB_L2_SYSTEMD=1 cargo test --release -- --ignored --test-threads=1 containment sigstop
+      - name: Nothing left behind
+        if: always() && steps.um.outputs.available == 'true'
+        run: |
+          left=$(systemctl --user list-units 'oab-l4-test-*' --all --no-legend | wc -l)
+          if [ "$left" -ne 0 ]; then
+            systemctl --user list-units 'oab-l4-test-*' --all --no-legend
+            exit 1
+          fi
