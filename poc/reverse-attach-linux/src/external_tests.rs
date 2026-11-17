@@ -453,3 +453,90 @@ fn an_ipv6_loopback_upstream_works_where_the_host_has_ipv6() {
     let e = External::new("browser", &url, Arc::new(SameUid::real())).unwrap();
     assert_eq!(e.tools().len(), 1);
 }
+
+// ---- a missing row is read again; another owner is final -------------------------------------
+
+/// A source that answers the first `fail` reads of `tcp` with `early`, then with `text`, and counts
+/// the reads of `tcp`.
+struct Flaky {
+    fail: usize,
+    early: String,
+    text: String,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl procnet::Source for Flaky {
+    fn table(&self, name: &str) -> std::io::Result<String> {
+        if name != "tcp" {
+            return Err(std::io::Error::other("no ipv6 here"));
+        }
+        let n = self.reads.fetch_add(1, Ordering::SeqCst);
+        if n < self.fail {
+            Ok(self.early.clone())
+        } else {
+            Ok(self.text.clone())
+        }
+    }
+}
+
+#[cfg(target_endian = "little")]
+fn row_text(uid: u32) -> String {
+    format!(
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:1F90 0100007F:C350 01 00000000:00000000 00:00000000 00000000  {uid}        0 1 1 0000000000000000 20 4 30 10 -1\n"
+    )
+}
+
+#[cfg(target_endian = "little")]
+#[test]
+fn a_row_that_is_not_there_yet_is_read_again_and_another_owner_is_never_accepted() {
+    let me = rustix::process::geteuid().as_raw();
+    let client: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+    let server: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let flaky = |fail: usize, uid: u32| {
+        Arc::new(Flaky {
+            fail,
+            early: String::new(),
+            text: row_text(uid),
+            reads: Default::default(),
+        })
+    };
+    struct Shared(Arc<Flaky>);
+    impl procnet::Source for Shared {
+        fn table(&self, name: &str) -> std::io::Result<String> {
+            self.0.table(name)
+        }
+    }
+    let check = |f: &Arc<Flaky>| {
+        SameUid {
+            source: Box::new(Shared(Arc::clone(f))),
+        }
+        .check(client, server)
+    };
+    // Missing twice, then there: accepted.
+    let f = flaky(2, me);
+    assert_eq!(check(&f), Ok(()));
+    assert_eq!(f.reads.load(Ordering::SeqCst), 3);
+    // Never there: unknown after a bounded number of reads (25), not forever.
+    let f = flaky(usize::MAX, me);
+    assert_eq!(check(&f), Err(procnet::UNKNOWN));
+    assert_eq!(f.reads.load(Ordering::SeqCst), 25);
+    // Listed with uid 0 first (the kernel's answer for a connection the server has not accepted
+    // yet), then with ours: accepted.
+    let unaccepted = Arc::new(Flaky {
+        fail: 3,
+        early: row_text(0),
+        text: row_text(me),
+        reads: Default::default(),
+    });
+    assert_eq!(check(&unaccepted), Ok(()));
+    assert_eq!(unaccepted.reads.load(Ordering::SeqCst), 4);
+    // Uid 0 for good is a root-owned server: never accepted.
+    let root = flaky(0, 0);
+    if me != 0 {
+        assert_eq!(check(&root), Err(procnet::UNKNOWN));
+    }
+    // Another owner is never accepted, however often it is read.
+    let f = flaky(0, me.wrapping_add(1));
+    assert_eq!(check(&f), Err(procnet::UNKNOWN));
+    assert_eq!(f.reads.load(Ordering::SeqCst), 25);
+}

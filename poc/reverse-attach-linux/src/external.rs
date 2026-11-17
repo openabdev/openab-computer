@@ -89,10 +89,26 @@ impl SameUid {
 
 impl OwnerCheck for SameUid {
     fn check(&self, client: SocketAddr, server: SocketAddr) -> Result<(), &'static str> {
-        match procnet::peer_owner_uid(&*self.source, client, server) {
-            Ok(uid) if uid == rustix::process::geteuid().as_raw() => Ok(()),
-            _ => Err(procnet::UNKNOWN),
+        // The kernel lists a connection that the server has not accepted yet with uid 0 (the owner
+        // of a socket is read from its file, which an unaccepted socket does not have), and a
+        // connection that has only just completed may not be listed at all; `/proc/net/tcp` is also
+        // produced in chunks while sockets come and go, so one read can skip a row that is there.
+        // On a loaded host the server thread can take well over a moment to accept. So the owner is
+        // read again, up to `READS` times 20 ms apart (half a second), until it is this uid. Only
+        // our own uid is accepted, and nothing is sent before it is: the retries cost time on a
+        // refusal and never widen what is accepted.
+        const READS: u32 = 25;
+        for read in 1..=READS {
+            if procnet::peer_owner_uid(&*self.source, client, server)
+                == Ok(rustix::process::geteuid().as_raw())
+            {
+                return Ok(());
+            }
+            if read < READS {
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
+        Err(procnet::UNKNOWN)
     }
 }
 

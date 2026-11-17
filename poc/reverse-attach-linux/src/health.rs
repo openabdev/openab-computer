@@ -238,7 +238,8 @@ pub fn check_with(
         };
         steps(&mut rpc, t)
     };
-    let refused = launched.child.stderr_class() == StderrClass::LaunchRefused;
+    // Only a failure is classified: a success must not wait for the child's stderr to end.
+    let refused = result.is_err() && launched.child.stderr_class() == StderrClass::LaunchRefused;
     launched.child.stop();
     drop(launched);
     match result {

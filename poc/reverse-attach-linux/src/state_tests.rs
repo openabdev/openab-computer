@@ -452,7 +452,9 @@ fn the_lock_excludes_a_second_holder_and_the_file_is_never_unlinked() {
         Some(Fail("lock_held"))
     );
     drop(lock);
-    let l2 = Lock::acquire(&root2, Duration::from_millis(0)).unwrap();
+    // Not at once: a `flock` is released when the last copy of the descriptor closes, and another
+    // test thread's fork can hold a copy for a moment before its exec.
+    let l2 = Lock::acquire(&root2, Duration::from_secs(5)).unwrap();
     // remove deletes everything it owns and leaves the lock file, the same inode.
     make_version(&t, "ours-1", true);
     write_record_file(&t, &record("ours-1"));
@@ -853,6 +855,9 @@ fn unlink_if_same_leaves_a_replacement_and_a_link() {
     let t = TempDir::new();
     let root = t.root();
     let id = write_new_file_id(root.fd(), "a", b"1", 0o600).unwrap();
+    // Keep the original open: an unlinked file that is still open keeps its inode number, so no
+    // replacement below can be handed the same (device, inode) and look like the original.
+    let _keep = std::fs::File::open(rootp(&t).join("a")).unwrap();
     replace_with_foreign(&rootp(&t), "a", "2");
     assert_eq!(
         unlink_if_same(root.fd(), "a", &id),

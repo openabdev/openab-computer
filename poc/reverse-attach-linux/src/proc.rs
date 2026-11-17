@@ -24,6 +24,7 @@ use std::io::{BufRead, Read};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -69,6 +70,9 @@ pub struct Child {
     pub stdin: Option<std::process::ChildStdin>,
     pub lines: Option<Receiver<Line>>,
     ring: Arc<Mutex<Vec<u8>>>,
+    /// Set by the stderr reader thread at end of file. A classification reads the ring only after
+    /// the last line had its chance to arrive (`settle_stderr`).
+    stderr_done: Arc<AtomicBool>,
     stopped: bool,
     reaped: bool,
     /// Live run records of *other* children, asked once per stop. A process one of them claims is
@@ -194,8 +198,10 @@ impl Child {
         }
         let mut child = cmd.spawn()?;
         let ring: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_done = Arc::new(AtomicBool::new(false));
         if let Some(mut err) = child.stderr.take() {
             let ring = Arc::clone(&ring);
+            let done = Arc::clone(&stderr_done);
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
                 while let Ok(n) = err.read(&mut buf) {
@@ -210,7 +216,10 @@ impl Child {
                         }
                     }
                 }
+                done.store(true, Ordering::Release);
             });
+        } else {
+            stderr_done.store(true, Ordering::Release);
         }
         let lines = child.stdout.take().map(|out| {
             let (tx, rx) = mpsc::sync_channel(LINE_QUEUE);
@@ -244,6 +253,7 @@ impl Child {
             stdin,
             lines,
             ring,
+            stderr_done,
             stopped: false,
             reaped: false,
             others: None,
@@ -280,8 +290,21 @@ impl Child {
         Some(st.success())
     }
 
+    /// Waits (at most 250 ms) for the stderr reader to reach end of file. A child that printed its
+    /// refusal and exited closes stdout before the reader thread has necessarily queued that last
+    /// line, so a classification made at once could read an empty ring and call a refusal a plain
+    /// failure. A child that is still running never reaches end of file, so this is a bounded delay
+    /// on a failure path, never on a success.
+    fn settle_stderr(&self) {
+        let end = Instant::now() + Duration::from_millis(250);
+        while !self.stderr_done.load(Ordering::Acquire) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// A yes/no read of the stderr ring. The text never leaves.
     pub fn stderr_class(&self) -> StderrClass {
+        self.settle_stderr();
         let text = self
             .ring
             .lock()
@@ -316,6 +339,7 @@ impl Child {
     }
 
     pub fn stderr_contains_any(&self, needles: &[&str]) -> bool {
+        self.settle_stderr();
         let text = self
             .ring
             .lock()

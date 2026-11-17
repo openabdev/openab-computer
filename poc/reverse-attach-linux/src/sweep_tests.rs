@@ -166,10 +166,9 @@ fn the_sweep_is_skipped_not_blocked_while_another_holds_the_lock() {
     );
     assert!(started.elapsed() < Duration::from_secs(1));
     drop(held);
-    assert!(matches!(
-        sweep_before_start(&root, &no_units).unwrap(),
-        Outcome::Swept { .. }
-    ));
+    // A `flock` goes when the last copy of the descriptor closes, and another test thread's fork can
+    // hold a copy for a moment before its exec: retry a skip, bounded.
+    assert!(matches!(sweep_unskipped(&root), Outcome::Swept { .. }));
     assert!(
         root.abs_path().join(SWEEP_LOCK_NAME).exists(),
         "the lock file stays"
