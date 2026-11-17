@@ -314,6 +314,9 @@ for shape in plain quoted; do
   if compgen -G "$(UNITD own$shape)/*.bak-*" >/dev/null; then fail "own$shape: a backup copy was made"; fi
 done
 has ownquoted "MCP_UPSTREAM" err
+# An unmarked daemon unit that is not running is never enabled or started.
+if grep -qE 'systemctl --user (enable|start|restart).* oab-computer.service' "$T/ownplain/calls"; then fail "ownplain: an unowned, stopped daemon unit was enabled or started"; fi
+has ownplain "was not enabled or started" err
 run ownmarked --browser none
 run ownmarked --browser none --port 8801
 grep -q 'BIND=127.0.0.1:8801' "$(UNITD ownmarked)/oab-computer.service" || fail "ownmarked: a unit with the marker was not rewritten"

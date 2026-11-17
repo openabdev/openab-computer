@@ -138,7 +138,8 @@ and `-linux-amd64.tar.gz` (built and smoke-tested in CI on native runners) besid
 installer, with a `.sha256` each:
 
 ```sh
-V=0.12.0   # the first release with oab-computer-* assets (v0.11.0 and older use the old names)
+V=X.Y.Z   # a release after 0.12.0: this page describes its installer. 0.12.0 ships the older installer
+         # (unauthenticated browser unit on 8794, root actions through sudo, exits 78 on Ubuntu arm64)
 A=$(dpkg --print-architecture)          # arm64 or amd64
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz.sha256"
@@ -177,9 +178,9 @@ the flag.
 | --- | --- | --- |
 | Linger | `sudo loginctl enable-linger $USER` | The daemon and the browser keep running after you log out and start again at boot. Printed only when linger is off. |
 | Publish | `sudo tailscale serve --bg --https=8444 http://127.0.0.1:8795` | Exposes the daemon on your tailnet over HTTPS (tailnet only). |
-| AppArmor | `printf ... \| sudo tee /etc/apparmor.d/oab-computer-chromium` then `sudo apparmor_parser -r ...` | Only where `kernel.apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 24.04): Chromium cannot make its sandbox without it. The profile names your own data path, not `/home/*`, and covers every version directory, so it serves later updates. `oab-computer browser preflight` prints the exact text. |
+| AppArmor | `printf ... \| sudo tee /etc/apparmor.d/oab-computer-chromium-<id>` then `sudo apparmor_parser -r ...` | Only where `kernel.apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 24.04): Chromium cannot make its sandbox without it. The profile names your own data path, not `/home/*`, and covers every version directory, so it serves later updates. `oab-computer browser preflight` prints the exact text. |
 | Libraries | `sudo apt-get install ...` | Libraries the preflight found missing, with the package names. |
-| Fonts | `sudo apt-get install -y fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji` | A server has none and pages render as boxes. Printed only when no font is found. |
+| Fonts | `sudo apt-get install -y fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji` | A server has none and pages render as boxes. Printed only when no font is found, and only in a run that does the browser step (not with `--browser none`). |
 
 `oab-computer browser preflight --root-actions` prints the preflight's own actions, one `command`, a
 tab and the reason per line, for scripts.
@@ -214,7 +215,8 @@ Description=oab-computer (Rust hands node: /mcp + /attach)
 After=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/oab-computer/oab-computer   # or …/target/release/oab-computer from source
+# (from source, use …/target/release/oab-computer in ExecStart)
+ExecStart=%h/.local/oab-computer/oab-computer
 Environment=BIND=127.0.0.1:8795
 Environment=MCP_TOKEN_FILE=%h/.config/oab-computer/token
 Environment=MCP_ALLOW_LOGIN=$LOGIN
@@ -377,7 +379,7 @@ hints for Debian-family hosts. It never installs a package and never uses root. 
 covers libraries linked at build time; libraries a program loads at run time are not listed, so the
 headless health check at install is the final test. On a blocker it exits 1 and prints one line on
 stderr, `browser: preflight_failed class=<class>`, where the class is `musl`, `glibc_too_old`,
-`disk_full` or `libraries_missing`.
+`disk_full`, `libraries_missing` or `unsupported_platform` (no pinned build for this CPU or OS).
 
 ### Offline install
 
@@ -787,7 +789,7 @@ installer does on each kind of host:
 | Host | What the installer does | What you do at cutover |
 | --- | --- | --- |
 | New: nothing from before | Writes the daemon unit without `MCP_UPSTREAM`, asks about the browser. | Nothing. |
-| New-style unit: `oab-computer-pw-mcp.service` from 0.12.0, and an `MCP_UPSTREAM` line inside `oab-computer.service` | Warns, with the exact command to turn the unit off. The installer rewrites `oab-computer.service` only when the unit carries its own marker line (`# oab-computer-installer:`). A unit without it, which includes any unit from before the marker existed, is left byte for byte as it is (whatever it contains, `MCP_UPSTREAM` included); the unit this run would have written is put beside it as `oab-computer.service.proposed`. The binary is still replaced and the daemon restarted. | After `browser status` shows the managed browser working: `systemctl --user disable --now oab-computer-pw-mcp.service`, then remove the `MCP_UPSTREAM` line (back it up first), or review and move `.proposed` over the unit, `daemon-reload`, restart. |
+| New-style unit: `oab-computer-pw-mcp.service` from 0.12.0, and an `MCP_UPSTREAM` line inside `oab-computer.service` | Warns, with the exact command to turn the unit off. The installer rewrites `oab-computer.service` only when the unit carries its own marker line (`# oab-computer-installer:`). A unit without it, which includes any unit from before the marker existed, is left byte for byte as it is (whatever it contains, `MCP_UPSTREAM` included); the unit this run would have written is put beside it as `oab-computer.service.proposed`. The binary is still replaced. The installer restarts that unit only if it is already running, and never enables or starts it (the same rule as for `oab-seat.service`). | After `browser status` shows the managed browser working: `systemctl --user disable --now oab-computer-pw-mcp.service`, then remove the `MCP_UPSTREAM` line (back it up first), or review and move `.proposed` over the unit, `daemon-reload`, restart. |
 | Old-style unit: `oab-pw-mcp.service` and an `MCP_UPSTREAM` drop-in under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | Warns the same way for `oab-pw-mcp.service`, names the drop-in file, writes `oab-computer.service` without the line when there is none or it carries the installer's marker (an unmarked existing one is left as it is, with `.proposed` beside it; no backup copy is made) and leaves the drop-in alone. If `oab-instance-mcp.service` (0.11 or earlier) is still live it holds port 8795: the installer warns, writes the new unit but does not enable, start or restart `oab-computer.service` and does not check the daemon; disable that unit first (`systemctl --user disable --now oab-instance-mcp.service`), then `systemctl --user enable --now oab-computer.service`. | `systemctl --user disable --now oab-pw-mcp.service`, then remove the drop-in file (back it up first), `daemon-reload`, restart. If a `.proposed` file sits beside `oab-computer.service`, adopt it too (review it, move it over the unit): until then later installer runs leave the unmarked unit alone. |
 
 A plain `systemctl stop` is not enough: those units come back at the next login or boot, and each
@@ -855,8 +857,8 @@ below is marked if it needs root.
    sudo apparmor_parser -R /etc/apparmor.d/playwright-chromium && sudo rm /etc/apparmor.d/playwright-chromium
    ```
 
-   The profile for the managed browser is a different file, `/etc/apparmor.d/oab-computer-chromium`,
-   and stays.
+   The profile for the managed browser is a different file, `/etc/apparmor.d/oab-computer-chromium-<id>` (`<id>` is a short hash of the install
+   path, so each user on a host has their own), and stays.
 
 4. Delete the old Chromium policy file the old installer wrote. **Root:**
    `sudo rm /etc/chromium/policies/managed/oab-computer.json`. Installers from the 0.11 era named

@@ -340,12 +340,17 @@ fn apparmor_restriction_prints_the_exact_command_and_never_runs_it() {
     let r = evaluate(m, &sel, &f, 0);
     assert_eq!(r.root_actions.len(), 1);
     let a = &r.root_actions[0];
+    let name = apparmor_name("/home/u/.local/share/oab-computer/playwright");
+    assert!(name.starts_with("oab-computer-chromium-") && name.len() == "oab-computer-chromium-".len() + 8);
+    assert_ne!(name, apparmor_name("/home/v/.local/share/oab-computer/playwright"));
     assert_eq!(
         a.command,
-        "printf '%s\\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
-         'profile oab-computer-chromium /home/u/.local/share/oab-computer/playwright/*/chromium/**/chrome flags=(unconfined) {' \
-         '  userns,' '}' | sudo tee /etc/apparmor.d/oab-computer-chromium >/dev/null \
-         && sudo apparmor_parser -r /etc/apparmor.d/oab-computer-chromium"
+        format!(
+            "printf '%s\\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+             'profile {name} /home/u/.local/share/oab-computer/playwright/*/chromium/**/chrome flags=(unconfined) {{' \
+             '  userns,' '}}' | sudo tee /etc/apparmor.d/{name} >/dev/null \
+             && sudo apparmor_parser -r /etc/apparmor.d/{name}"
+        )
     );
     assert!(a.reason.contains("apparmor_restrict_unprivileged_userns"));
     let text = render(&r);

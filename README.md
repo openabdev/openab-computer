@@ -175,7 +175,8 @@ curl -s https://<switchboard>.<tailnet>.ts.net/mcp/<computer> \
 ([full guide](docs/linux-setup.md)):
 
 ```sh
-V=0.12.0   # the first release with oab-computer-* assets (v0.11.0 and older use the old names)
+V=X.Y.Z   # a release after 0.12.0: this page describes its installer. 0.12.0 ships the older installer
+         # (unauthenticated browser unit on 8794, root actions through sudo, exits 78 on Ubuntu arm64)
 A=$(dpkg --print-architecture)   # arm64 | amd64
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
 tar xzf oab-computer-$V-linux-$A.tar.gz && cd oab-computer-$V-linux-$A
@@ -791,12 +792,11 @@ To upgrade:
    ```sh
    systemctl --user disable --now oab-instance-mcp.service
    rm ~/.config/systemd/user/oab-instance-mcp.service
-   # only if you used the Playwright unit. With an installer after 0.12.0, run these two lines only
-   # once `oab-computer browser status` shows the managed browser working, and do the rm after the soak
-   # (installers after 0.12.0 manage the browser themselves:
-   # do the rm only after the soak, see docs/linux-setup.md#removing-the-old-browser-setup-after-the-soak):
+   # only if you used the Playwright unit. With an installer after 0.12.0, run this disable only once
+   # `oab-computer browser status` shows the managed browser working:
    systemctl --user disable --now oab-pw-mcp.service
-   rm ~/.config/systemd/user/oab-pw-mcp.service
+   # the unit file stays until the soak is over; then remove it, see
+   # docs/linux-setup.md#removing-the-old-browser-setup-after-the-soak
    systemctl --user daemon-reload
    # then restart the new unit, which could not bind port 8795 while the old one held it:
    systemctl --user enable oab-computer.service   # restart alone does not enable it for the next login

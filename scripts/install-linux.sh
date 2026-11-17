@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install the Linux hands node from a release tarball (run ON the target, as the desktop user).
 #
-#   V=<release version, e.g. 0.12.0>; A=$(dpkg --print-architecture)   # arm64 | amd64
+#   V=<release version, a release after 0.12.0>; A=$(dpkg --print-architecture)   # arm64 | amd64
 #   curl -fsSL "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz" | tar xz
 #   cd oab-computer-$V-linux-$A && ./install-linux.sh [--allow-login you@example.com] [--browser managed|none] [--headless-seat]
 #
@@ -137,6 +137,9 @@ mkdir -p "$BASE" "$CFG" "$UNITS"
 # it is left alone and the new text goes next to it as <unit>.proposed. A <unit>.proposed that is not
 # one of ours (no marker, or a symlink) is never overwritten: a timestamped name is used instead.
 UNIT_MARK='# oab-computer-installer:'
+SEAT_TMP=""; UNIT_TMP=""
+# A failed run must not leave a half-written temp file in the units directory.
+trap 'rm -f ${SEAT_TMP:+"$SEAT_TMP"} ${UNIT_TMP:+"$UNIT_TMP"}' EXIT
 new_unit_tmp() { local t; t="$(mktemp "$UNITS/.oab-install.XXXXXX")" || exit 74; chmod 644 "$t"; echo "$t"; }
 unit_is_ours() { [ -f "$1" ] && [ ! -L "$1" ] && grep -qF "$UNIT_MARK" "$1"; }
 unit_is_foreign() { { [ -e "$1" ] || [ -L "$1" ]; } && ! unit_is_ours "$1"; }
@@ -258,7 +261,9 @@ KillMode=process
 [Install]
 WantedBy=default.target
 UNIT
+  DAEMON_FOREIGN=0
   if unit_is_foreign "$UNITS/oab-computer.service"; then
+    DAEMON_FOREIGN=1
     place_proposed "$UNIT_TMP" "$UNITS/oab-computer.service"
     echo "install: note: $UNITS/oab-computer.service was not written by this installer, so it was left as it is (so --port and --allow-login did not change it)." >&2
     # The health check and the tailscale serve line must follow the unit that actually runs.
@@ -281,6 +286,15 @@ UNIT
 systemctl --user daemon-reload
 if [ "$INSTANCE_UNIT_LIVE" = 1 ]; then
   echo "install: oab-computer.service was NOT enabled or started: the old oab-instance-mcp.service is live (see the warning above). After turning it off: systemctl --user enable --now oab-computer.service" >&2
+elif [ "$DAEMON_FOREIGN" = 1 ]; then
+  # Same policy as oab-seat.service: a unit this script did not write is never enabled or started
+  # by it (an operator may have disabled it on purpose). If it is already running, restart it so it
+  # picks up the new binary.
+  if systemctl --user is-active --quiet oab-computer.service; then
+    systemctl --user restart oab-computer.service
+  else
+    echo "install: oab-computer.service is not written by this installer and is not running, so it was not enabled or started. To start it: systemctl --user enable --now oab-computer.service" >&2
+  fi
 else
   systemctl --user enable --now oab-computer.service
   systemctl --user restart oab-computer.service
@@ -347,7 +361,9 @@ browser_step
 # The daemon picks its browser backend once, at start. It started before the browser existed, so
 # restart it now: a fresh node gains the browser_* tools, and a node with a stale MCP_UPSTREAM line
 # switches to the managed browser (D5).
-if [ "$BROWSER_READY" = 1 ] && [ "$INSTANCE_UNIT_LIVE" = 0 ]; then systemctl --user restart oab-computer.service; fi
+if [ "$BROWSER_READY" = 1 ] && [ "$INSTANCE_UNIT_LIVE" = 0 ]; then
+  if [ "$DAEMON_FOREIGN" = 0 ] || systemctl --user is-active --quiet oab-computer.service; then systemctl --user restart oab-computer.service; fi
+fi
 
 # ---- the remaining root actions: printed, or run with --apply-system-changes -----------------------
 if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then

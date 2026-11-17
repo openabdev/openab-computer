@@ -337,8 +337,18 @@ fn mb(bytes: u64) -> u64 {
     bytes.div_ceil(1_000_000)
 }
 
-/// Name of the AppArmor profile file the root action writes.
+/// Prefix of the AppArmor profile name and file. The full name carries a short hash of the install
+/// path (`apparmor_name`), so two users on one host get two profiles and one never replaces the other.
 pub const APPARMOR_PROFILE: &str = "oab-computer-chromium";
+
+/// `oab-computer-chromium-<8 hex digits of FNV-1a over the install path>`.
+pub fn apparmor_name(root: &str) -> String {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in root.bytes() {
+        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+    }
+    format!("{APPARMOR_PROFILE}-{h:08x}")
+}
 
 /// The profile text for the installing user's own data path. It covers every version directory
 /// under that path, so one load serves `install` and every later `update`. `None` when the path
@@ -354,7 +364,7 @@ pub fn apparmor_profile(data_base: &Path) -> Option<Vec<String>> {
         vec![
             "abi <abi/4.0>,".to_string(),
             "include <tunables/global>".to_string(),
-            format!("profile {APPARMOR_PROFILE} {p}/*/chromium/**/chrome flags=(unconfined) {{"),
+            format!("profile {} {p}/*/chromium/**/chrome flags=(unconfined) {{", apparmor_name(p)),
             "  userns,".to_string(),
             "}".to_string(),
         ]
@@ -365,7 +375,8 @@ pub fn apparmor_profile(data_base: &Path) -> Option<Vec<String>> {
 pub fn apparmor_action(data_base: &Path) -> Option<RootAction> {
     let lines = apparmor_profile(data_base)?;
     let args: Vec<String> = lines.iter().map(|l| format!("'{l}'")).collect();
-    let file = format!("/etc/apparmor.d/{APPARMOR_PROFILE}");
+    let root = data_base.join("oab-computer/playwright");
+    let file = format!("/etc/apparmor.d/{}", apparmor_name(root.to_str()?));
     Some(RootAction {
         command: format!(
             "printf '%s\\n' {} | sudo tee {file} >/dev/null && sudo apparmor_parser -r {file}",

@@ -191,9 +191,11 @@ together after one week of normal use on the class N host with no browser incide
       stop would bring the unauthenticated listener back at the next login or boot.
    2. Remove the `MCP_UPSTREAM` line (class N) or the drop-in file (class O). Edit after the backup
       of step 1, and do not delete anything else. A unit written before the installer's ownership
-      marker existed is never updated by the installer: for class N and O, move
-      `oab-computer.service.proposed` over `oab-computer.service` (it carries no `MCP_UPSTREAM`
-      line and the marker), so later installer runs keep the unit current.
+      marker existed is never updated by the installer. If an installer run left
+      `oab-computer.service.proposed`, review it and adopt it only after checking that its `BIND`
+      matches the port `tailscale serve` maps (it carries the `--port` of that run, not the kept
+      unit's); it has no `MCP_UPSTREAM` line and carries the marker, so later installer runs keep
+      the unit current. The runbook itself never creates it.
    3. Run `systemctl --user daemon-reload`, then restart `oab-computer.service` on the new binary.
    4. Run `oab-computer browser signin` if a login is needed.
 6. **Verify.**

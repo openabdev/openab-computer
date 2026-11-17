@@ -290,7 +290,9 @@ never runs a root action and refuses the flag. The AppArmor profile is scoped to
 old version keeps serving until the new profile is loaded. *As built (L1b, to be confirmed by the
 owner):* the profile is one glob over every version directory under that data path, so the profile
 that `install` prints already covers the new version directory and `update` prints no further one;
-the decided order (profile loaded before the commit) holds because no new profile is needed.
+the decided order (profile loaded before the commit) holds because no new profile is needed. The
+profile file and name end in a hash of the install path, so two users on one host do not replace
+each other's profile.
 
 Rationale: root changes are announced with their exact command, not made silently.
 

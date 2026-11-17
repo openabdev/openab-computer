@@ -198,10 +198,10 @@ Linux:
 systemctl --user disable --now oab-instance-mcp.service
 rm ~/.config/systemd/user/oab-instance-mcp.service
 # only if you used the Playwright unit. With an installer after 0.12.0, disable it only once
-# `oab-computer browser status` shows the managed browser working, and the rm waits until the soak is over:
-# docs/linux-setup.md#removing-the-old-browser-setup-after-the-soak):
+# `oab-computer browser status` shows the managed browser working:
 systemctl --user disable --now oab-pw-mcp.service
-rm ~/.config/systemd/user/oab-pw-mcp.service
+# the unit file stays until the soak is over; then remove it, see
+# docs/linux-setup.md#removing-the-old-browser-setup-after-the-soak
 systemctl --user daemon-reload
 ```
 
