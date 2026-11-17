@@ -425,6 +425,46 @@ fn the_credential_never_appears_in_an_error_even_when_the_runtime_echoes_it() {
 }
 
 #[test]
+fn a_credential_inside_the_runtime_authority_is_redacted_from_errors() {
+    let p = pki("authority");
+    // Transport failure: the runtime host name carries the credential.
+    let err = mint_with(
+        &trust_for(&p),
+        &format!("ws://{CRED}.invalid:9"),
+        "s",
+        CRED,
+        60,
+    )
+    .unwrap_err();
+    assert!(err.contains("[redacted]"), "{err}");
+    assert_no_credential(&err);
+    let err = mint_with(
+        &trust_for(&p),
+        &format!("wss://{CRED}.invalid:9"),
+        "s",
+        CRED,
+        60,
+    )
+    .unwrap_err();
+    assert_no_credential(&err);
+
+    // Oversized response: the credential is a substring of the connected authority.
+    let big = vec![b'x'; 1024 * 1024];
+    let server = fake(Some(&p), move |_| http("200 OK", "", &big));
+    let cred = "127.0.0.1";
+    let err = mint_with(
+        &trust_for(&p),
+        &format!("wss://127.0.0.1:{}", server.port),
+        "s",
+        cred,
+        60,
+    )
+    .unwrap_err();
+    assert!(err.contains("exceeds"), "{err}");
+    assert!(!err.contains(cred), "credential leaked into: {err}");
+}
+
+#[test]
 fn a_credential_with_a_control_character_is_refused_before_any_request() {
     let server = fake(None, ok_reply);
     let runtime = format!("ws://127.0.0.1:{}", server.port);

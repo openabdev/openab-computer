@@ -598,10 +598,10 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 ```
 
 The runtime may be `ws://` or `wss://`. With `wss://` the daemon mints over `https` and checks the
-runtime's certificate against the system root store (the one the WebSocket dial uses, bundled
-Mozilla roots if the host has none); there is no switch to skip that check. The admin credential
-goes into one request header, is never written to a log, a file or an error message, and a redirect
-from the runtime is refused rather than followed. A bad certificate shows up as
+runtime's certificate against the system root store (bundled Mozilla roots if the host has none;
+the WebSocket dial itself still needs system roots); there is no switch to skip that check. The
+admin credential goes into one request header, is never written to a log, a file or an error
+message, and a redirect from the runtime is refused rather than followed. A bad certificate shows up as
 `mint failed: mint to HOST failed: … invalid peer certificate …`: serve the runtime with a
 certificate for the name you dial, or add its CA to the node's system roots.
 

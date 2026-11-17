@@ -87,6 +87,19 @@ pub(crate) fn mint_with(
     admin_credential: &str,
     ttl_secs: u64,
 ) -> Result<(String, u64), String> {
+    // Every error is redacted once more after all caller-derived text (the runtime authority
+    // included) is interpolated, so no path can echo the credential.
+    mint_inner(trust, runtime, session, admin_credential, ttl_secs)
+        .map_err(|e| redact(&e, admin_credential))
+}
+
+fn mint_inner(
+    trust: &MintTrust,
+    runtime: &str,
+    session: &str,
+    admin_credential: &str,
+    ttl_secs: u64,
+) -> Result<(String, u64), String> {
     // Map scheme ws->http, wss->https. Plain http stays what it was: any ws:// runtime.
     let (https, rest) = if let Some(rest) = runtime.strip_prefix("wss://") {
         (true, rest)
