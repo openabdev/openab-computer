@@ -279,14 +279,14 @@ impl Default for Spawner {
 /// A private directory with a short path for the child's `TMPDIR` (Chromium puts a Unix socket
 /// below it, and a socket path over about 100 bytes is refused). One fixed name per install root,
 /// so a directory a killed child left behind is found, and removed, by the next start.
-struct RuntimeTmp {
+pub(crate) struct RuntimeTmp {
     parent: OwnedFd,
     name: String,
-    path: PathBuf,
+    pub(crate) path: PathBuf,
 }
 
 impl RuntimeTmp {
-    fn create(root_abs: &Path) -> Result<RuntimeTmp, &'static str> {
+    pub(crate) fn create(root_abs: &Path) -> Result<RuntimeTmp, &'static str> {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute() && p.as_os_str().len() <= 40 && p.is_dir());
@@ -570,6 +570,7 @@ impl Supervisor {
                 return Err("run_record_failed");
             }
         };
+        child.set_others(sweep::others_live(&root, child.pid()));
         let (Some(stdin), Some(lines)) = (child.stdin.take(), child.lines.take()) else {
             child.stop();
             return Err("spawn_failed");

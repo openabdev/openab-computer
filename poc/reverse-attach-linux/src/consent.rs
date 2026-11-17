@@ -1,6 +1,6 @@
 //! The consent text of `browser plan` and the figures behind it (R2.3; L1b). Every number comes from
 //! the embedded manifest. The word "safe" never appears: the text says what is checked, not what is
-//! guaranteed. `install-linux.sh` (L3) shows exactly this text, so it lives in one function.
+//! guaranteed. `install-linux.sh` shows exactly this text, so it lives in one function.
 
 use std::path::Path;
 

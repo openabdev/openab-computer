@@ -175,3 +175,75 @@ fn the_sweep_is_skipped_not_blocked_while_another_holds_the_lock() {
         "the lock file stays"
     );
 }
+
+/// A child of ours whose tree walk is bound to `scope`, as the daemon's child and the sign-in are.
+fn child_in(scope: &std::path::Path, t: &TempDir) -> crate::proc::Child {
+    let spec = crate::proc::Spec {
+        exe: std::path::PathBuf::from("/bin/sh"),
+        args: vec!["-c".into(), "sleep 300".into()],
+        env: vec![],
+        cwd: t.path.clone(),
+    };
+    crate::proc::Child::spawn(&spec, true, true, 1024, scope).unwrap()
+}
+
+#[test]
+fn stopping_one_child_leaves_what_another_live_record_claims_under_the_same_version_dir() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let v = root.abs_path().join("pw-1");
+    let bin = v.join("node/bin");
+    // A sibling (say the daemon's child, or a sign-in) with its own record, running from the same
+    // version directory, and a stray helper nobody claims.
+    let mut sibling = detached(&sleeper_at(&bin, "sibling"));
+    let mut stray = detached(&sleeper_at(&bin, "stray"));
+    let _rec = run_record::write(&root, "managed", sibling.id(), None).unwrap();
+    let mut mine = child_in(&v, &t);
+    let _own = run_record::write(&root, "cli", mine.pid(), None).unwrap();
+    mine.set_others(others_live(&root, mine.pid()));
+    mine.stop();
+    assert!(
+        dies(&mut stray),
+        "an unclaimed process under the scope survived"
+    );
+    assert!(
+        alive(&mut sibling),
+        "the sibling's process was killed by another child's stop"
+    );
+    sibling.kill().unwrap();
+    sibling.wait().unwrap();
+}
+
+#[test]
+fn with_no_other_record_stop_kills_everything_under_the_scope_as_before() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let v = root.abs_path().join("pw-1");
+    let mut helper = detached(&sleeper_at(&v.join("node/bin"), "helper"));
+    let mut mine = child_in(&v, &t);
+    let _own = run_record::write(&root, "cli", mine.pid(), None).unwrap();
+    // Only its own record exists: nothing else claims anything.
+    mine.set_others(others_live(&root, mine.pid()));
+    mine.stop();
+    assert!(dies(&mut helper));
+    // And with no provider at all, the old behaviour.
+    let mut helper2 = detached(&sleeper_at(&v.join("node/bin"), "helper2"));
+    let mut plain = child_in(&v, &t);
+    plain.stop();
+    assert!(dies(&mut helper2));
+}
+
+#[test]
+fn a_look_alike_outside_the_root_is_untouched_by_a_stop_with_a_provider() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let v = root.abs_path().join("pw-1");
+    std::fs::create_dir_all(&v).unwrap();
+    let mut outside = detached(&sleeper_at(&t.path.join("elsewhere"), "bin"));
+    let mut mine = child_in(&v, &t);
+    mine.set_others(others_live(&root, mine.pid()));
+    mine.stop();
+    assert!(alive(&mut outside));
+    outside.kill().unwrap();
+    outside.wait().unwrap();
+}

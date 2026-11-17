@@ -107,7 +107,7 @@ pub fn launch_spec(
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum RpcError {
+pub(crate) enum RpcError {
     Timeout,
     Exited,
     TooLong,
@@ -116,9 +116,9 @@ enum RpcError {
     Cancelled,
 }
 
-struct Rpc<'a> {
-    child: &'a mut Child,
-    next: u64,
+pub(crate) struct Rpc<'a> {
+    pub(crate) child: &'a mut Child,
+    pub(crate) next: u64,
 }
 
 impl Rpc<'_> {
@@ -133,13 +133,18 @@ impl Rpc<'_> {
             .map_err(|_| RpcError::Exited)
     }
 
-    fn notify(&mut self, method: &str) -> Result<(), RpcError> {
+    pub(crate) fn notify(&mut self, method: &str) -> Result<(), RpcError> {
         self.send(&json!({"jsonrpc": "2.0", "method": method}))
     }
 
     /// One request; returns `result`. Notifications and answers to other ids are skipped, with a
     /// bound on how many lines that may take.
-    fn call(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+    pub(crate) fn call(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, RpcError> {
         self.next += 1;
         let id = self.next;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
@@ -187,7 +192,7 @@ impl Rpc<'_> {
     }
 }
 
-fn identity_ok(init: &Value) -> bool {
+pub(crate) fn identity_ok(init: &Value) -> bool {
     init.get("serverInfo")
         .and_then(|s| s.get("name"))
         .and_then(Value::as_str)
@@ -205,7 +210,7 @@ fn tools_ok(list: &Value) -> bool {
     BROWSER_TOOLS.iter().all(|n| names.contains(n))
 }
 
-fn is_error_result(r: &Value) -> bool {
+pub(crate) fn is_error_result(r: &Value) -> bool {
     r.get("isError").and_then(Value::as_bool) == Some(true)
 }
 

@@ -14,6 +14,8 @@ use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::elf::{self, ElfInfo};
 use crate::manifest::{Manifest, PlatformId, Selection};
@@ -145,8 +147,16 @@ fn read_small(path: &Path, cap: u64) -> Option<String> {
     Some(s)
 }
 
-/// Runs the first `ldconfig` that exists with `-p`, with an empty environment and a bounded read.
+/// How long `ldconfig -p` may run before it is killed and the check reports "not checked".
+pub const LDCONFIG_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Runs the first `ldconfig` that exists with `-p`, with an empty environment, a bounded read and a
+/// deadline. A run that does not end in time is killed and reaped, and gives `None`.
 fn run_ldconfig(candidates: &[PathBuf]) -> Option<String> {
+    run_ldconfig_within(candidates, LDCONFIG_DEADLINE)
+}
+
+fn run_ldconfig_within(candidates: &[PathBuf], deadline: Duration) -> Option<String> {
     let exe = candidates.iter().find(|p| p.is_file())?;
     let mut child = Command::new(exe)
         .arg("-p")
@@ -156,15 +166,50 @@ fn run_ldconfig(candidates: &[PathBuf]) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let mut out = String::new();
-    let ok = child
-        .stdout
-        .take()?
-        .take(8 << 20)
-        .read_to_string(&mut out)
-        .is_ok();
-    let status = child.wait().ok()?;
-    (ok && status.success()).then_some(out)
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel::<Option<String>>();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        let ok = (&mut stdout).take(8 << 20).read_to_string(&mut out).is_ok();
+        let _ = tx.send(ok.then_some(out));
+    });
+    let end = Instant::now() + deadline;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        return None;
+    }
+    // The child has ended, so its end of the pipe is closed unless it left a process holding it.
+    rx.recv_timeout(Duration::from_secs(2)).ok().flatten()
+}
+
+/// `path` with every link resolved. A path that does not exist yet is resolved up to its nearest
+/// existing ancestor and the rest is appended, so the AppArmor profile names the path the kernel
+/// sees when the base (for example `~/.local/share`) is a symlink.
+pub fn resolved_base(path: &Path) -> PathBuf {
+    let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut p = path;
+    loop {
+        if let Ok(c) = std::fs::canonicalize(p) {
+            return rest.iter().rev().fold(c, |acc, n| acc.join(n));
+        }
+        match (p.parent(), p.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                p = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 /// Free bytes on the file system holding `path`, or on its nearest existing ancestor.
@@ -211,7 +256,7 @@ impl Facts {
             },
             free_disk: free_disk(disk_probe),
             seat: crate::platform::linux::seat::wayland_socket().exists(),
-            data_base: disk_probe.to_path_buf(),
+            data_base: resolved_base(disk_probe),
         }
     }
 }
@@ -262,6 +307,9 @@ pub struct Report {
     pub blockers: Vec<String>,
     pub missing: Vec<String>,
     pub root_actions: Vec<RootAction>,
+    /// One fixed class per blocker, in the same order: `musl`, `glibc_too_old`, `disk_full`,
+    /// `libraries_missing`.
+    pub blocker_classes: Vec<&'static str>,
 }
 
 impl Report {
@@ -342,6 +390,7 @@ pub fn evaluate(m: &Manifest, sel: &Selection<'_>, f: &Facts, needed_disk: u64) 
     match &f.libc {
         Libc::Musl => {
             r.lines.push("libc: musl".into());
+            r.blocker_classes.push("musl");
             r.blockers.push(
                 "this host uses musl libc; the managed browser needs glibc (Debian, Ubuntu or Raspberry Pi OS)"
                     .into(),
@@ -363,6 +412,7 @@ pub fn evaluate(m: &Manifest, sel: &Selection<'_>, f: &Facts, needed_disk: u64) 
                             fmt_ver(fl),
                             fmt_ver(*v)
                         ));
+                        r.blocker_classes.push("glibc_too_old");
                         r.blockers.push(format!(
                             "glibc {} is older than the {} these binaries need",
                             fmt_ver(*v),
@@ -418,6 +468,7 @@ pub fn evaluate(m: &Manifest, sel: &Selection<'_>, f: &Facts, needed_disk: u64) 
                 if ok { "ok" } else { "not enough" }
             ));
             if !ok {
+                r.blocker_classes.push("disk_full");
                 r.blockers.push(format!(
                     "not enough free disk: needs about {} MB, {} MB free",
                     mb(needed_disk),
@@ -457,6 +508,7 @@ pub fn evaluate(m: &Manifest, sel: &Selection<'_>, f: &Facts, needed_disk: u64) 
                     r.missing.len(),
                     r.missing.join(", ")
                 ));
+                r.blocker_classes.push("libraries_missing");
                 r.blockers
                     .push(format!("{} shared libraries are missing", r.missing.len()));
             }

@@ -152,15 +152,18 @@ fn musl_old_glibc_and_low_disk_are_blockers() {
     f.libc = Libc::Musl;
     let r = evaluate(m, &s, &f, 0);
     assert!(!r.ok() && render(&r).contains("musl"));
+    assert_eq!(r.blocker_classes, ["musl"]);
     f.libc = Libc::Glibc(Some((2, 17)));
     let r = evaluate(m, &s, &f, 0);
     assert!(!r.ok() && render(&r).contains("older than"));
+    assert_eq!(r.blocker_classes, ["glibc_too_old"]);
     f.libc = Libc::Glibc(Some((2, 28)));
     assert!(evaluate(m, &s, &f, 0).ok(), "exactly the floor passes");
     f.libc = Libc::Glibc(Some((2, 41)));
     f.free_disk = Some(100_000_000);
     let r = evaluate(m, &s, &f, 900_000_000);
     assert!(!r.ok());
+    assert_eq!(r.blocker_classes, ["disk_full"]);
     let t = render(&r);
     assert!(
         t.contains("needs about 900 MB") && t.contains("100 MB free"),
@@ -361,4 +364,62 @@ fn apparmor_restriction_prints_the_exact_command_and_never_runs_it() {
         assert!(r.root_actions.is_empty(), "{bad}");
         assert!(render(&r).contains("write a profile"), "{bad}");
     }
+}
+
+#[test]
+fn a_missing_library_is_a_blocker_with_its_own_class() {
+    let m = Manifest::embedded();
+    let s = arm(m);
+    let mut f = healthy(m, &s);
+    f.ld = Some(Vec::new());
+    let r = evaluate(m, &s, &f, 0);
+    assert_eq!(r.blocker_classes, ["libraries_missing"]);
+    assert_eq!(r.blockers.len(), r.blocker_classes.len());
+}
+
+#[test]
+fn an_ldconfig_that_does_not_end_is_killed_and_reported_as_not_checked() {
+    let t = TempDir::new();
+    let script = t.path.join("ldconfig");
+    std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let start = Instant::now();
+    assert!(run_ldconfig_within(&[script], Duration::from_millis(300)).is_none());
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "the deadline did not end it"
+    );
+    // A normal run inside the deadline still answers.
+    let ok = t.path.join("ok-ldconfig");
+    std::fs::write(
+        &ok,
+        "#!/bin/sh\necho '\tlibc.so.6 (libc6,AArch64) => /lib/libc.so.6'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(run_ldconfig_within(&[ok], Duration::from_secs(5)).is_some());
+}
+
+#[test]
+fn the_apparmor_path_follows_a_symlinked_base_and_a_plain_one_is_unchanged() {
+    let t = TempDir::new();
+    let real = t.path.join("real-share");
+    std::fs::create_dir_all(&real).unwrap();
+    let link = t.path.join("share-link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let real_c = std::fs::canonicalize(&real).unwrap();
+    // The base is a link and the install root below it does not exist yet.
+    assert_eq!(resolved_base(&link), real_c);
+    assert_eq!(resolved_base(&link.join("not/yet")), real_c.join("not/yet"));
+    assert_eq!(resolved_base(&real_c), real_c);
+    let a = apparmor_profile(&resolved_base(&link)).unwrap().join("\n");
+    assert!(
+        a.contains(real_c.to_str().unwrap()) && !a.contains("share-link"),
+        "{a}"
+    );
+    // A path that cannot be resolved at all (relative, nothing exists) is returned as given.
+    assert_eq!(
+        resolved_base(Path::new("nope-x/y")),
+        PathBuf::from("nope-x/y")
+    );
 }

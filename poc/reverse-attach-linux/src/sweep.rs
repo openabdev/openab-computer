@@ -49,7 +49,7 @@ pub fn in_install_dirs(exe: &Path, root_abs: &Path) -> bool {
 }
 
 /// Does a live record claim `pid`?
-fn claimed(pid: u32, live: &[Record]) -> bool {
+pub(crate) fn claimed(pid: u32, live: &[Record]) -> bool {
     if live.is_empty() {
         return false;
     }
@@ -59,6 +59,30 @@ fn claimed(pid: u32, live: &[Record]) -> bool {
         pid == r.pid
             || sf.is_some_and(|f| f.pgrp == r.pid || f.session == r.pid)
             || (r.unit.is_some() && r.unit == unit)
+    })
+}
+
+/// The live run records of every child but `own_pid`, read afresh each time it is called. A
+/// `Child::stop` asks for them so that its tree walk spares a sibling's processes. The root is
+/// reopened from its path, so the closure owns no descriptor; if it cannot be reopened the answer
+/// is empty and the walk is as before.
+pub fn others_live(root: &Root, own_pid: u32) -> proc::OthersLive {
+    let base = root
+        .abs_path()
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    Box::new(move || {
+        let Some(base) = &base else {
+            return Vec::new();
+        };
+        let Ok(Some(root)) = Root::open(base, false) else {
+            return Vec::new();
+        };
+        run_record::live(&root)
+            .into_iter()
+            .filter(|r| r.pid != own_pid)
+            .collect()
     })
 }
 
