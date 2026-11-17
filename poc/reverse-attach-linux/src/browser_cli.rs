@@ -1,5 +1,5 @@
-//! `oab-computer browser <plan|preflight|install|update|remove|status>` (ADR linux-browser-tier
-//! decision 1; L1b). Parses the arguments, builds the options from the real environment and the
+//! `oab-computer browser <plan|preflight|install|update|remove|status|signin>` (ADR linux-browser-tier
+//! decision 1; L1b, L3). Parses the arguments, builds the options from the real environment and the
 //! embedded manifest, runs one command and prints its result.
 //!
 //! Exit codes (the ADR does not define them, so these are the minimal choice): `0` success,
@@ -7,8 +7,10 @@
 //! failed or the preflight found a blocker, with one fixed line on stderr,
 //! `browser: <command>_failed class=<token>`; `2` a usage error.
 //!
-//! Not in this build, and refused with exit 2: `signin` (L3), `--apply-system-changes` (L3) and
-//! `--use-system-chromium` (needs the recorded refusals of L2).
+//! `preflight --root-actions` prints one `command<TAB>reason` line per root action and nothing else;
+//! `scripts/install-linux.sh` reads it. This tool never runs a root action: `--apply-system-changes`
+//! belongs to the installer script and is refused here with exit 2, as is `--use-system-chromium`
+//! (not available in this build; a later PR).
 
 use std::io::{BufRead, IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -27,7 +29,13 @@ use crate::state::{Fail, Root};
 #[derive(Debug, PartialEq, Eq)]
 pub enum Cmd {
     Plan,
-    Preflight,
+    Preflight {
+        /// Print only the root actions, one `command<TAB>reason` line each (for the installer).
+        root_actions: bool,
+    },
+    Signin {
+        url: Option<String>,
+    },
     Install {
         from_dir: Option<PathBuf>,
     },
@@ -46,7 +54,7 @@ pub enum Cmd {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Usage(pub String);
 
-const USAGE: &str = "usage: oab-computer browser <plan|preflight|install|update|remove|status> [flags]\n  plan                      print what an install downloads and where it goes\n  preflight                 check this host; installs nothing and never uses root\n  install [--from-dir DIR]  install the pinned browser\n  update [--yes] [--from-dir DIR]\n  remove                    delete what this installer created\n  status [--json] [--retry]  --retry clears the unavailable latch and re-runs the containment check";
+const USAGE: &str = "usage: oab-computer browser <plan|preflight|install|update|remove|status|signin> [flags]\n  plan                      print what an install downloads and where it goes\n  preflight [--root-actions] check this host; installs nothing and never uses root; the flag prints only the root actions, one command<TAB>reason line each\n  install [--from-dir DIR]  install the pinned browser\n  update [--yes] [--from-dir DIR]\n  remove                    delete what this installer created\n  signin [--url URL]        open the browser headed on the persistent profile so you can log in; run it over ssh -t\n  status [--json] [--retry]  --retry clears the unavailable latch and re-runs the containment check";
 
 pub fn parse(args: &[String]) -> Result<Cmd, Usage> {
     let (sub, rest) = args.split_first().ok_or_else(|| Usage(USAGE.into()))?;
@@ -54,6 +62,8 @@ pub fn parse(args: &[String]) -> Result<Cmd, Usage> {
     let mut yes = false;
     let mut json = false;
     let mut retry = false;
+    let mut root_actions = false;
+    let mut url: Option<String> = None;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match (sub.as_str(), a.as_str()) {
@@ -66,9 +76,23 @@ pub fn parse(args: &[String]) -> Result<Cmd, Usage> {
                 }
             }
             ("update", "--yes") => yes = true,
+            ("preflight", "--root-actions") => root_actions = true,
+            ("signin", "--url") => {
+                let u = it
+                    .next()
+                    .ok_or_else(|| Usage("--url needs an address".into()))?;
+                if url.replace(u.clone()).is_some() {
+                    return Err(Usage("--url given twice".into()));
+                }
+            }
             ("status", "--json") => json = true,
             ("status", "--retry") => retry = true,
-            (_, "--apply-system-changes" | "--use-system-chromium") => {
+            (_, "--apply-system-changes") => {
+                return Err(Usage(
+                    "--apply-system-changes is a flag of scripts/install-linux.sh; this command never runs a root action. Run `oab-computer browser preflight` to see them".into(),
+                ))
+            }
+            (_, "--use-system-chromium") => {
                 return Err(Usage(format!("{a} is not available in this build")))
             }
             _ => return Err(Usage(format!("unknown argument for browser {sub}"))),
@@ -76,18 +100,27 @@ pub fn parse(args: &[String]) -> Result<Cmd, Usage> {
     }
     Ok(match sub.as_str() {
         "plan" => Cmd::Plan,
-        "preflight" => Cmd::Preflight,
+        "preflight" => Cmd::Preflight { root_actions },
+        "signin" => Cmd::Signin { url },
         "install" => Cmd::Install { from_dir },
         "update" => Cmd::Update { yes, from_dir },
         "remove" => Cmd::Remove,
         "status" => Cmd::Status { json, retry },
-        "signin" => {
-            return Err(Usage(
-                "browser signin is not available in this build".into(),
-            ))
-        }
         _ => return Err(Usage(USAGE.into())),
     })
+}
+
+/// A tab or a newline would split the `command<TAB>reason` line the installer reads.
+fn one_line(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c == '\t' || c == '\n' || c == '\r' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 fn hint(class: &str) -> Option<&'static str> {
@@ -105,6 +138,16 @@ fn hint(class: &str) -> Option<&'static str> {
         "record_replace_unsupported" => "this file system cannot replace a record atomically (RENAME_EXCHANGE); nothing was changed",
         "browser_running" => "a managed browser is running; stop it first. Nothing was deleted",
         "pins_changed_same_id" => "the embedded pins changed without a new manifest id; this needs a new release, and the installed version was left as it is",
+        "terminal_required" => "sign-in needs a terminal to wait on; run it over `ssh -t`",
+        "no_seat" => "there is no Wayland socket for this user; log in to the desktop on this machine, or install with `install-linux.sh --headless-seat` for a node that has none",
+        "profile_locked" => "a browser already holds the profile: the daemon's own browser is not stopped when it is idle, so restart the daemon (`systemctl --user restart oab-computer.service`) to release it; a sign-in or health check that is still running ends on its own",
+        "launch_refused" => "the browser could not start its sandbox; run `oab-computer browser preflight`",
+        "spawn_failed" => "the browser did not start; run `oab-computer browser status`",
+        "invalid_url" => "--url takes an http:// or https:// address of at most 2048 bytes, with no spaces",
+        "browser_exited" => "the browser ended before you pressed Enter; nothing was saved for certain. Run `oab-computer browser signin` again",
+        "close_failed" => "the browser did not confirm that it closed, so the login may not have been saved; run `oab-computer browser signin` again",
+        "timed_out" => "the sign-in window stayed open for 30 minutes and was closed; run `oab-computer browser signin` again",
+        "cancelled" => "the sign-in was interrupted or its input closed before Enter; the browser was stopped and nothing is confirmed",
         "root_not_directory" => "the install root or a directory above it is a link, is not yours, or is writable by others; nothing below it was touched",
         _ => return None,
     })
@@ -141,7 +184,7 @@ pub fn execute(
             io.say(&t);
             0
         }
-        Cmd::Preflight => {
+        Cmd::Preflight { root_actions } => {
             let sel = match o.manifest.select(o.platform) {
                 Ok(s) => s,
                 Err(_) => return fail(io, "preflight", Fail("unsupported_platform")),
@@ -153,13 +196,26 @@ pub fn execute(
                 &facts,
                 consent::disk_needed(o.manifest, &sel),
             );
+            if *root_actions {
+                for a in &r.root_actions {
+                    io.say(&format!(
+                        "{}\t{}",
+                        one_line(&a.command),
+                        one_line(&a.reason)
+                    ));
+                }
+                return 0;
+            }
             io.say(preflight::render(&r).trim_end());
             if r.ok() {
                 0
             } else {
+                let class = r.blocker_classes.first().copied().unwrap_or("blocked");
+                let _ = writeln!(io.err, "browser: preflight_failed class={class}");
                 1
             }
         }
+        Cmd::Signin { .. } => fail(io, "signin", Fail("not_available")),
         Cmd::Install { .. } => match install::install(o, io) {
             Ok(Done::Installed(id)) => {
                 io.say(&format!("installed {id}"));
@@ -261,7 +317,13 @@ pub fn run(args: &[String]) -> i32 {
         move |p: &Path| Facts::gather(&sources, platform.unwrap_or(PlatformId::LinuxX64), p);
     // The health check of an install runs in a transient unit with a runtime bound when the
     // mechanism verifies (L2), and on the process-tree layers alone when it does not.
-    let launcher = sigstop::Supervised::new(std::sync::Arc::new(Systemd::new(None, false)));
+    let signing_in = matches!(cmd, Cmd::Signin { .. });
+    let launcher = sigstop::Supervised::new(std::sync::Arc::new(Systemd::new(None, false)))
+        .with_runtime_max(if signing_in {
+            crate::signin::MAX_OPEN
+        } else {
+            sigstop::CLI_RUNTIME_MAX
+        });
     let extras = |base: &Path, retry: bool| {
         crate::probe::gather(
             base,
@@ -307,7 +369,34 @@ pub fn run(args: &[String]) -> i32 {
         std::io::stdin().lock().take(64).read_line(&mut line).ok()?;
         Some(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
     };
+    if let Cmd::Signin { url } = &cmd {
+        return signin(&o, url.as_deref(), &mut io);
+    }
     execute(&cmd, &o, &mut io, &mut ask)
+}
+
+/// `browser signin`: the part that needs a terminal and a seat, which `execute` does not have.
+fn signin(o: &Opts<'_>, url: Option<&str>, io: &mut Io<'_>) -> i32 {
+    let root = match Root::open(&o.base, false) {
+        Ok(Some(r)) => r,
+        Ok(None) => return fail(io, "signin", Fail("not_installed")),
+        Err(f) => return fail(io, "signin", f),
+    };
+    let setup = crate::signin::Setup {
+        root: &root,
+        launcher: o.launcher,
+        is_terminal: std::io::stdin().is_terminal(),
+        seat: crate::signin::seat_from_env(),
+        url: url.unwrap_or("about:blank"),
+        timeouts: crate::signin::Timeouts::default(),
+    };
+    match crate::signin::run(&setup, io, &mut crate::signin::wait_for_enter) {
+        Ok(()) => {
+            io.say("sign-in finished: the browser is closed and the profile keeps what you signed in to");
+            0
+        }
+        Err(c) => fail(io, "signin", Fail(c)),
+    }
 }
 
 #[cfg(test)]

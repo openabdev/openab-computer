@@ -279,14 +279,21 @@ impl Default for Spawner {
 /// A private directory with a short path for the child's `TMPDIR` (Chromium puts a Unix socket
 /// below it, and a socket path over about 100 bytes is refused). One fixed name per install root,
 /// so a directory a killed child left behind is found, and removed, by the next start.
-struct RuntimeTmp {
+pub(crate) struct RuntimeTmp {
     parent: OwnedFd,
     name: String,
-    path: PathBuf,
+    pub(crate) path: PathBuf,
 }
 
 impl RuntimeTmp {
-    fn create(root_abs: &Path) -> Result<RuntimeTmp, &'static str> {
+    pub(crate) fn create(root_abs: &Path) -> Result<RuntimeTmp, &'static str> {
+        RuntimeTmp::create_named(root_abs, "oab-pw")
+    }
+
+    /// Same, under another fixed prefix of the same length. `browser signin` uses its own so that
+    /// starting it never removes the directory of a managed child that started a moment earlier:
+    /// the profile lock decides who may run, and each side only ever touches its own directory.
+    pub(crate) fn create_named(root_abs: &Path, prefix: &str) -> Result<RuntimeTmp, &'static str> {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute() && p.as_os_str().len() <= 40 && p.is_dir());
@@ -300,7 +307,7 @@ impl RuntimeTmp {
         )
         .map_err(|_| "tmp_unavailable")?;
         let h = Sha256::digest(root_abs.as_os_str().as_encoded_bytes());
-        let name = format!("oab-pw-{}", crate::manifest::hex(&h[..4]));
+        let name = format!("{prefix}-{}", crate::manifest::hex(&h[..4]));
         let mut rep = state::Report::default();
         // A directory of ours that an earlier child left: marker-gated removal.
         let _ = state::remove_marked_tree(&parent, &name, OWNED_DATA, &mut rep);
@@ -570,6 +577,7 @@ impl Supervisor {
                 return Err("run_record_failed");
             }
         };
+        child.set_others(sweep::others_live(&root, child.pid()));
         let (Some(stdin), Some(lines)) = (child.stdin.take(), child.lines.take()) else {
             child.stop();
             return Err("spawn_failed");

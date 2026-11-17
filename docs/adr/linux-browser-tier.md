@@ -1,6 +1,6 @@
 # ADR: Linux managed Playwright tier
 
-- **Status:** Accepted, not implemented as of v0.12.0. There is no `oab-computer browser` subcommand and no managed Linux Playwright; today's Linux behavior (an external unit on `127.0.0.1:8794`) is in [`docs/linux-setup.md`](../linux-setup.md).
+- **Status:** Accepted. Implemented through L3 (shared pins, download and install, the managed child and router, the installer, `browser signin` and the docs); hardening (L4), release work (L5) and the PID-namespace supervisor (L6) are pending. The 0.12.0 release does not contain it: 0.12.0 and earlier run an external unit on `127.0.0.1:8794`. Operator guide: [`docs/linux-setup.md`](../linux-setup.md).
 - **Issues:** [#119](https://github.com/openabdev/openab-computer/issues/119) (this work), [#118](https://github.com/openabdev/openab-computer/issues/118) (macOS tiers)
 - **Requirement:** [`docs/requirements/linux-browser-tier.md`](../requirements/linux-browser-tier.md) (requirements, cutover runbook, test plan, PR split)
 - **Related:** [`browser-tiers.md`](browser-tiers.md) (the macOS ADR; its questions are cited here as "macOS Q*n*"), [`reverse-attach.md`](reverse-attach.md), [`docs/linux-setup.md`](../linux-setup.md), [`docs/tool-profiles.md`](../tool-profiles.md)
@@ -16,7 +16,9 @@ The old unit also survives a daemon stop and has no pinned downloads.
 Goal: the same managed tier on Linux, on amd64 and arm64.
 
 1. `@playwright/mcp` runs as a **stdio child** of the daemon. It and its Chromium open no
-   listening socket (TCP, UDP or Unix). Port 8794 is retired for the managed path.
+   TCP or UDP port. Port 8794 is retired for the managed path. Target: no Unix listener either.
+   That target is **not met** by the L2 build: it holds two private Unix listening sockets in the
+   child's `0700` `TMPDIR` (open under V2 and #132). The Linux docs claim only "no TCP or UDP port".
 2. Node, the npm packages and Chromium come from **pinned URLs with pinned sizes and SHA-256
    digests** in a manifest embedded in the release binary. The binary never fetches pins.
 3. **Update is side by side with a health check** and keeps the old version on failure. It is
@@ -103,7 +105,10 @@ only guarantee.
 The runtime unit is only selected when the daemon is the unit's main process. Otherwise `BindsTo`
 could pull in a second daemon and leave the browser running after a `SIGKILL`. CLI children
 (sign-in, health check) bind to their own CLI scope, not to the daemon, so a sign-in survives a
-daemon restart and a `kill -9` of the CLI ends its child.
+daemon restart. A `kill -9` of the CLI ends the leader (`PR_SET_PDEATHSIG`), but the unit itself
+lasts until its `RuntimeMaxSec` (300 s for the health check, 30 minutes for a sign-in) or until the
+next child start's sweep stops it. Stopping one child never ends another child's processes: a stop
+leaves alone what another live run record claims.
 
 The browser unit sets `KillMode=control-group`, `SendSIGKILL=yes`, `TimeoutStopSec=10`,
 `NoNewPrivileges`, `RestrictSUIDSGID`, `LockPersonality`, `RestrictRealtime`,
@@ -119,7 +124,7 @@ The child's environment is cleared inside the unit with `env -i` and rebuilt fro
 Without that, a user service inherits the user manager's environment, which can contain bearer,
 cloud or `GH_*` values.
 
-The diagram shows the planned layout and what ends the managed processes. None of it is built yet.
+The diagram shows the layout and what ends the managed processes. The managed child and its containment are built (L2); the PID-namespace supervisor is not (L6).
 
 ```mermaid
 flowchart TB
@@ -130,7 +135,7 @@ flowchart TB
         nodeProc["node running the Playwright MCP entry"]
         chromium["Chromium and its helpers, detached ones included"]
     end
-    daemon -- "stdin and stdout pipes, no listening socket" --> nodeProc
+    daemon -- "stdin and stdout pipes, no TCP or UDP port" --> nodeProc
     nodeProc --> chromium
 
     stop["Daemon stop or restart"]
@@ -152,6 +157,9 @@ guarantee. A CLI child (sign-in, health check) is bound to its own scope, not to
 
 Linux has one tier, so the router answers one question: which Playwright serves `browser_*`.
 
+- **`OAB_BROWSER=off`** switches the managed tier off. With a managed install the backend is `off`
+  and a stale `MCP_UPSTREAM browser=` line is ignored; with nothing installed such a line alone still
+  serves as external.
 - **Managed** is selected when `install.json` is valid, the version directory exists and
   containment is verified. If containment is not verified the backend is
   `unavailable: containment_unverified` and does not fall to external.
@@ -242,7 +250,10 @@ Rejected:
 **Chosen: managed wins whenever it is installed.** External is used only when
 `MCP_BROWSER_BACKEND=external` is also set. A stale `MCP_UPSTREAM` is ignored with one logged
 event and a `sys_info` field. With nothing installed, `MCP_UPSTREAM=browser=` alone still works as
-external, with the new loopback, redirect, error and owner-uid checks.
+external, with the new loopback, redirect, error and owner-uid checks. `OAB_BROWSER=off` switches the
+managed tier off: with a managed install the result is no `browser_*` tools (a stale line is ignored
+and `external` needs `MCP_BROWSER_BACKEND=external`), and with nothing installed a lone line still
+serves as external.
 
 Rationale: a migrated host must not silently keep preferring the unauthenticated 8794 listener
 (macOS Q12), and the installer must not rewrite files it did not write.
@@ -273,9 +284,15 @@ Rejected:
 
 **Chosen: no `sudo` by default**, including `loginctl enable-linger` and `tailscale serve`. Each
 root action is printed with its exact command and reason. `--apply-system-changes` lists them and
-runs them with `sudo`. The AppArmor profile is scoped to the installing user's own data path, not
+runs them with `sudo`. Its only entry point is `scripts/install-linux.sh`; `oab-computer browser`
+never runs a root action and refuses the flag. The AppArmor profile is scoped to the installing user's own data path, not
 `/home/*`, and `update` prints the profile for the new version directory before it commits, so the
-old version keeps serving until the new profile is loaded.
+old version keeps serving until the new profile is loaded. *As built (L1b, to be confirmed by the
+owner):* the profile is one glob over every version directory under that data path, so the profile
+that `install` prints already covers the new version directory and `update` prints no further one;
+the decided order (profile loaded before the commit) holds because no new profile is needed. The
+profile file and name end in a hash of the install path, so two users on one host do not replace
+each other's profile.
 
 Rationale: root changes are announced with their exact command, not made silently.
 
@@ -459,7 +476,9 @@ Rejected:
 
 ## Security notes
 
-- **No listener.** The managed tree opens no TCP, UDP or Unix socket. `browser status` runs a
+- **No TCP or UDP listener.** The managed tree opens no TCP or UDP port. Two private Unix
+  listening sockets remain in its `0700` `TMPDIR` (measured; open under V2 and #132), so the
+  target "no Unix listener" is unmet. `browser status` runs a
   self-check over `/proc/net/{tcp,tcp6,udp,udp6,unix}` and reports listeners owned by the managed
   tree, and the release smoke runs the same check on both architectures. The launch vector never
   contains `--port`, `--host`, `--allowed-hosts` or `--no-sandbox`.

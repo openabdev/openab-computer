@@ -1,63 +1,155 @@
 #!/bin/bash
 # Install the Linux hands node from a release tarball (run ON the target, as the desktop user).
 #
-#   V=<release version, e.g. 0.12.0>; A=$(dpkg --print-architecture)   # arm64 | amd64
+#   V=<release version, a release after 0.12.0>; A=$(dpkg --print-architecture)   # arm64 | amd64
 #   curl -fsSL "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz" | tar xz
-#   cd oab-computer-$V-linux-$A && ./install-linux.sh [--allow-login you@example.com] [--no-browser] [--headless-seat]
+#   cd oab-computer-$V-linux-$A && ./install-linux.sh [--allow-login you@example.com] [--browser managed|none] [--headless-seat]
 #
-# --headless-seat: for a server install with no desktop (Ubuntu Server, a mini PC in a closet):
-#   installs sway and runs it headless (one 1920x1080 virtual output) as user unit oab-seat.service.
-#   Boxes that already run a wlroots desktop (Raspberry Pi OS labwc, sway) do not need it.
+# Installs the binary and the daemon unit under your home, generates or keeps the bearer token and
+# detects the Tailscale login. The browser (Playwright and Chromium) is a separate step the binary
+# itself performs, `oab-computer browser install`: this script shows what it downloads
+# (`oab-computer browser plan`) and asks first. It writes no browser unit and no MCP_UPSTREAM line.
+# Idempotent. Full walkthrough: docs/linux-setup.md.
 #
-# Installs the binary + units under ~/.local/oab-computer, generates or keeps the bearer
-# token, detects the Tailscale login, installs @playwright/mcp if node is present, enables
-# linger and `tailscale serve --https=8444`. Idempotent. Full walkthrough: docs/linux-setup.md.
+# --browser managed|none  managed: download and install the pinned browser after showing what it
+#                         downloads, with no question (the flag is the consent); none: skip it.
+#                         Without either flag, a terminal gets the question [Y/n] and no terminal
+#                         means nothing is downloaded.
+# --no-browser            same as --browser none (kept for existing automation)
+# --yes                   agree to the browser download without asking. Runs no root action.
+# --apply-system-changes  run the root actions this script prints, each with sudo (linger,
+#                         tailscale serve, the AppArmor profile, missing libraries, fonts).
+#                         Without it they are only printed. Nothing here runs sudo by itself.
+# --headless-seat         for a server install with no desktop (Ubuntu Server, a mini PC in a
+#                         closet): needs sway already installed (apt-get install sway; exit 78
+#                         if missing) and runs it headless (one 1920x1080 virtual output) as
+#                         user unit oab-seat.service. Boxes that already run a wlroots desktop
+#                         (Raspberry Pi OS labwc, sway) do not need it.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BASE="$HOME/.local/oab-computer"
 CFG="$HOME/.config/oab-computer"
 UNITS="$HOME/.config/systemd/user"
-ALLOW_LOGIN=""; BROWSER=1; PORT=8795; SERVE_PORT=8444; HEADLESS_SEAT=0
+ALLOW_LOGIN=""; BROWSER_MODE=""; NO_BROWSER=0; YES=0; APPLY=0; PORT=8795; SERVE_PORT=8444; HEADLESS_SEAT=0
+USER="${USER:-$(id -un)}"
+
+usage_err() { echo "install-linux.sh: $*" >&2; exit 64; }
+val() { [ "$1" -ge 2 ] || usage_err "$2 needs a value"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --allow-login) ALLOW_LOGIN="$2"; shift 2;;
-    --no-browser) BROWSER=0; shift;;
+    --allow-login) val $# "$1"; ALLOW_LOGIN="$2"; shift 2;;
+    --browser) val $# "$1"; BROWSER_MODE="$2"; shift 2;;
+    --no-browser) NO_BROWSER=1; shift;;
+    --yes) YES=1; shift;;
+    --apply-system-changes) APPLY=1; shift;;
     --headless-seat) HEADLESS_SEAT=1; shift;;   # no desktop on this box: run a headless sway as the seat
-    --port) PORT="$2"; shift 2;;
-    --serve-port) SERVE_PORT="$2"; shift 2;;
+    --port) val $# "$1"; PORT="$2"; shift 2;;
+    --serve-port) val $# "$1"; SERVE_PORT="$2"; shift 2;;
     *) echo "unknown arg: $1" >&2; exit 64;;
   esac
 done
+case "$BROWSER_MODE" in ""|managed|none) ;; *) usage_err "--browser takes managed or none, not '$BROWSER_MODE'";; esac
+[ "$NO_BROWSER" = 0 ] || [ "$BROWSER_MODE" != managed ] || usage_err "--no-browser and --browser managed contradict each other"
+[ "$NO_BROWSER" = 0 ] || [ "$YES" = 0 ] || usage_err "--no-browser and --yes contradict each other"
+[ "$BROWSER_MODE" != none ] || [ "$YES" = 0 ] || usage_err "--browser none and --yes contradict each other"
+[ "$NO_BROWSER" = 0 ] || BROWSER_MODE=none
+# These values are written into unit files and shell commands: digits and a plain login only.
+case "$PORT$SERVE_PORT" in *[!0-9]*|"") usage_err "--port and --serve-port take numbers";; esac
+case "$ALLOW_LOGIN" in *[[:space:]]*|*[\"\'\\\$\`]*) usage_err "--allow-login must not contain spaces or quotes";; esac
+case "$USER" in *[!A-Za-z0-9_.-]*|"") usage_err "unexpected user name '$USER'";; esac
 
 need() { command -v "$1" >/dev/null || { echo "missing: $1 (apt-get install $2)" >&2; exit 78; }; }
-need tailscale tailscale; need grim grim; need wlrctl wlrctl; need wtype wtype; need python3 python3
+need tailscale tailscale; need grim grim; need wtype wtype; need python3 python3
 [ "$(id -u)" != 0 ] || { echo "run as the desktop user, not root" >&2; exit 64; }
 
-# Warn only (read-only: never stops, disables or removes the old units). A 0.11 or earlier node runs
-# oab-instance-mcp.service on the same port; it would fight the new oab-computer.service for it.
-LEGACY_FOUND=()
-for U in oab-instance-mcp.service oab-pw-mcp.service; do
-  if systemctl --user is-active --quiet "$U" >/dev/null 2>&1 || systemctl --user is-enabled --quiet "$U" >/dev/null 2>&1; then
-    LEGACY_FOUND+=("$U")
+# ---- root actions: collected, printed with their reason, run only with --apply-system-changes ----
+ROOT_CMDS=(); ROOT_WHY=(); ROOT_FAILED=0
+want_root() { ROOT_CMDS+=("$1"); ROOT_WHY+=("$2"); }
+# flush_root: print the pending root actions; with --apply-system-changes run them with sudo.
+# Sets ROOT_RAN=1 when something ran. The list is empty afterwards.
+ROOT_RAN=0
+flush_root() {
+  local i rc
+  [ "${#ROOT_CMDS[@]}" -gt 0 ] || return 0
+  if [ "$APPLY" = 1 ]; then
+    echo "root actions (--apply-system-changes):"
+  else
+    echo "root actions, NOT run (add --apply-system-changes to run them with sudo, or run them yourself):"
+  fi
+  for i in "${!ROOT_CMDS[@]}"; do
+    if [ "$APPLY" = 1 ]; then
+      echo "  running: ${ROOT_CMDS[$i]}"
+      echo "    why: ${ROOT_WHY[$i]}"
+      rc=0; sh -c "${ROOT_CMDS[$i]}" || rc=$?
+      if [ "$rc" = 0 ]; then ROOT_RAN=1; else echo "  failed (exit $rc): ${ROOT_CMDS[$i]}" >&2; ROOT_FAILED=1; fi
+    else
+      echo "  ${ROOT_CMDS[$i]}"
+      echo "    why: ${ROOT_WHY[$i]}"
+    fi
+  done
+  ROOT_CMDS=(); ROOT_WHY=()
+}
+
+# ---- old units: read only. This script never stops, disables, edits or deletes any of them (D5, D10).
+unit_live() { systemctl --user is-active --quiet "$1" >/dev/null 2>&1 || systemctl --user is-enabled --quiet "$1" >/dev/null 2>&1; }
+# A 0.11 or earlier node runs oab-instance-mcp.service on the same port; it would fight the new
+# oab-computer.service for it.
+if unit_live oab-instance-mcp.service; then
+  {
+    echo "install: WARNING: the old unit oab-instance-mcp.service (0.11 or earlier) is still active or enabled."
+    echo "It listens on port 8795 (the default); if the new oab-computer.service uses the same port ($PORT), they would fight over it."
+    echo "So this installer writes the new unit but does NOT enable, start or restart oab-computer.service while that old unit is live."
+    echo "This installer does not touch it. To stop it for good, run: systemctl --user disable --now oab-instance-mcp.service"
+    echo "(a plain stop is not enough: it comes back at the next login or boot)."
+  } >&2
+  INSTANCE_UNIT_LIVE=1
+else
+  INSTANCE_UNIT_LIVE=0
+fi
+# An old external browser unit is an unauthenticated Playwright on 127.0.0.1:8794. The managed
+# browser replaces it; the unit stays until a person disables it after checking the new one.
+for U in oab-pw-mcp.service oab-computer-pw-mcp.service; do
+  if unit_live "$U"; then
+    {
+      echo "install: WARNING: the old browser unit $U is still active or enabled."
+      echo "It is a Playwright without authentication on 127.0.0.1:8794. The managed browser (oab-computer browser install) replaces it and does not use that port."
+      echo "This installer did not touch it. Once 'oab-computer browser status' shows the managed browser working, turn the old one off for good with:"
+      echo "  systemctl --user disable --now $U"
+      echo "A plain stop is not enough: the unit comes back at the next login or boot. Removing the files comes later, after a soak: docs/linux-setup.md."
+    } >&2
   fi
 done
-if [ "${#LEGACY_FOUND[@]}" -gt 0 ]; then
-  {
-    echo "install: WARNING: the old unit(s) ${LEGACY_FOUND[*]} (0.11 or earlier) are still active or enabled."
-    echo "The old oab-instance-mcp.service listens on port 8795 (the default); if the new oab-computer.service uses the same port ($PORT), they will fight over it;"
-    echo "the old oab-pw-mcp.service holds the Playwright port (8794) that oab-computer-pw-mcp.service needs."
-    echo "This installer does not touch them. To stop and remove them, run:"
-    echo "  systemctl --user disable --now ${LEGACY_FOUND[*]}"
-    echo "  rm ${LEGACY_FOUND[*]/#/$UNITS/}"
-    echo "  systemctl --user daemon-reload"
-  } >&2
-fi
-
-# node installed via fnm/nvm is often a symlink with npm/npx only beside the real binary.
-NODE_BIN=""
-if command -v node >/dev/null; then NODE_BIN="$(dirname "$(readlink -f "$(command -v node)")")"; export PATH="$NODE_BIN:$PATH"; fi
+# An MCP_UPSTREAM line from an older install keeps pointing the daemon at that old listener. With a
+# managed install present the managed browser wins over it. Nothing here edits such a line.
+for D in "$UNITS/oab-computer.service.d" "$UNITS/oab-instance-mcp.service.d"; do
+  [ -d "$D" ] || continue
+  for F in "$D"/*.conf; do
+    [ -f "$F" ] || continue
+    if grep -q 'MCP_UPSTREAM' "$F"; then
+      echo "install: note: $F sets MCP_UPSTREAM. It was left as it is. With a managed browser installed the managed one wins; remove that file at cutover (docs/linux-setup.md)." >&2
+    fi
+  done
+done
 
 mkdir -p "$BASE" "$CFG" "$UNITS"
+# Unit files are written to a fresh private temp file (mktemp creates it exclusively and never follows
+# a symlink), then renamed over the target. A target that is a symlink, or has no marker, is not ours:
+# it is left alone and the new text goes next to it as <unit>.proposed. A <unit>.proposed that is not
+# one of ours (no marker, or a symlink) is never overwritten: a timestamped name is used instead.
+UNIT_MARK='# oab-computer-installer:'
+SEAT_TMP=""; UNIT_TMP=""
+# A failed run must not leave a half-written temp file in the units directory.
+trap 'rm -f ${SEAT_TMP:+"$SEAT_TMP"} ${UNIT_TMP:+"$UNIT_TMP"}' EXIT
+new_unit_tmp() { local t; t="$(mktemp "$UNITS/.oab-install.XXXXXX")" || exit 74; chmod 644 "$t"; echo "$t"; }
+unit_is_ours() { [ -f "$1" ] && [ ! -L "$1" ] && grep -qF "$UNIT_MARK" "$1"; }
+unit_is_foreign() { { [ -e "$1" ] || [ -L "$1" ]; } && ! unit_is_ours "$1"; }
+place_proposed() {
+  PROPOSED="$2.proposed"
+  if { [ -e "$PROPOSED" ] || [ -L "$PROPOSED" ]; } && ! unit_is_ours "$PROPOSED"; then
+    PROPOSED="$2.proposed.$(date +%Y%m%d%H%M%S).$$"
+  fi
+  mv -f "$1" "$PROPOSED"
+}
 if [ "$HEADLESS_SEAT" = 1 ]; then
   need sway sway
   mkdir -p "$HOME/.config/sway"
@@ -67,7 +159,10 @@ output HEADLESS-1 resolution 1920x1080 position 0,0
 default_border none
 focus_follows_mouse no
 SWAY
-  cat >"$UNITS/oab-seat.service" <<'UNIT'
+  SEAT_UNOWNED=
+  SEAT_TMP="$(new_unit_tmp)"
+  cat >"$SEAT_TMP" <<'UNIT'
+# oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.
 [Unit]
 Description=Headless sway seat for the oab-computer hands node
 
@@ -84,9 +179,23 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 UNIT
+  # Ownership (D5): only a unit with the marker is rewritten. Any other existing oab-seat.service is
+  # left byte for byte as it is and the unit this run would have written is put next to it.
+  if unit_is_foreign "$UNITS/oab-seat.service"; then
+    place_proposed "$SEAT_TMP" "$UNITS/oab-seat.service"
+    SEAT_UNOWNED=1
+    echo "install: note: $UNITS/oab-seat.service was not written by this installer, so it was left as it is. The unit this run would have written is $PROPOSED; to adopt it, review it, move it over oab-seat.service, then daemon-reload and restart." >&2
+  else
+    mv -f "$SEAT_TMP" "$UNITS/oab-seat.service"
+  fi
   systemctl --user daemon-reload
-  systemctl --user enable --now oab-seat.service
-  sleep 2
+  if [ -n "$SEAT_UNOWNED" ]; then
+    # Never enable or start a unit this script did not write: its ExecStart is unreviewed.
+    echo "install: oab-seat.service was not enabled or started by this run; the Wayland socket check below decides whether a seat exists." >&2
+  else
+    systemctl --user enable --now oab-seat.service
+    sleep 2
+  fi
 fi
 # Which Wayland socket is the seat on? A desktop gives wayland-0; headless sway picks the first
 # free name, usually wayland-1.
@@ -100,6 +209,7 @@ if [ -z "$ALLOW_LOGIN" ]; then
   ALLOW_LOGIN=$(tailscale status --json 2>/dev/null | python3 -c \
     'import sys,json;d=json.load(sys.stdin);print(d["User"][str(d["Self"]["UserID"])]["LoginName"])' 2>/dev/null || true)
   [ -n "$ALLOW_LOGIN" ] || { echo "cannot detect Tailscale login; is this node logged in? (or pass --allow-login)" >&2; exit 78; }
+  case "$ALLOW_LOGIN" in *[[:space:]]*|*[\"\'\\\$\`]*) echo "unexpected Tailscale login; pass --allow-login" >&2; exit 78;; esac
 fi
 
 install -m 755 "$HERE/oab-computer" "$BASE/oab-computer"
@@ -115,77 +225,20 @@ if [ ! -s "$CFG/token" ]; then
   echo "generated bearer token at $CFG/token"
 fi
 
-UPSTREAM=""
-if [ "$BROWSER" = 1 ] && command -v node >/dev/null && command -v npm >/dev/null; then
-  install -m 755 "$HERE/pw-mcp.sh" "$BASE/pw-mcp.sh"
-  mkdir -p "$BASE/pw-mcp"
-  [ -x "$BASE/pw-mcp/node_modules/.bin/playwright-mcp" ] || (cd "$BASE/pw-mcp" && npm install --save-exact @playwright/mcp@0.0.82)
-  # Browser binary: the distro Chromium when there is one (Debian, Raspberry Pi OS); otherwise
-  # Playwright's own build (Ubuntu ships Chromium only as a snap, which cannot run under a
-  # user unit without a session).
-  CHROMIUM="$(command -v chromium || true)"
-  if [ -z "$CHROMIUM" ]; then
-    (cd "$BASE/pw-mcp" && npx playwright install chromium >/dev/null)
-    CHROMIUM="$(find "$HOME/.cache/ms-playwright" -path '*/chrome-linux*/chrome' -type f | sort | tail -1)"
-    # Ubuntu 24.04+ restricts unprivileged user namespaces with AppArmor; Chromium's sandbox
-    # then aborts with "No usable sandbox". Grant userns to this binary path only (the
-    # distro-endorsed fix; keeps the sandbox on rather than --no-sandbox).
-    if [ -d /etc/apparmor.d ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ] && sudo -n true 2>/dev/null; then
-      sudo tee /etc/apparmor.d/playwright-chromium >/dev/null <<'AA'
-abi <abi/4.0>,
-include <tunables/global>
-profile playwright-chromium /home/*/.cache/ms-playwright/chromium-*/chrome-linux*/chrome flags=(unconfined) {
-  userns,
-  include if exists <local/playwright-chromium>
-}
-AA
-      sudo apparmor_parser -r /etc/apparmor.d/playwright-chromium
-    fi
-  fi
-  [ -n "$CHROMIUM" ] || { echo "no Chromium found and Playwright download failed" >&2; exit 78; }
-  # A headless seat has no Xwayland and no locale: run Chromium on Wayland natively, in English.
-  cat >"$BASE/pw-config.json" <<'JSON'
-{ "browser": { "launchOptions": { "args": ["--ozone-platform=wayland", "--lang=en-US"] },
-               "contextOptions": { "locale": "en-US" } } }
-JSON
-  # Fonts: a server install has none, and pages render as boxes.
-  if ! fc-list 2>/dev/null | grep -qiE "dejavu|liberation|noto"; then
-    sudo -n apt-get install -y -qq fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji >/dev/null 2>&1 || \
-      echo "note: install fonts (fonts-dejavu-core fonts-noto-cjk) or pages render as boxes" >&2
-  fi
-  cat >"$UNITS/oab-computer-pw-mcp.service" <<UNIT
-[Unit]
-Description=Playwright MCP for the oab-computer hands node (loopback :8794)
-After=graphical-session.target oab-seat.service
-
-[Service]
-ExecStart=$BASE/pw-mcp.sh
-Environment=XDG_RUNTIME_DIR=/run/user/%U
-Environment=WAYLAND_DISPLAY=$WL
-Environment=DISPLAY=:0
-Environment=PW_CHROMIUM=$CHROMIUM
-Environment=PW_NODE_BIN=$NODE_BIN
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=default.target
-UNIT
-  UPSTREAM="Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
-  if sudo -n true 2>/dev/null; then
-    sudo mkdir -p /etc/chromium/policies/managed
-    echo '{"DefaultMediaStreamSetting": 2, "DefaultNotificationsSetting": 2, "DefaultGeolocationSetting": 2}' \
-      | sudo tee /etc/chromium/policies/managed/oab-computer.json >/dev/null
-  else
-    echo "note: could not write Chromium policy (no sudo); camera/mic prompts will need a mouse click" >&2
-  fi
-else
-  echo "browser tools skipped (--no-browser, or node/npm missing)"
-fi
-
+# The daemon unit. It carries no MCP_UPSTREAM line and there is no browser unit: the managed browser
+# is started by the daemon as a transient unit. A unit from an older install that still has the line
+# is left byte for byte as it is (this script did not write that line now, and the person doing the
+# cutover removes it: docs/linux-setup.md).
 # Unquoted heredoc so $VARS expand: escape any literal backtick or $ in it (#90).
 # scripts/test-install-linux.sh diffs the written units against their expected text.
-cat >"$UNITS/oab-computer.service" <<UNIT
+# Ownership (D5): this script rewrites only a unit that carries its own marker line. A unit without
+# it (hand-written, or from an installer that did not mark it) is left byte for byte as it is, and
+# the unit this run would have written is put next to it as oab-computer.service.proposed.
+OWNER_MARK='# oab-computer-installer: this unit is written by install-linux.sh and rewritten on every run. Remove this line to keep your own edits.'
+{
+  UNIT_TMP="$(new_unit_tmp)"
+  cat >"$UNIT_TMP" <<UNIT
+$OWNER_MARK
 [Unit]
 Description=oab-computer (Linux hands node: /mcp + /attach)
 After=graphical-session.target
@@ -195,37 +248,143 @@ ExecStart=$BASE/oab-computer
 Environment=BIND=127.0.0.1:$PORT
 Environment=MCP_TOKEN_FILE=$CFG/token
 Environment=MCP_ALLOW_LOGIN=$ALLOW_LOGIN
-$UPSTREAM
 Environment=WAYLAND_DISPLAY=$WL
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Restart=always
 RestartSec=2
+# Exit 64 means a configuration the daemon refuses (for example a non-loopback upstream URL):
+# restarting cannot fix it, so systemd must not loop on it.
+RestartPreventExitStatus=64
 # Apps opened via \`bash\` belong to the desktop, not to this daemon: a restart must not kill them.
 KillMode=process
 
 [Install]
 WantedBy=default.target
 UNIT
+  DAEMON_FOREIGN=0
+  if unit_is_foreign "$UNITS/oab-computer.service"; then
+    DAEMON_FOREIGN=1
+    place_proposed "$UNIT_TMP" "$UNITS/oab-computer.service"
+    echo "install: note: $UNITS/oab-computer.service was not written by this installer, so it was left as it is (so --port and --allow-login did not change it)." >&2
+    # The health check and the tailscale serve line must follow the unit that actually runs.
+    KEPT_BIND="$(sed -n 's/^Environment=BIND=127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$UNITS/oab-computer.service" | tail -1)"
+    if [ -n "$KEPT_BIND" ] && [ "$KEPT_BIND" != "$PORT" ]; then
+      echo "install: note: the kept unit listens on port $KEPT_BIND, so the health check and the tailscale serve command below use $KEPT_BIND, not --port $PORT." >&2
+      PORT="$KEPT_BIND"
+    elif [ -z "$KEPT_BIND" ]; then
+      echo "install: note: could not read a 127.0.0.1 BIND port from the kept unit; the health check and tailscale serve command use port $PORT and may not match it." >&2
+    fi
+    echo "The unit this run would have written is $PROPOSED. To adopt it: review it, move it over oab-computer.service, then daemon-reload and restart." >&2
+    if grep -qE 'MCP_UPSTREAM=' "$UNITS/oab-computer.service"; then
+      echo "That unit still sets MCP_UPSTREAM; a managed browser wins over it (D5). Remove the line at cutover (docs/linux-setup.md)." >&2
+    fi
+  else
+    mv -f "$UNIT_TMP" "$UNITS/oab-computer.service"
+  fi
+}
 
 systemctl --user daemon-reload
-[ -z "$UPSTREAM" ] || systemctl --user enable --now oab-computer-pw-mcp.service
-systemctl --user enable --now oab-computer.service
-systemctl --user restart oab-computer.service
-sudo -n loginctl enable-linger "$USER" 2>/dev/null || loginctl enable-linger "$USER" 2>/dev/null || echo "note: enable linger manually: sudo loginctl enable-linger $USER" >&2
-
-if sudo -n true 2>/dev/null; then
-  sudo tailscale serve --bg --https="$SERVE_PORT" "http://127.0.0.1:$PORT" >/dev/null
+if [ "$INSTANCE_UNIT_LIVE" = 1 ]; then
+  echo "install: oab-computer.service was NOT enabled or started: the old oab-instance-mcp.service is live (see the warning above). After turning it off: systemctl --user enable --now oab-computer.service" >&2
+elif [ "$DAEMON_FOREIGN" = 1 ]; then
+  # Same policy as oab-seat.service: a unit this script did not write is never enabled or started
+  # by it (an operator may have disabled it on purpose). If it is already running, restart it so it
+  # picks up the new binary.
+  if systemctl --user is-active --quiet oab-computer.service; then
+    systemctl --user restart oab-computer.service
+  else
+    echo "install: oab-computer.service is not written by this installer and is not running, so it was not enabled or started. To start it: systemctl --user enable --now oab-computer.service" >&2
+  fi
 else
-  echo "run: sudo tailscale serve --bg --https=$SERVE_PORT http://127.0.0.1:$PORT" >&2
+  systemctl --user enable --now oab-computer.service
+  systemctl --user restart oab-computer.service
 fi
 
+# ---- the browser (Playwright and Chromium), a separate and optional step --------------------------
+BROWSER_WANTED=0; BROWSER_FAILED=0; BROWSER_READY=0; PRE_ACTIONS=0
+browser_later() { echo "To install the browser later: $BASE/oab-computer browser install"; }
+# The consent text: exactly what `oab-computer browser plan` prints (what is downloaded, from where,
+# how much, and where it goes).
+show_plan() {
+  local plan
+  plan="$("$BASE/oab-computer" browser plan)" || {
+    echo "browser: could not read the plan ($BASE/oab-computer browser plan failed); skipped" >&2
+    BROWSER_WANTED=1; BROWSER_FAILED=1; return 1
+  }
+  echo; echo "$plan"; echo
+}
+browser_step() {
+  local ans rc cmd why
+  case "$BROWSER_MODE" in none) echo "browser: skipped (--browser none)"; return 0;; esac
+  if [ "$BROWSER_MODE" = managed ] || [ "$YES" = 1 ]; then
+    BROWSER_WANTED=1
+    show_plan || return 0
+  elif [ -t 0 ]; then
+    show_plan || return 0
+    printf 'Download and install the browser now? [Y/n] '
+    ans=""; read -r ans || true
+    case "$ans" in ""|y|Y|yes|YES|Yes) BROWSER_WANTED=1;; *) echo "browser: skipped"; browser_later; return 0;; esac
+  else
+    echo "browser: not downloaded (no terminal, and neither --browser managed nor --yes was given)."
+    browser_later
+    return 0
+  fi
+  "$BASE/oab-computer" browser preflight || true
+  # Root actions the preflight found (the AppArmor profile for your own data path, missing
+  # libraries). They are printed; with --apply-system-changes they run before the install, so its
+  # health check sees them. Without it the install still runs, and says what to do if it fails.
+  while IFS=$'\t' read -r cmd why; do
+    [ -n "$cmd" ] || continue
+    want_root "$cmd" "$why"
+  done < <("$BASE/oab-computer" browser preflight --root-actions 2>/dev/null || true)
+  PRE_ACTIONS=${#ROOT_CMDS[@]}
+  ROOT_RAN=0
+  flush_root
+  if [ "$ROOT_RAN" = 1 ]; then "$BASE/oab-computer" browser preflight || true; fi
+  # Fonts: a server install has none, and pages render as boxes. Printed at the end with the rest.
+  if ! fc-list 2>/dev/null | grep -qiE "dejavu|liberation|noto" && command -v apt-get >/dev/null; then
+    want_root "sudo apt-get install -y fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji" "this node has no fonts, and pages would render as boxes"
+  fi
+  rc=0; "$BASE/oab-computer" browser install || rc=$?
+  if [ "$rc" = 0 ]; then
+    BROWSER_READY=1
+  else
+    echo "browser: install failed (exit $rc); the daemon and the token are in place." >&2
+    if [ "$PRE_ACTIONS" -gt 0 ] && [ "$APPLY" = 0 ]; then
+      echo "If it failed on the sandbox or on missing libraries, run the root actions printed above (or re-run with --apply-system-changes)." >&2
+    fi
+    echo "Fix what is reported above, then: $BASE/oab-computer browser install" >&2
+    BROWSER_FAILED=1
+  fi
+}
+browser_step
+# The daemon picks its browser backend once, at start. It started before the browser existed, so
+# restart it now: a fresh node gains the browser_* tools, and a node with a stale MCP_UPSTREAM line
+# switches to the managed browser (D5).
+if [ "$BROWSER_READY" = 1 ] && [ "$INSTANCE_UNIT_LIVE" = 0 ]; then
+  if [ "$DAEMON_FOREIGN" = 0 ] || systemctl --user is-active --quiet oab-computer.service; then systemctl --user restart oab-computer.service; fi
+fi
+
+# ---- the remaining root actions: printed, or run with --apply-system-changes -----------------------
+if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then
+  want_root "sudo loginctl enable-linger $USER" "the daemon (and the browser it starts) keep running after you log out and start again at boot"
+fi
+want_root "sudo tailscale serve --bg --https=$SERVE_PORT http://127.0.0.1:$PORT" "publishes the daemon to your tailnet over HTTPS (tailnet only)"
+flush_root
+
 sleep 1
-if [ "${#LEGACY_FOUND[@]}" -gt 0 ]; then
-  echo "daemon: not checked. The old unit(s) ${LEGACY_FOUND[*]} may hold port $PORT; remove them as warned above, then run: systemctl --user restart oab-computer.service" >&2
+if [ "$INSTANCE_UNIT_LIVE" = 1 ]; then
+  echo "daemon: not started and not checked. The old unit oab-instance-mcp.service may hold port $PORT; turn it off as warned above, then run: systemctl --user enable --now oab-computer.service" >&2
 else
-  curl -fsS "127.0.0.1:$PORT/healthz" >/dev/null && echo "daemon: ok"
+  if curl -fsS "127.0.0.1:$PORT/healthz" >/dev/null; then echo "daemon: ok"
+  else echo "daemon: NOT answering on 127.0.0.1:$PORT; see: journalctl --user -u oab-computer.service -n 50" >&2; fi
 fi
 DNS=$(tailscale status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
 echo "MCP URL : https://$DNS:$SERVE_PORT/mcp"
 echo "token   : $CFG/token   (allow-login: $ALLOW_LOGIN)"
 echo "lend    : POST https://$DNS:$SERVE_PORT/attach   (see docs/linux-setup.md)"
+if [ "$BROWSER_READY" = 1 ]; then
+  echo "Sign in once (a login that the browser keeps): ssh -t <this node> '$BASE/oab-computer browser signin'   (see docs/linux-setup.md)"
+fi
+if [ "$ROOT_FAILED" = 1 ]; then exit 1; fi
+if [ "$BROWSER_WANTED" = 1 ] && [ "$BROWSER_FAILED" = 1 ]; then exit 1; fi

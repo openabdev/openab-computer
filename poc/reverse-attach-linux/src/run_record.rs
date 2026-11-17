@@ -25,7 +25,7 @@ pub const MAX_RECORDS: usize = 64;
 const SCAN_LIMIT: usize = 4096;
 /// The marker of the five-failure latch (`child.rs`). Not a run record; it holds no PID.
 pub const LATCH_NAME: &str = "latch.json";
-/// The recorded refusal that D17 needs before `--use-system-chromium` may be offered (L3 reads it).
+/// The recorded refusal that D17 needs before `--use-system-chromium` may be offered (a later PR reads it; `--use-system-chromium` is not available in this build).
 pub const REFUSAL_NAME: &str = "refusal.json";
 /// The only classes a refusal record may hold.
 pub const REFUSALS: [&str; 2] = ["launch_refused", "sandbox_unavailable"];

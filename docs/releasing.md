@@ -175,7 +175,7 @@ happens to `desktop` requests, to stored `desktop` grants and to a `switchboard.
 (`darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`); `package.json`, the lockfile and the
 version fields are shared. Each Chromium artifact records its source: Chrome for Testing wherever it
 hosts the pinned version, else the pinned Playwright CDN build. Linux artifacts also record `minGlibc`,
-`needed` (shared libraries the host must provide) and `packageHints` (Debian package names, advice only).
+`needed` (shared libraries linked at build time that the host must provide; libraries a program loads at run time are not listed, so the headless health check at install is the final test) and `packageHints` (Debian package names, advice only).
 
 The release job runs `scripts/playwright-pins.py verify --offline` and `verify --online`. The online
 check re-downloads every platform artifact and compares size and SHA-256, checks Node's digest against

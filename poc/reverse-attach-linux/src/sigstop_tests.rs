@@ -219,10 +219,8 @@ fn sighup_and_sigterm_stop_the_cli_child_and_its_detached_grandchild() {
             let t = TempDir::new();
             let mut h = start_helper(&t, mode);
             assert!(h.child_alive() && h.grand_alive());
-            if mode == "supervised" {
-                let root = Root::open(&t.base(), false).unwrap().unwrap();
-                assert_eq!(run_record::live(&root).len(), 1, "the run record");
-            }
+            let root = Root::open(&t.base(), false).unwrap().unwrap();
+            assert_eq!(run_record::live(&root).len(), 1, "{mode}: the run record");
             h.signal(sig);
             h.wait_exit();
             assert!(h.until(|h| !h.child_alive()), "{mode} {sig}: child");

@@ -71,7 +71,15 @@ pub struct Child {
     ring: Arc<Mutex<Vec<u8>>>,
     stopped: bool,
     reaped: bool,
+    /// Live run records of *other* children, asked once per stop. A process one of them claims is
+    /// not killed by the tree walk, so two children that run from one version directory (the
+    /// daemon's and a sign-in) never end each other's grandchildren.
+    others: Option<OthersLive>,
 }
+
+/// Returns the live run records of every child but this one.
+/// `None` means the live records could not be read: the walk then does not run (fail closed).
+pub type OthersLive = Box<dyn Fn() -> Option<Vec<crate::run_record::Record>> + Send + Sync>;
 
 /// Reads one newline-terminated line of at most `cap` bytes (the newline excluded).
 fn read_line_capped<R: BufRead>(r: &mut R, cap: usize) -> std::io::Result<Line> {
@@ -238,6 +246,7 @@ impl Child {
             ring,
             stopped: false,
             reaped: false,
+            others: None,
         })
     }
 
@@ -315,6 +324,11 @@ impl Child {
         needles.iter().any(|n| text.contains(n))
     }
 
+    /// Makes the tree walk of `stop` leave alone what another live run record claims.
+    pub fn set_others(&mut self, f: OthersLive) {
+        self.others = Some(f);
+    }
+
     /// Stops the whole tree and reaps the leader. Safe to call more than once.
     pub fn stop(&mut self) {
         if self.stopped {
@@ -345,7 +359,19 @@ impl Child {
         if let Some(g) = pgid {
             let _ = rustix::process::kill_process_group(g, Signal::KILL);
         }
-        kill_under(&self.scope);
+        let scope = self.scope.clone();
+        match &self.others {
+            None => kill_under(&scope),
+            // Unknown live records: the walk could end a sibling's helpers, so it is skipped. The
+            // process group and the unit are already stopped, and the next sweep finds the rest.
+            Some(f) => {
+                if let Some(live) = f() {
+                    kill_matching(&|exe| exe.starts_with(&scope), &|pid| {
+                        crate::sweep::claimed(pid, &live)
+                    });
+                }
+            }
+        }
         let _ = self.child.wait();
     }
 }

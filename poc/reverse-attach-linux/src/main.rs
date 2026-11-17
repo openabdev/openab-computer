@@ -20,6 +20,8 @@ mod catalog;
 mod child;
 mod consent;
 mod containment;
+#[cfg(test)]
+mod docs_table;
 mod download;
 #[cfg(test)]
 mod e2e_tests;
@@ -45,6 +47,7 @@ mod procnet;
 #[cfg(test)]
 mod profile_conformance;
 mod run_record;
+mod signin;
 mod sigstop;
 mod state;
 mod stdio_client;

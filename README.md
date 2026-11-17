@@ -139,10 +139,12 @@ The accessibility-tree tools are macOS only for now; Linux is deferred
 - The browser router in 0.12.0 has only the Playwright backend. The Apple Events tier is not built,
   and neither is the "use my installed Chrome" fallback if macOS refuses the downloaded Chromium
   ([#128](https://github.com/openabdev/openab-computer/issues/128)).
-- Linux has no managed browser tier (designed in [#119](https://github.com/openabdev/openab-computer/issues/119),
-  not built; [ADR](docs/adr/linux-browser-tier.md)). Playwright there is an external unit on `127.0.0.1:8794`.
-- The Linux installer still requires `wlrctl`, which Ubuntu 24.04 packages only for amd64 (universe).
-  On Ubuntu arm64 the installer exits 78, so install the units by hand ([Linux setup](docs/linux-setup.md), steps 3-5)
+- Linux in 0.12.0 and earlier has no managed browser tier: Playwright there is an external unit on
+  `127.0.0.1:8794`. The managed tier ([#119](https://github.com/openabdev/openab-computer/issues/119),
+  [ADR](docs/adr/linux-browser-tier.md)) comes in releases after 0.12.0; the tarball's installer and
+  `oab-computer browser ...` then replace that unit. See [Linux setup](docs/linux-setup.md).
+- The Linux installer asked for `wlrctl` in 0.12.0 and earlier, although nothing uses it, and exited 78 on
+  Ubuntu arm64 where it is not packaged. It no longer asks for it
   ([#130](https://github.com/openabdev/openab-computer/issues/130)).
 
 ## Quick start
@@ -173,7 +175,8 @@ curl -s https://<switchboard>.<tailnet>.ts.net/mcp/<computer> \
 ([full guide](docs/linux-setup.md)):
 
 ```sh
-V=0.12.0   # the first release with oab-computer-* assets (v0.11.0 and older use the old names)
+V=X.Y.Z   # a release after 0.12.0: this page describes its installer. 0.12.0 ships the older installer
+         # (unauthenticated browser unit on 8794, root actions through sudo, exits 78 on Ubuntu arm64)
 A=$(dpkg --print-architecture)   # arm64 | amd64
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
 tar xzf oab-computer-$V-linux-$A.tar.gz && cd oab-computer-$V-linux-$A
@@ -192,7 +195,7 @@ The URL is `https://<host>.<tailnet>.ts.net:8444/mcp` and the bearer token is in
 | Shell | `exec` / `exec_start*` (`zsh -f`) | `bash` / `exec_start*` (`bash -c`) |
 | Apps | `osascript` / JXA | — (use `bash`: `gdbus`, `xdg-open`) |
 | Accessibility tree (`ui_snapshot` / `ui_action`) | ✅ (0.9.0 / 0.10.0) | deferred ([#102](https://github.com/openabdev/openab-computer/issues/102)) |
-| Browser tools | managed Playwright (installed from the wizard, stdio child, no port) or external via `--upstream` | external Playwright unit on loopback `8794`; a managed tier is designed ([#119](https://github.com/openabdev/openab-computer/issues/119)) and not built |
+| Browser tools | managed Playwright (installed from the wizard, stdio child, no port) or external via `--upstream` | managed Playwright (`oab-computer browser install`, stdio child, no port) after 0.12.0; external unit on loopback `8794` in 0.12.0 and earlier ([#119](https://github.com/openabdev/openab-computer/issues/119)) |
 | Reverse attach | ✅ | ✅ |
 | Install | signed/notarized `.pkg` | `-linux-{arm64,amd64}.tar.gz` + `install-linux.sh` |
 | Guide | this README | [`docs/linux-setup.md`](docs/linux-setup.md) |
@@ -220,7 +223,7 @@ same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-computer/job
 | `mouse` | CGEvent: `move` `click` `double_click` `right_click` `drag` `scroll` | coordinates in display points = screenshot pixels at scale 1. `modifiers`. Needs Accessibility TCC |
 | `key` | CGEvent: `type` (unicode, layout-independent) / `press` combos (`cmd+shift+4`) | Needs Accessibility TCC |
 | `osascript` | AppleScript / JXA via `/usr/bin/osascript` in the GUI session | `timeout_secs` (default 15). First script against an app raises an Automation consent dialog on the Mac — screenshot, then `mouse` click Allow |
-| `browser_*` (32) | Playwright browser tools, `owner` only (`observe` sees none) | On macOS they go through the browser router to the managed or external Playwright; on Linux they come from the external Playwright (`MCP_UPSTREAM`). Names are listed below the table. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary JavaScript in the computer's persistent profile. See [Browser tools](#browser-tools) and [docs/tool-profiles.md](docs/tool-profiles.md) |
+| `browser_*` (32) | Playwright browser tools, `owner` only (`observe` sees none) | On macOS they go through the browser router to the managed or external Playwright; on Linux (after 0.12.0) they come from the managed Playwright, and in 0.12.0 and earlier from the external one (`MCP_UPSTREAM`). Names are listed below the table. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary JavaScript in the computer's persistent profile. See [Browser tools](#browser-tools) and [docs/tool-profiles.md](docs/tool-profiles.md) |
 
 The 32 `browser_*` names, grouped by how well the planned Apple Events tier could serve them
 (`BrowserToolCatalog`). That tier is not built in 0.12.0, so today every call goes to Playwright and the
@@ -278,7 +281,7 @@ profile (below).
 
 ## Network interfaces and ports
 
-This section describes v0.12.0 (and `main` at the time of writing). Checked by reading the code and by a read-only look at a running agent
+This section describes v0.12.0 (and `main` at the time of writing). Where the Linux bullets say "after 0.12.0", they describe `main`, not the 0.12.0 release. Checked by reading the code and by a read-only look at a running agent
 (an older 0.10.1 install) and a bare 0.12.0 launch. The menu bar item's Network section shows the
 same facts (see [What the menu shows](#what-the-menu-shows)).
 
@@ -297,7 +300,8 @@ read-only.
 | `https://<host>.<tailnet>.ts.net:8444` → `127.0.0.1:8795` | HTTPS, terminated by Tailscale | Your tailnet only | The way other machines reach the agent | `scripts/install-prebuilt.sh` (and the `.pkg`) run `tailscale serve --bg --https=8444`. The app runs the same command only after you turn tailnet access on, from the wizard's tailnet page or the menu's "Allow tailnet access…", and removes it with "Turn Off Tailnet Access". A launch with no stored opt-in does not create it. A launch with a stored opt-in re-applies it when it is missing. A mapping that already exists is shown as "On (existing mapping, not managed by this app)" and left alone until you choose "Manage with this app" | Every configured check must pass. The installer configures both: a Tailscale login on the allow list **and** the bearer token |
 | `127.0.0.1:8794` | TCP, HTTP | Processes on this Mac only. Other machines reach the browser tools only through the app's `--upstream` | Playwright MCP, a **separate process** the app only connects to (`--upstream`). It has no `:8443` or other tailnet access path | Its own LaunchAgent (`poc/pw-mcp/install.sh`), which binds `--host 127.0.0.1` and creates no `tailscale serve` mapping. The app never starts this one. The *managed* Playwright (see [Browser tools](#browser-tools)) is a different thing: a child over stdio that listens on nothing | None in Playwright. The app's [Auth](#auth) applies to callers before it relays browser tools |
 
-The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The `:8444`
+The macOS app opens one listening socket. It uses no UDP and no Unix domain sockets. The tables here describe the macOS app; the Linux node's listeners are in
+[Linux setup](docs/linux-setup.md#ports) and in the section "macOS app and Linux node" below. The `:8444`
 mapping is made by the installer, by the app after you turn tailnet access on, or by the app's launch
 re-apply of that choice. Nothing in this repo maps `:8443` any more. Older versions of
 `poc/pw-mcp/install.sh` did (`tailscale serve --bg --https=8443 http://127.0.0.1:8794`), which put
@@ -329,6 +333,8 @@ The menu bar and the permission wizard also start local processes (`open`, `laun
 `--permission-check` re-run of the app). These make no network connections.
 
 ### What the app downloads
+
+This section is about the macOS app. The Linux install downloads the same three pinned things (Linux builds, about 259 MB, see [Linux setup](docs/linux-setup.md#what-the-install-downloads)).
 
 Nothing is bundled in the app and nothing is fetched until you ask. The on-demand Playwright install
 downloads three things into `~/Library/Application Support/oab-computer/playwright/` (never inside
@@ -431,24 +437,43 @@ permissions block.
 ### macOS app and Linux node
 
 The Linux node (`poc/reverse-attach-linux/`) has one daemon listener (`127.0.0.1:8795` when installed
-by `install-linux.sh`) and, unless you pass `--no-browser`, a second loopback listener for
-Playwright (`8794`, no authentication). The differences from macOS:
+by `install-linux.sh`). After 0.12.0 the browser is a managed child with no TCP or UDP port of its own (it holds
+two private Unix sockets in its own `0700` temporary directory, see
+[Linux setup](docs/linux-setup.md#ports)); 0.12.0 and earlier, and any host that still runs the old
+browser unit, also have a Playwright listener on `8794` with no authentication. The differences from
+macOS:
 
 - It reads `BIND` from the environment, not flags. A bare binary listens on `127.0.0.1:8790`.
   `scripts/install-linux.sh` sets `127.0.0.1:8795`.
 - `/attach` is always on. There is no `--no-attach`.
 - There is no switchboard and no menu bar.
-- `install-linux.sh` runs `sudo tailscale serve` for `:8444` only with passwordless sudo.
-  Otherwise it prints the command.
-- `install-linux.sh` also starts Playwright MCP on `127.0.0.1:8794` (user unit `oab-computer-pw-mcp.service`)
-  when `node` and `npm` are present, and sets `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp`. Skip
-  it with `--no-browser`. It makes no tailnet mapping for 8794. `MCP_UPSTREAM` takes plain `http://`
-  URLs only. **Port 8794 is unauthenticated:** any local user on this node can call every browser
-  tool there, including `browser_run_code_unsafe` (arbitrary Node code). On a shared host use
-  `--no-browser`. A managed Linux tier that removes the listener is designed
-  ([ADR](docs/adr/linux-browser-tier.md)) and not built.
+- 0.12.0 and earlier: `install-linux.sh` runs `sudo tailscale serve` when passwordless sudo exists, and installs
+  `oab-computer-pw-mcp.service` on unauthenticated `127.0.0.1:8794` plus an `MCP_UPSTREAM` line when
+  `node` and `npm` exist, unless `--no-browser` is given.
+- After 0.12.0, `install-linux.sh` never runs `sudo` on its own. It prints each root action (linger,
+  `tailscale serve` for `:8444`, the AppArmor profile, missing libraries, fonts) with its exact
+  command and reason, and runs them only with `--apply-system-changes`.
+- After 0.12.0, `install-linux.sh` downloads nothing without consent. On a terminal it shows what the browser
+  install downloads and asks `[Y/n]`; with no terminal it downloads only with `--browser managed` or
+  `--yes`; `--browser none` (or `--no-browser`) skips it. It writes no browser unit and no
+  `MCP_UPSTREAM` line. What is downloaded, how big and where it goes is in
+  [Linux setup](docs/linux-setup.md#what-the-install-downloads); it matches the macOS table above
+  except for the per-architecture sizes, the install root below, and that the downloaded Node.js gets no code-signature check on Linux (only the pinned SHA-256)
+  and there is no quarantine step. The install root is `${XDG_DATA_HOME:-$HOME/.local/share}/oab-computer/playwright/`,
+  and `oab-computer browser remove` deletes only what carries the installer's marker.
+- `MCP_UPSTREAM` takes plain `http://` URLs only, and every `name=url` entry the daemon uses must be a literal loopback
+  `http://127.0.0.1:<port>` or `http://[::1]:<port>` URL: any other host stops the daemon with exit 64. A `browser=` entry that a managed install ignores is not checked.
+  A managed install wins over a `browser=` entry unless `MCP_BROWSER_BACKEND=external` is set.
+- A host that still runs an old browser unit has an **unauthenticated** port 8794: any local user on
+  this node can call every browser tool there, including `browser_run_code_unsafe` (arbitrary Node
+  code). The installer warns with the exact `systemctl --user disable --now <unit>` command and does
+  not touch the unit; see [Upgrading a host that already has a browser unit](docs/linux-setup.md#upgrading-a-host-that-already-has-a-browser-unit).
+- After 0.12.0, sign in once, for a login the browser keeps: `ssh -t <node> '~/.local/oab-computer/oab-computer browser signin'`
+  ([Sign in](docs/linux-setup.md#sign-in)). The profile is obfuscated with `--password-store=basic`,
+  not strongly encrypted.
 - The Linux node does use a Unix domain socket: it connects, as a client, to the Wayland socket for
-  display and pointer control. It does not listen on one.
+  display and pointer control. The daemon itself does not listen on one; the managed browser's process
+  tree holds two listening Unix sockets of its own in a private `0700` directory (see above).
 - The mint call is plain `http://` only. A `wss://` runtime with `admin_credential` is refused.
 
 ## Lending this Mac to a sandboxed agent (reverse attach)
@@ -770,13 +795,18 @@ To upgrade:
    ```sh
    systemctl --user disable --now oab-instance-mcp.service
    rm ~/.config/systemd/user/oab-instance-mcp.service
-   # only if you used the Playwright unit (not on --no-browser nodes):
+   # only if you used the Playwright unit. With an installer after 0.12.0, run this disable only once
+   # `oab-computer browser status` shows the managed browser working:
    systemctl --user disable --now oab-pw-mcp.service
-   rm ~/.config/systemd/user/oab-pw-mcp.service
+   # the unit file stays until the soak is over; then remove it, see
+   # docs/linux-setup.md#removing-the-old-browser-setup-after-the-soak
    systemctl --user daemon-reload
    # then restart the new unit, which could not bind port 8795 while the old one held it:
+   systemctl --user enable oab-computer.service   # restart alone does not enable it for the next login
    systemctl --user restart oab-computer.service
    ```
+
+   (After 0.12.0 the installer enables the unit itself once the old one is gone, if the unit carries the installer's marker line; run it again after the `disable --now`. For a unit it did not write, it prints the `enable --now` command instead.)
 
    After the new agent works you can delete the old directories.
 

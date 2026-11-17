@@ -115,9 +115,10 @@ config. Verified from the laptop: click into a field → `type` → screenshot s
 
 ## Browser tools via `MCP_UPSTREAM` (added 2026-09-28)
 
-> Historical section. Current behavior: `install-linux.sh --no-browser` skips this unit, and the
-> `127.0.0.1:8794` listener has no authentication, so any local user on the node can call every
-> browser tool. See [`docs/linux-setup.md`](../../docs/linux-setup.md) and
+> Historical section: the external path of 0.12.0 and earlier. `install-linux.sh` no longer writes
+> this unit or the `MCP_UPSTREAM` line (L3); the managed browser replaces them. A host that still
+> runs the old unit has a `127.0.0.1:8794` listener with no authentication, so any local user on the
+> node can call every browser tool. See [`docs/linux-setup.md`](../../docs/linux-setup.md) and
 > [`docs/adr/linux-browser-tier.md`](../../docs/adr/linux-browser-tier.md).
 
 Same pattern as the Mac: `@playwright/mcp` runs beside the daemon on loopback and the daemon
@@ -161,7 +162,7 @@ disables), mode 600. Smoke checks the `attach` and `resume` records.
 
 ## Managed Playwright tier, L1a and L1b (#119)
 
-The install path of the managed tier. `oab-computer browser <plan|preflight|install|update|remove|status>`
+The install path of the managed tier. `oab-computer browser <plan|preflight|install|update|remove|status|signin>`
 (L1b, below) calls the three L1a modules from `main`, so the stripped-size check in CI measures
 them. Design: `docs/adr/linux-browser-tier.md` (D3, D16, D17) and
 `docs/requirements/linux-browser-tier.md`.
@@ -187,14 +188,17 @@ comment).
 | Command | What it does |
 | --- | --- |
 | `plan` | Prints the consent text: what is downloaded, from where, how big, where it goes. No network, no writes. |
-| `preflight` | Reports libc, the glibc floor, user namespaces, disk needed and free, seat, and every missing shared library in one run. Installs nothing and never uses root; a root action is printed, not run. |
+| `preflight [--root-actions]` | Reports libc, the glibc floor, user namespaces, disk needed and free, seat, and every missing shared library in one run. Installs nothing and never uses root; a root action is printed, not run. A blocker exits 1 and prints `browser: preflight_failed class=<musl\|glibc_too_old\|disk_full\|libraries_missing>` on stderr. `--root-actions` prints only the root actions, one `command<TAB>reason` line each; `install-linux.sh` reads it. `ldconfig -p` runs with a 10 s deadline. |
+| `signin [--url URL]` | L3. A headed window on the persistent profile for a one-time login; needs a terminal (use `ssh -t`), an installed browser and a Wayland seat. See `src/signin.rs`. |
 | `install [--from-dir DIR]` | Installs the pinned Node.js, Playwright MCP and Chromium below `${XDG_DATA_HOME:-~/.local/share}/oab-computer/playwright/`. `--from-dir` installs from pre-fetched files in `DIR` (the basenames of the pinned URLs and of the lockfile's `resolved` URLs), hash-checked the same way, with `npm ci --offline` and no network. |
 | `update [--yes] [--from-dir DIR]` | Prompted, never silent (no terminal and no `--yes` is a refusal). Installs the new version beside the old one and keeps the old one if anything fails. |
 | `remove` | Deletes only what carries the installer's marker and prints `left in place:` for everything else. |
 | `status [--json] [--retry]` | Install state, ids, platform, whether an update is available, and (L2) `containment`, `external_configured`, `listeners` and `refusal`. `--json` has a fixed set of keys. `--retry` removes the unavailable latch and re-runs the containment self-test in this process. |
 
 Exit codes: `0` success (including a no-op), `1` the operation failed or the preflight found a
-blocker (one `browser: <command>_failed class=<token>` line on stderr), `2` a usage error.
+blocker (one `browser: <command>_failed class=<token>` line on stderr), `2` a usage error. A usage
+error also covers `--apply-system-changes` (a flag of `install-linux.sh`; this binary never runs a
+root action) and `--use-system-chromium` (not available in this build).
 
 - `src/state.rs`: the root, ownership markers (`.oab-owned`, `.oab-owned-data`, `.oab-staging`),
   `.install.lock` (`flock`, never unlinked, no stale-lock reclaim), `install.json`,
@@ -234,7 +238,7 @@ mechanism, and a router picks which Playwright serves `browser_*`. Design:
   30 s; five failures in two minutes make the backend unavailable until `browser status --retry`
   (which removes `run/latch.json`) or the next daemon start. `sandbox_unavailable` and a
   `profile_locked` with a live holder are not retried, and the first is written as the recorded
-  refusal (`run/refusal.json`) that `--use-system-chromium` needs (L3). Long-lived children are forked
+  refusal (`run/refusal.json`) that a later `--use-system-chromium` needs. Long-lived children are forked
   by one thread that never exits, because `PR_SET_PDEATHSIG` is tied to the forking thread.
 - `src/stdio_client.rs`: newline-delimited JSON-RPC; lines of at most 8 MiB, at most 64 calls in
   flight, a bounded write queue, `ping` for the health check (2 s), `notifications/cancelled` on a
@@ -242,19 +246,23 @@ mechanism, and a router picks which Playwright serves `browser_*`. Design:
   `upstream_unreachable`, `upstream_busy`); no child text reaches one.
 - `src/sweep.rs`, `src/run_record.rs`: the sweep before every child start (`.sweep.lock`, skipped
   while another start holds it) kills same-user processes whose executable is under a version or
-  staging directory of the root, through a pidfd, except what a live run record claims. Run
+  staging directory of the root, through a pidfd, except what a live run record claims. The same
+  rule protects a sibling when a child is stopped: `Child::stop` walks the version directory too, and
+  it now leaves alone what another live run record claims (`sweep::others_live`), so a sign-in and
+  the daemon's child, which run from one version directory, never end each other's helpers. Run
   records (`run/<kind>-<pid>.json`: pid, start time, kind, unit) are at most 4 KiB each and at most 64.
   The sweep kills a process whose executable is there even if the user started it by hand.
 - `src/sigstop.rs`: `SIGTERM`, `SIGINT` and `SIGHUP` stop the managed child and exit. A CLI child
-  (the health check of `browser install|update`) runs in its own transient unit with a
-  `RuntimeMaxSec`, bound to nothing; `SIGKILL` of the CLI is cleaned by the next start's sweep, not by
+  (the health check of `browser install|update`, 300 s, and the sign-in of `browser signin`, 30
+  minutes) runs in its own transient unit with a `RuntimeMaxSec`, bound to nothing; `SIGKILL` of the CLI is cleaned by the next start's sweep, not by
   the kernel.
 - `src/backend.rs`, `src/external.rs`, `src/procnet.rs`: the `Upstream` interface, the managed
   backend (`tools/list` filtered to the 32 catalog names), the external backend and the router.
 
-Router, in order: `OAB_BROWSER=off` switches the managed tier off (a `MCP_UPSTREAM browser=` line
-alone then still serves as external, as the cutover runbook's rollback assumes; with no line the
-backend is `off`). A valid managed install wins, and a `MCP_UPSTREAM browser=` line is ignored with
+Router, in order: `OAB_BROWSER=off` switches the managed tier off. With a managed install the
+backend is `off` and a stale `MCP_UPSTREAM browser=` line is ignored (D5: external needs
+`MCP_BROWSER_BACKEND=external`); with nothing installed a lone line still serves as external, and
+with no line the backend is `off`. A valid managed install wins, and a `MCP_UPSTREAM browser=` line is ignored with
 one `browser: external_upstream_ignored` log line and `sys_info.browser.external_upstream_ignored`,
 unless `MCP_BROWSER_BACKEND=external`. `MCP_BROWSER_BACKEND=external` with no such line is
 `unavailable: external_not_configured`. An installed but unusable managed tier is `unavailable` and
@@ -271,7 +279,7 @@ is outside this control.
 
 | Environment variable | Meaning |
 | --- | --- |
-| `OAB_BROWSER=off` | The managed tier starts no child (R1.6). |
+| `OAB_BROWSER=off` | The managed tier starts no child (R1.6). With a managed install that means no `browser_*` tools, whatever `MCP_UPSTREAM` says. |
 | `MCP_BROWSER_BACKEND=managed\|external` | Explicit choice. `external` is the explicit trust for the `MCP_UPSTREAM browser=` line. Any other value is `unavailable: backend_invalid`. |
 | `MCP_UPSTREAM` | Unchanged name; used as external only as described above, and only with a literal loopback host. |
 
@@ -283,7 +291,8 @@ is outside this control.
 Known limit (V2): with the pinned Playwright and Chromium the managed tree opens no TCP or UDP
 socket, but it does hold two listening Unix sockets inside its private `0700` `TMPDIR`
 (Playwright's browser socket and Chromium's `SingletonSocket`). `browser status` reports them as
-`listeners: tcp=0 udp=0 unix=2`. R1.1 says none, so this is open against the requirement.
+`listeners: tcp=0 udp=0 unix=2`. The target "no Unix listener" is therefore unmet (the ADR and R1.1 say so
+and the docs claim only "no TCP or UDP port").
 
 The tests: the pure parts run anywhere; process, `/proc` and `systemd` tests are Linux-only. The
 tests that need a user manager are `#[ignore]`d and run with `OAB_L2_SYSTEMD=1 cargo test --release

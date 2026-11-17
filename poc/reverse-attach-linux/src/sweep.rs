@@ -49,7 +49,7 @@ pub fn in_install_dirs(exe: &Path, root_abs: &Path) -> bool {
 }
 
 /// Does a live record claim `pid`?
-fn claimed(pid: u32, live: &[Record]) -> bool {
+pub(crate) fn claimed(pid: u32, live: &[Record]) -> bool {
     if live.is_empty() {
         return false;
     }
@@ -59,6 +59,54 @@ fn claimed(pid: u32, live: &[Record]) -> bool {
         pid == r.pid
             || sf.is_some_and(|f| f.pgrp == r.pid || f.session == r.pid)
             || (r.unit.is_some() && r.unit == unit)
+            || descends_from(pid, r.pid)
+    })
+}
+
+/// Is `leader` an ancestor of `pid`? Without a unit (the plain fallback) a helper that called
+/// `setsid` is in neither the leader's group nor its session, but while the leader lives it is
+/// still in its parent chain. The walk is bounded, and stops at init.
+fn descends_from(pid: u32, leader: u32) -> bool {
+    let mut cur = pid;
+    for _ in 0..64 {
+        let Some(f) = proc::stat_fields(cur) else {
+            return false;
+        };
+        if f.ppid == leader {
+            return true;
+        }
+        if f.ppid <= 1 {
+            return false;
+        }
+        cur = f.ppid;
+    }
+    false
+}
+
+/// The live run records of every child but `own_pid`, read afresh each time it is called. A
+/// `Child::stop` asks for them so that its tree walk spares a sibling's processes. The root is
+/// reopened from its path, so the closure owns no descriptor; if it cannot be reopened the answer
+/// is `None` and the walk is skipped (fail closed: it could end a sibling's helpers; the next sweep
+/// finds any straggler).
+pub fn others_live(root: &Root, own_pid: u32) -> proc::OthersLive {
+    let base = root
+        .abs_path()
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    Box::new(move || {
+        let Some(base) = &base else {
+            return None;
+        };
+        let Ok(Some(root)) = Root::open(base, false) else {
+            return None;
+        };
+        Some(
+            run_record::live(&root)
+                .into_iter()
+                .filter(|r| r.pid != own_pid)
+                .collect(),
+        )
     })
 }
 

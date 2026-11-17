@@ -9,8 +9,9 @@
 //!
 //! # CLI children
 //!
-//! The health check of `browser install|update` (and, in L3, the sign-in) is a child of the CLI. It
-//! is bound to nothing but a `RuntimeMaxSec`: a sign-in must survive a daemon restart. `SIGHUP`,
+//! The health check of `browser install|update` and the child of `browser signin` are children of
+//! the CLI. Each is bound to nothing but a `RuntimeMaxSec` (300 s for the check, 30 minutes for the
+//! sign-in): a sign-in must survive a daemon restart. `SIGHUP`,
 //! `SIGTERM` and `SIGINT` set the cancel flag (`cancel.rs`); the loops return, `Child::stop` stops
 //! the unit and the process tree, and the run record goes with the guard. A `SIGKILL` of the CLI
 //! cannot run any of that: the child's `PDEATHSIG` ends the leader, `RuntimeMaxSec` ends the unit,
@@ -122,6 +123,7 @@ pub struct Launched {
 }
 
 impl Launched {
+    #[cfg(test)]
     pub fn plain(child: Child) -> Launched {
         Launched {
             child,
@@ -139,14 +141,16 @@ pub trait Launcher {
 pub struct Plain;
 
 impl Launcher for Plain {
-    fn launch(&self, _: &Root, spec: &Spec, scope: &Path) -> std::io::Result<Launched> {
-        Ok(Launched::plain(Child::spawn(
-            spec,
-            true,
-            true,
-            crate::health::MAX_LINE,
-            scope,
-        )?))
+    fn launch(&self, root: &Root, spec: &Spec, scope: &Path) -> std::io::Result<Launched> {
+        let mut child = Child::spawn(spec, true, true, crate::health::MAX_LINE, scope)?;
+        // The same record and sibling protection as the unit path: two same-version CLI children
+        // without a unit must not kill each other's tree when one stops. Best effort, like there.
+        let rec = run_record::write(root, "cli", child.pid(), None).ok();
+        child.set_others(crate::sweep::others_live(root, child.pid()));
+        Ok(Launched {
+            child,
+            _guard: rec.map(|r| Box::new(r) as Box<dyn Any + Send>),
+        })
     }
 }
 
@@ -154,13 +158,21 @@ impl Launcher for Plain {
 /// when it does not.
 pub struct Supervised {
     avail: Arc<Availability>,
+    runtime_max: Duration,
 }
 
 impl Supervised {
     pub fn new(mech: Arc<dyn Mechanism>) -> Supervised {
         Supervised {
             avail: Arc::new(Availability::new(mech)),
+            runtime_max: CLI_RUNTIME_MAX,
         }
+    }
+
+    /// A longer (or shorter) bound on the unit's life than the health check's.
+    pub fn with_runtime_max(mut self, d: Duration) -> Supervised {
+        self.runtime_max = d;
+        self
     }
 }
 
@@ -185,16 +197,17 @@ impl Launcher for Supervised {
             tasks_max: crate::child::TASKS_MAX,
         };
         let kind = SpawnKind::Cli {
-            runtime_max: CLI_RUNTIME_MAX,
+            runtime_max: self.runtime_max,
         };
         // A unit that cannot be made (a path systemd would split, a manager that went away) leaves
         // the CLI child on the process-tree layers: only the daemon's child needs the kernel.
-        let Ok(Spawned { child, unit }) = mech.spawn(mode, kind, &l) else {
+        let Ok(Spawned { mut child, unit }) = mech.spawn(mode, kind, &l) else {
             eprintln!("browser: cli_child containment=none");
             return Plain.launch(root, spec, scope);
         };
         // Best effort: a first install has no `run/` yet, and then there is nothing to protect.
         let rec = run_record::write(root, "cli", child.pid(), unit.as_deref()).ok();
+        child.set_others(crate::sweep::others_live(root, child.pid()));
         Ok(Launched {
             child,
             _guard: rec.map(|r| Box::new(r) as Box<dyn Any + Send>),

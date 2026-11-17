@@ -614,3 +614,16 @@ fn an_ordinary_tool_error_is_not_a_refusal() {
     assert_eq!(run_record::refusal_get(&fx.root()), None);
     s.sup.stop();
 }
+
+#[test]
+fn a_signin_runtime_dir_never_replaces_the_managed_one() {
+    let root = Path::new("/nonexistent/oab-l3-runtime-tmp-test");
+    let managed = RuntimeTmp::create(root).expect("managed dir");
+    let signin = RuntimeTmp::create_named(root, "oab-ps").expect("signin dir");
+    assert_ne!(managed.path, signin.path);
+    assert!(managed.path.is_dir());
+    assert!(signin.path.is_dir());
+    // A second sign-in start replaces only its own directory.
+    drop(signin);
+    assert!(managed.path.is_dir());
+}
