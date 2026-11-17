@@ -15,8 +15,9 @@
 //! the existing `screenshot`, `mouse` and `key` tools (D8). Nothing from a page, a tool result or
 //! stderr is printed: failures are fixed classes.
 //!
-//! Classes: `terminal_required`, `not_installed`, `no_seat`, `profile_locked`, `launch_refused`,
-//! `spawn_failed`, `invalid_url`, `cancelled`, `browser_exited`, `timed_out`, `close_failed`.
+//! Classes: `terminal_required`, `not_installed`, `no_seat`, `profile_locked`, `lock_held`,
+//! `launch_refused`, `spawn_failed`, `invalid_url`, `cancelled`, `browser_exited`, `timed_out`,
+//! `close_failed`.
 
 use std::path::Path;
 use std::sync::mpsc;

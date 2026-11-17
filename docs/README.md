@@ -29,8 +29,8 @@ Several carry the pre-0.12 names (`oab-instance-mcp`) because they are dated rec
 | [Parity checklist](parity-checklist.md) | What the conformance suite does not cover yet, for the Swift retirement gate | Tracking |
 | [ADR: Browser tools in tiers](adr/browser-tiers.md) | Playwright first, Apple Events as fallback | Accepted, partly built (Playwright tier only) |
 | [Requirement: Browser tiers](requirements/browser-tiers.md) | Tool-to-tier table, wizard states, install flows, tests | Accepted, partly built |
-| [ADR: Linux managed Playwright tier](adr/linux-browser-tier.md) | Managed browser on Linux | Accepted; L0 to L3 implemented (L4 hardening, L5 release and L6 supervisor pending) |
-| [Requirement: Linux browser tier](requirements/linux-browser-tier.md) | Requirements, cutover runbook, PR split | Accepted; L0 to L3 implemented |
+| [ADR: Linux managed Playwright tier](adr/linux-browser-tier.md) | Managed browser on Linux | Accepted; L0 to L4 implemented (L5 release and L6 supervisor pending) |
+| [Requirement: Linux browser tier](requirements/linux-browser-tier.md) | Requirements, cutover runbook, PR split | Accepted; L0 to L4 implemented |
 | [ADR: Sandbox adapter](adr/sandbox-adapter.md) | Disposable sandboxes for an agent's toolchain, so a bot does not hold raw host access | Proposed |
 | [Requirement: Bearer-token authn](requirements/authn.md) | Shared bearer token as defence in depth | Dated record (2026-09-23) |
 | [Requirement: OpenAB Connect closed loop](requirements/connect-closed-loop.md) | An agent operates the Mac while a human watches | Dated record, not scheduled |
