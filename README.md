@@ -223,7 +223,7 @@ same `structuredContent`; their logs are under `$XDG_STATE_HOME/oab-computer/job
 | `mouse` | CGEvent: `move` `click` `double_click` `right_click` `drag` `scroll` | coordinates in display points = screenshot pixels at scale 1. `modifiers`. Needs Accessibility TCC |
 | `key` | CGEvent: `type` (unicode, layout-independent) / `press` combos (`cmd+shift+4`) | Needs Accessibility TCC |
 | `osascript` | AppleScript / JXA via `/usr/bin/osascript` in the GUI session | `timeout_secs` (default 15). First script against an app raises an Automation consent dialog on the Mac — screenshot, then `mouse` click Allow |
-| `browser_*` (32) | Playwright browser tools, `owner` only (`observe` sees none) | On macOS they go through the browser router to the managed or external Playwright; on Linux (after 0.12.0) they come from the managed Playwright, and in 0.12.0 and earlier from the external one (`MCP_UPSTREAM`). Names are listed below the table. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary JavaScript in the computer's persistent profile. See [Browser tools](#browser-tools) and [docs/tool-profiles.md](docs/tool-profiles.md) |
+| `browser_*` (32) | Playwright browser tools, `owner` only (`observe` sees none) | On macOS they go through the browser router to the managed or external Playwright; on Linux (after 0.12.0) they come from the managed Playwright, and in 0.12.0 and earlier from the external one (`MCP_UPSTREAM`). Names are listed below the table. `browser_evaluate` runs arbitrary code in the page and `browser_run_code_unsafe` in Node, both in the computer's persistent profile. See [Browser tools](#browser-tools) and [docs/tool-profiles.md](docs/tool-profiles.md) |
 
 The 32 `browser_*` names, grouped by how well the planned Apple Events tier could serve them
 (`BrowserToolCatalog`). That tier is not built in 0.12.0, so today every call goes to Playwright and the
@@ -649,7 +649,7 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   loopback, not private: any process on this Mac can reach it, and the daemon uses it only when
   you pass `--upstream browser=…` (literal `127.0.0.1` or `::1`, no redirects) and the listener
   runs as your user. The browser is this computer's persistent profile, with its cookies, so browser access is
-  owner-level: `browser_evaluate` and `browser_run_code_unsafe` run arbitrary JavaScript there.
+  owner-level: `browser_evaluate` runs arbitrary code in the page and `browser_run_code_unsafe` in Node there.
 - `browser_navigate` + `browser_snapshot` returns the page as an accessibility tree — the first
   video title on a channel page is one text line, no screenshot, no OCR. The browser is a real
   window on this Mac's desktop, so Connect's Screens pane shows what the agent is doing.

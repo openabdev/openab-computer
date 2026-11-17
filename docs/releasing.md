@@ -47,7 +47,7 @@ entries do not carry over and must be granted again):
 - Accessibility
 - Full Disk Access (optional; the setup wizard has a Skip link for it)
 
-The first switch from the current Apple Development signature to Developer ID may require that one
+The one-time switch from the former Apple Development signature to Developer ID may require that
 re-grant. Every later release carries the same bundle id and Developer ID team, so the grant remains.
 Neither the installer nor CI ever ad-hoc re-signs a release app. `install-prebuilt.sh` refuses a wrong
 or missing TeamIdentifier before replacing the running app.
