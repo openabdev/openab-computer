@@ -72,19 +72,21 @@ effort. Alpine and other musl systems are refused with a clear message.
 
 | System | glibc | amd64 and arm64 | Automated check | Manual run per release |
 | --- | --- | --- | --- | --- |
-| Debian 12 | 2.36 | supported | not yet (arrives with the release work, L5) | not yet |
-| Raspberry Pi OS (Debian 12 or 13 based) | 2.36 (Debian 12), 2.41 (Debian 13) | supported (arm64) | not yet | not yet |
-| Ubuntu 22.04 | 2.35 | supported | not yet | not yet |
-| Ubuntu 24.04 | 2.39 | supported | not yet | not yet |
-| Debian 13 and newer, newer Ubuntu | 2.41 and newer | supported by the rule above, not listed as run | not yet | not yet |
+| Debian 12 | 2.36 | supported | Debian 12 container job (install, preflight, health check), from the first release that contains L5 | full run on a Debian 12 host, recorded per release |
+| Raspberry Pi OS (Debian 12 or 13 based) | 2.36 (Debian 12), 2.41 (Debian 13) | supported (arm64) | none of its own (the Debian 12 container job covers the same glibc on arm64) | full run on Raspberry Pi OS hardware, recorded per release |
+| Ubuntu 22.04 | 2.35 | supported | release smoke, amd64 and arm64, from the first release that contains L5 | covered by the smoke |
+| Ubuntu 24.04 | 2.39 | supported | release smoke, amd64 and arm64, from the first release that contains L5 | covered by the smoke |
+| Debian 13 and newer, newer Ubuntu | 2.41 and newer | supported by the rule above only; no automated or manual run is listed, so it is not claimed as tested | none | none |
 | Other glibc distributions | 2.28 or newer | best effort | none | none |
 | Alpine, other musl systems | n/a | refused | none | none |
 
-"Tested" will mean an automated release smoke, a Debian 12 container job, and a manual full run per
-release (ADR D16). None of the three exists yet: until the release work lands, every row says "not
-yet", and the table is a statement of intent plus what the preflight checks, not a claim that a
-release was run there. `oab-computer browser preflight` checks libc, the glibc floor, user
-namespaces, disk and missing libraries on the host in front of you.
+"Tested" means an automated release smoke, a Debian 12 container job, and a manual full run per
+release (ADR D16). The smoke matrix, the container job and the per-release record are defined in
+`.github/workflows/linux-release-smoke.yml` and in [Releasing](releasing.md#linux-release-gates). No
+release that contains them has been published yet. Until one is, and until its record is filled in, the
+columns above describe what a release will be checked against, not a run that happened, and the table
+is a statement of intent plus what the preflight checks. `oab-computer browser preflight` checks libc,
+the glibc floor, user namespaces, disk and missing libraries on the host in front of you.
 
 ## Prerequisites
 
@@ -144,10 +146,18 @@ A=$(dpkg --print-architecture)          # arm64 or amd64
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz.sha256"
 sha256sum -c "oab-computer-$V-linux-$A.tar.gz.sha256"
+# Optional, beside the checksum: proves this repository's release workflow built this file (see below).
+gh attestation verify "oab-computer-$V-linux-$A.tar.gz" --repo openabdev/openab-computer
 tar xzf "oab-computer-$V-linux-$A.tar.gz" && cd "oab-computer-$V-linux-$A"
 ./install-linux.sh                    # does steps 3 and 5 below, then asks about the browser (step 4)
 ./install-linux.sh --headless-seat    # same, on a box with no desktop (creates oab-seat.service)
 ```
+
+The attestation check is optional. It needs the GitHub CLI, and it shows that the tarball was built by
+this repository's release workflow from a stated commit. It does not make the download safe (ADR D12);
+the `.sha256` check stays the required one. Only a release built after the attestation step was added
+carries an attestation: the 0.12.x tarballs have none, and `gh attestation verify` finds nothing for
+them. See [Verifying a Linux tarball](releasing.md#verifying-a-linux-tarball).
 
 A unit file the installer did not write (no installer marker line) is never rewritten: the installer
 leaves it as it is and writes the unit it would have used next to it as `*.proposed`. That holds for
