@@ -570,7 +570,18 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
         // Health check from staging, headless.
         try step(.healthCheck, nil, progress)
-        try await healthCheck(staging: staging, node: nodeBin.path, cli: cli.path, chromium: chromiumBin.path)
+        // The installed Chrome is checked again right before it is launched: the earlier check ran before
+        // the downloads, and the app may have been updated or replaced since. The executable this second
+        // check returns is the one launched.
+        var launchBin = chromiumBin
+        if engine == .installedChrome {
+            switch chromeChecker.check() {
+            case .success(let c): launchBin = URL(fileURLWithPath: c.executablePath); chrome = c
+            case .failure(let p): throw PlaywrightInstallFailure.other(p.errorClass)
+            }
+            guard Self.isRegularExecutable(launchBin.path) else { throw PlaywrightInstallFailure.healthCheckFailed }
+        }
+        try await healthCheck(staging: staging, node: nodeBin.path, cli: cli.path, chromium: launchBin.path)
         for n in ["hc-profile", "hc-output", "npm-cache", "home", "tmp", "user.npmrc", "global.npmrc"] {
             try? fm.removeItem(at: staging.appendingPathComponent(n))
         }
@@ -609,14 +620,31 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         // beside the new one, not deleted: it is only removed after the new install served, and put back
         // if anything fails before that.
         var backup: URL?
+        var backupID: (dev_t, ino_t)?
         if lstat(target.path, &tst) == 0 {
             let b = root.appendingPathComponent("\(manifest.id).prev-\(UUID().uuidString)", isDirectory: true)
+            backupID = (tst.st_dev, tst.st_ino)
             guard rename(target.path, b.path) == 0 else { throw PlaywrightInstallFailure.other("commit") }
             backup = b
         }
+        // The installer deletes a directory only if it is still the very object it created or moved:
+        // same device and inode, a plain directory. A replacement put there meanwhile is left alone.
+        func sameDirectory(_ u: URL, _ id: (dev_t, ino_t)?) -> Bool {
+            guard let id else { return false }
+            var s = stat()
+            return lstat(u.path, &s) == 0 && (s.st_mode & S_IFMT) == S_IFDIR && s.st_dev == id.0 && s.st_ino == id.1
+        }
+        var committedID: (dev_t, ino_t)?
+        var sst = stat()
+        if lstat(staging.path, &sst) == 0 { committedID = (sst.st_dev, sst.st_ino) }
         func restoreBackup() {
-            try? fm.removeItem(at: target)
-            if let b = backup { _ = rename(b.path, target.path) }
+            let targetIsOurs = sameDirectory(target, committedID)
+            if targetIsOurs { try? fm.removeItem(at: target) }
+            // Put the old install back only into an empty slot, and only if it is still the one we moved.
+            if let b = backup, sameDirectory(b, backupID) {
+                var t = stat()
+                if lstat(target.path, &t) != 0 { _ = rename(b.path, target.path) }
+            }
         }
         guard rename(staging.path, target.path) == 0 else { restoreBackup(); throw PlaywrightInstallFailure.other("commit") }
         let rec = Record(version: manifest.id, chromiumExecutable: withChromium ? "chromium/" + crExec : "", manifestId: manifest.id,
@@ -656,7 +684,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
             throw PlaywrightInstallFailure.healthCheckFailed
         }
         // The new version served once: the previous directory can go.
-        if let b = backup { try? fm.removeItem(at: b) }
+        if let b = backup, sameDirectory(b, backupID) { try? fm.removeItem(at: b) }
         for n in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] where n != manifest.id && hasOwnershipMarker(n) {
             try? fm.removeItem(at: root.appendingPathComponent(n))
         }
