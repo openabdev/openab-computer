@@ -62,8 +62,10 @@ public actor StdioMCPClient {
     }
 
     public func listTools(timeout: TimeInterval = StdioMCPClient.callTimeout) async throws -> [JSONValue] {
-        let r = try await request("tools/list", [:], timeout: timeout)
-        return r["tools"]?.arrayValue ?? []
+        // `timeout` is the overall deadline; see ToolListPagination for the paging rules.
+        try await ToolListPagination.collect(deadline: timeout) { params, left in
+            try await self.request("tools/list", params, timeout: left)
+        }
     }
 
     public func callTool(_ name: String, arguments: JSONValue,
