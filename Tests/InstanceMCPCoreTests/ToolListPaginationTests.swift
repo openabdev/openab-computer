@@ -224,15 +224,18 @@ final class ExternalListToolsPaginationTests: XCTestCase {
 
     /// A server where `initialize` and `tools/list` take `delay` each (notifications are instant);
     /// pages chain forever so only the budget stops the walk. `events` records what was served.
-    private func slowServer(delay: TimeInterval, resetFirstList: Bool = false,
+    /// With `retryListDelay`, the second `tools/list` (the retry after a reset) takes that long instead of `delay`.
+    private func slowServer(delay: TimeInterval, resetFirstList: Bool = false, retryListDelay: TimeInterval? = nil,
                             events: EventLog = EventLog()) throws -> StubHTTPServer {
         let lock = NSLock(); nonisolated(unsafe) var lists = 0
         return try StubHTTPServer { [self] req in
             let m = methodName(req)
-            if m == "initialize" || m == "tools/list" { Thread.sleep(forTimeInterval: delay) }
+            let n = m == "tools/list" ? lock.withLock { lists += 1; return lists } : 0
+            if m == "initialize" || m == "tools/list" {
+                Thread.sleep(forTimeInterval: (m == "tools/list" && n == 2 ? retryListDelay : nil) ?? delay)
+            }
             if m == "initialize" { events.add("initialize"); return sse(["jsonrpc": "2.0", "id": 0, "result": [:]]) }
             guard m == "tools/list" else { return .init(status: 202) }
-            let n = lock.withLock { lists += 1; return lists }
             if resetFirstList && n == 1 { events.add("list-404"); return .init(status: 404) }
             events.add("list")
             return sse(["jsonrpc": "2.0", "id": 1, "result": ["tools": toolObjs(n..<(n + 1)), "nextCursor": .string("c\(n)")]])
@@ -256,17 +259,45 @@ final class ExternalListToolsPaginationTests: XCTestCase {
     }
 
     func testSessionResetMidListingStillHonorsTheOverallBudget() async throws {
-        // initialize 0.4 s, the first tools/list 404s after 0.4 s (0.8 s in), the re-initialize ends at
-        // 1.2 s and the retry would end at 1.6 s: it runs past the 1.5 s budget.
+        // initialize 0.4 s, the first tools/list 404s after 0.4 s (0.8 s in), the re-initialize ends at 1.2 s and the
+        // retried tools/list takes 2 s, so it would end at 3.2 s. Under one overall 1.5 s budget the call ends at about
+        // 1.5 s. Without the budget the retry gets a fresh 1.5 s request timeout and ends at about 2.7 s with a
+        // different class, so the bound below and the class both tell the two apart.
         let events = EventLog()
-        let s = try slowServer(delay: 0.4, resetFirstList: true, events: events)
+        let s = try slowServer(delay: 0.4, resetFirstList: true, retryListDelay: 2, events: events)
         defer { s.stop() }
         let c = ExternalPlaywrightClient(url: URL(string: "http://127.0.0.1:\(s.port)/mcp")!, timeout: 1.5)
         let t0 = ContinuousClock.now
         let k = await errClass { try await c.listTools() }
+        let elapsed = t0.duration(to: .now)
         XCTAssertEqual(k, "playwright_timeout")
-        XCTAssertLessThan(t0.duration(to: .now), .seconds(2.3))
+        XCTAssertLessThan(elapsed, .seconds(2.1), "the retry was cut at the overall budget, not given its own timeout")
         let seen = events.all
         XCTAssertEqual(Array(seen.prefix(3)), ["initialize", "list-404", "initialize"], "the reset path ran")
+    }
+
+    func testToolCapIsEnforcedOnTheHTTPPath() async throws {
+        // 500 tools per page and a next cursor each time: the cap (2000 raw entries) ends it at the fifth page, long
+        // before the 50-page cap.
+        let s = try stub { cur in
+            let n = cur.flatMap { Int($0.dropFirst()) } ?? 0
+            return ["tools": toolObjs((n * 500)..<(n * 500 + 500)), "nextCursor": .string("c\(n + 1)")]
+        }
+        defer { s.stop() }
+        let c = client(s)
+        let k = await errClass { try await c.listTools() }
+        XCTAssertEqual(k, "tools_list_too_many_tools")
+        let lists = s.requests.filter { methodName($0) == "tools/list" }.count
+        XCTAssertEqual(lists, ToolListPagination.maxTools / 500 + 1)
+        XCTAssertLessThan(lists, ToolListPagination.maxPages)
+    }
+
+    func testExactlyTheToolCapIsAccepted() async throws {
+        let s = try stub { cur in
+            cur == nil ? ["tools": toolObjs(0..<1000), "nextCursor": "p2"] : ["tools": toolObjs(1000..<ToolListPagination.maxTools)]
+        }
+        defer { s.stop() }
+        let tools = try await client(s).listTools()
+        XCTAssertEqual(tools.count, ToolListPagination.maxTools)
     }
 }

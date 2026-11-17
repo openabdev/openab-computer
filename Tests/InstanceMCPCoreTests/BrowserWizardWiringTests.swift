@@ -70,11 +70,18 @@ final class BrowserWizardWiringTests: InstallerTestCase {
         XCTAssertTrue(c.startInstall { _, _ in finished.value += 1 })
         let started = await waitFor { dl.calls.value >= 1 }
         XCTAssertTrue(started)
+        let notified = MutableBox(0)
+        c.addObserver { notified.value += 1 }
+        let stateBefore = c.installState
 
         let outcome = await c.remove()
 
         XCTAssertEqual(outcome, .failed)
         XCTAssertTrue(c.model.isInstalling, "the install is still running")
+        // The `if model.isInstalling { return .failed }` line returns before the installer, the state re-read and the
+        // observers. Without it `remove()` goes on to `notify()` even when the installer refuses.
+        XCTAssertEqual(notified.value, 0, "remove() returned early: nothing was re-read and nobody was told")
+        XCTAssertEqual(c.installState, stateBefore)
         c.cancelInstall()
         let done = await waitFor { finished.value == 1 }
         XCTAssertTrue(done)
@@ -94,7 +101,7 @@ final class BrowserWizardWiringTests: InstallerTestCase {
 
         let second = c.startInstall { _, _ in finished.value += ["second"] }
         XCTAssertFalse(second, "the guard on model.beginInstall() refuses it")
-        try await Task.sleep(nanoseconds: 300_000_000)
+        // No fixed sleep: the refusal above is the guard, and the first install is still parked in the downloader.
         // A second runInstall would end at once with `.lockHeld` and call its `finished`.
         XCTAssertEqual(finished.value, [], "no second runInstall ran and the first is still going")
         XCTAssertEqual(dl.calls.value, 1)
@@ -176,21 +183,51 @@ final class BrowserWizardWiringTests: InstallerTestCase {
         c.pageShown()
         XCTAssertEqual(s.offer, .offered)
         XCTAssertEqual(BrowserWizardPolicy.pageOnAutoSetup(allGranted: true, browserTools: c), .browser)
+
+        // Closing the window calls nothing on the controller (only `pageShown` and `pageCompleted` exist), so what a
+        // close leaves behind is the stored state. A relaunch builds a new controller on the same store and the page
+        // is offered again.
+        let relaunched = controller(fx.installer(root: root), store: s)
+        XCTAssertFalse(relaunched.pageIsCompleted)
+        XCTAssertEqual(BrowserWizardPolicy.pageOnAutoSetup(allGranted: true, browserTools: relaunched), .browser)
     }
 
     // MARK: the call sites still call what the tests above exercise
 
     /// `main.swift` is top-level code and `StatusItemController` is AppKit, so neither can be run here. This reads
     /// their source and fails if a call site stops using the tested function (the original R5.1 regression was a call
-    /// site that omitted the controller).
+    /// site that omitted the controller). Whitespace runs are collapsed first, so a reformat does not break it.
     func testTheProductionCallSitesStillUseTheTestedFunctions() throws {
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         func source(_ rel: String) throws -> String {
-            try String(contentsOf: repo.appendingPathComponent(rel), encoding: .utf8)
+            let url = repo.appendingPathComponent(rel)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                XCTFail("this guard needs the source tree at \(url.path); #filePath does not point into a checkout")
+                throw CocoaError(.fileNoSuchFile)
+            }
+            return squash(try String(contentsOf: url, encoding: .utf8))
+        }
+        func squash(_ t: String) -> String {
+            t.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        }
+        /// The text between the parentheses of the first `prefix(` call, with nested parentheses balanced.
+        func arguments(of prefix: String, in text: String) -> String? {
+            guard let r = text.range(of: prefix + "(") else { return nil }
+            var depth = 1
+            var idx = r.upperBound
+            while idx < text.endIndex {
+                switch text[idx] {
+                case "(": depth += 1
+                case ")": depth -= 1; if depth == 0 { return String(text[r.upperBound..<idx]) }
+                default: break
+                }
+                idx = text.index(after: idx)
+            }
+            return nil
         }
         let main = try source("Sources/oab-computer/main.swift")
         XCTAssertNotNil(
-            main.range(of: #"let browserTools: BrowserToolsController\? = MainActor\.assumeIsolated \{\s*BrowserWizardWiring\.makeController\("#,
+            main.range(of: #"let browserTools: BrowserToolsController\? = MainActor\.assumeIsolated \{ BrowserWizardWiring\.makeController\("#,
                        options: .regularExpression),
             "main.swift builds the controller unconditionally through the wiring")
         XCTAssertTrue(main.contains("upstreams: opts.upstreams, installer: playwrightInstaller"),
@@ -199,10 +236,19 @@ final class BrowserWizardWiringTests: InstallerTestCase {
         XCTAssertFalse(main.contains("BrowserToolsController("), "no second, unwired construction")
         XCTAssertFalse(main.contains("opts.upstreams.contains(where: { $0.0 == \"browser\" }) ? true"),
                        "the serving check goes through the tested function")
+        let statusArgs = arguments(of: "StatusItemController", in: main)
+        XCTAssertNotNil(statusArgs, "main.swift still creates the StatusItemController")
+        XCTAssertTrue(statusArgs?.contains("browserTools: browserTools") == true,
+                      "main.swift hands the controller on; passing nil or omitting it brings back the R5.1 symptom")
+
         let status = try source("Sources/oab-computer/StatusItemController.swift")
         XCTAssertNotNil(
-            status.range(of: #"if let page = BrowserWizardPolicy\.pageOnAutoSetup\(allGranted: true, browserTools: browserTools\) \{\s*openPermissionSetup\(page: page\)\s*\}"#,
+            status.range(of: #"if let page = BrowserWizardPolicy\.pageOnAutoSetup\(allGranted: true, browserTools: browserTools\) \{ openPermissionSetup\(page: page\) \}"#,
                          options: .regularExpression),
             "the automatic setup path asks the policy and opens the page it returns")
+        let windowArgs = arguments(of: "PermissionSetupWindowController", in: status)
+        XCTAssertNotNil(windowArgs, "StatusItemController still creates the setup window controller")
+        XCTAssertTrue(windowArgs?.contains("browserTools: browserTools") == true,
+                      "the setup window gets the same controller, so its Browser page and the menu share one state")
     }
 }
