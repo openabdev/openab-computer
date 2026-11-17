@@ -125,23 +125,25 @@ impl Upstream for Managed {
                 }
             }
         }
-        match self.sup.call("tools/list", json!({}), LIST_TIMEOUT) {
-            Ok(r) => {
+        // A server that pages wrongly is `upstream_bad_body` here without touching the child: only
+        // `Supervisor::call` stops a child, and only for a broken pipe or framing.
+        match crate::stdio_client::list_tools_paged(
+            LIST_TIMEOUT,
+            LIST_TIMEOUT,
+            |p, t| self.sup.call("tools/list", p, t),
+            "upstream_bad_body",
+            "upstream_timeout",
+        ) {
+            Ok(all) => {
                 self.log_class("ok");
-                let list: Vec<Value> = r
-                    .get("tools")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter(|t| {
-                                t.get("name")
-                                    .and_then(Value::as_str)
-                                    .is_some_and(|n| BROWSER_TOOLS.contains(&n))
-                            })
-                            .cloned()
-                            .collect()
+                let list: Vec<Value> = all
+                    .into_iter()
+                    .filter(|t| {
+                        t.get("name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|n| BROWSER_TOOLS.contains(&n))
                     })
-                    .unwrap_or_default();
+                    .collect();
                 if let Ok(mut c) = self.cache.lock() {
                     *c = Some((Instant::now(), list.clone()));
                 }
