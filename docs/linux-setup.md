@@ -412,13 +412,16 @@ Four more fields say how far the hardening of the browser's unit is verified on 
 checked by its effect, not by whether systemd accepted the property: `hardening_base` is `verified`
 when every base probe saw its effect, `partial` when some did not, `unverified` when the check or the
 base probe could not run, and `not_checked` unless `--retry` ran it. `hardening_mount` is `verified`,
-`partial`, `dropped` (this host's user manager starts the unit but does not apply `PrivateTmp`,
-`ProtectHome` and `ProtectSystem`, as on Ubuntu with unprivileged user namespaces restricted, so the
-browser runs without that tier), `not_applicable` (nothing is installed yet) or `not_checked`.
+`partial`, `unverified` (a `--retry` check ran and failed), `dropped` (this host's user manager starts the unit but does not apply `PrivateTmp`,
+`ProtectHome` and `ProtectSystem`, or none of their effects could be observed, so the browser runs
+without that tier), `not_applicable` (nothing is installed yet) or `not_checked`.
 `hardening_unverified` names the probe tokens that did not read `1` in a tier that is applied
 (`none` when all did). `run_records` is `ok`, `full` (a managed start would be refused with
 `run_records_full`) or `unavailable`. A tier that is `partial` or `dropped` is reported, not hidden: the
-browser still runs, with the protection the probes did not confirm missing. A listing of leftovers
+mount tier still runs without the protection the probes did not confirm. The base tier is
+different: where the full base list cannot start at all (a user manager that refuses a property such
+as `ProtectKernelModules`, as on some Ubuntu 24.04 hosts with restricted user namespaces), the
+containment check reports `unverified` and the managed browser is unavailable until that is fixed. A listing of leftovers
 from an old setup (old units, old directories with sizes, the old profile that holds cookies) is
 not in `status` yet: use the checklist under
 [Removing the old browser setup after the soak](#removing-the-old-browser-setup-after-the-soak).

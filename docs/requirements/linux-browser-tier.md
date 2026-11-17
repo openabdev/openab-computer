@@ -300,8 +300,9 @@ unit, and restart the daemon.
      outside the root are left alone.
    - With a test double whose self-test fails, the backend is `unavailable: containment_unverified`
      and nothing is spawned. With one that succeeds, the child starts.
-   - The sweep takes `.sweep.lock` without blocking and is skipped, not blocked, while another sweep
-     holds it.
+   - A production start waits up to 10 s for `.sweep.lock` and holds it until its run record exists,
+     so another start's sweep cannot kill it in between; the sweep itself, run without a start, takes
+     the lock without blocking and is skipped while another sweep holds it.
 8. **Environment in unit mode.** The unit vector begins with `/usr/bin/env -i`, contains no `-E` or
    `--setenv`, and lists exactly the allow-list.
 9. **Launch vector.** The rendered arguments and `pw-config.json`, headed and headless, contain

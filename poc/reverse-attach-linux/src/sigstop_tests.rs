@@ -288,6 +288,18 @@ fn sigkill_of_the_cli_leaves_the_grandchild_and_the_next_start_sweeps_it() {
 
 // ---- the same, with a real transient unit (`OAB_L2_SYSTEMD=1 cargo test sigstop -- --ignored`) ----
 
+/// Whether this host starts the full base-list probe unit. Where it does not (a runner whose user
+/// manager refuses a property such as `ProtectKernelModules`), `verify` fails closed and a CLI child
+/// runs plain, which the containment tests assert; a unit-mode test has nothing to observe there.
+#[cfg(target_os = "linux")]
+fn host_starts_the_base_probe() -> bool {
+    let ok = test_systemd().verify().is_ok();
+    if !ok {
+        eprintln!("skipped: this host's user manager cannot start the full base probe; the child runs plain");
+    }
+    ok
+}
+
 #[cfg(target_os = "linux")]
 fn units_left() -> usize {
     test_systemd()
@@ -300,7 +312,7 @@ fn units_left() -> usize {
 #[test]
 #[ignore = "needs a systemd user manager; OAB_L2_SYSTEMD=1"]
 fn a_cli_child_in_a_real_unit_is_stopped_by_hup_term_and_int() {
-    if std::env::var_os("OAB_L2_SYSTEMD").is_none() {
+    if std::env::var_os("OAB_L2_SYSTEMD").is_none() || !host_starts_the_base_probe() {
         return;
     }
     for sig in ["HUP", "TERM", "INT"] {
@@ -331,7 +343,7 @@ fn a_cli_child_in_a_real_unit_is_stopped_by_hup_term_and_int() {
 #[test]
 #[ignore = "needs a systemd user manager; OAB_L2_SYSTEMD=1"]
 fn sigkill_of_a_cli_leaves_its_unit_and_the_next_starts_sweep_stops_it() {
-    if std::env::var_os("OAB_L2_SYSTEMD").is_none() {
+    if std::env::var_os("OAB_L2_SYSTEMD").is_none() || !host_starts_the_base_probe() {
         return;
     }
     let t = TempDir::new();

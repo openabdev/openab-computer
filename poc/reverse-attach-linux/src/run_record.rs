@@ -165,8 +165,12 @@ fn scan(run: &OwnedFd) -> Scan {
             },
             // Not a small regular file: junk too, if it can be identified to remove exactly it.
             Err(_) => {
+                // A directory cannot be unlinked as a file, so it is not removable junk: it keeps
+                // counting toward the cap, and the status says `full` rather than promising a prune.
                 if let Ok(Some(id)) = state::lstat_at(run, &n) {
-                    s.junk.push((n, id));
+                    if !state::is_dir(&id) {
+                        s.junk.push((n, id));
+                    }
                 }
             }
         }

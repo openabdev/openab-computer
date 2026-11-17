@@ -381,9 +381,11 @@ fn the_mount_tier_applies_only_where_the_child_can_write_and_protect_home_is_not
     // rw_paths One and protect_home One or Na (cannot be shown): applied.
     assert!(mount_applies(&[One, One, One, One]));
     assert!(
-        mount_applies(&[Zero, Na, Zero, One]),
+        mount_applies(&[One, Na, Zero, One]),
         "protect_home na stays, and is reported partial"
     );
+    // No mount-namespace effect was observed at all (HOME unwritable, properties ignored): dropped.
+    assert!(!mount_applies(&[Zero, Na, Zero, One]));
     // The user manager started the unit but ignored the properties (V11): dropped.
     assert!(!mount_applies(&[Zero, Zero, Zero, One]));
     assert!(!mount_applies(&[One, Zero, One, One]));

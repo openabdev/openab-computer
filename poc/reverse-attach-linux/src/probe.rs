@@ -17,8 +17,9 @@
 //! - `hardening_base`: `not_checked` (no `--retry`), `verified`, `partial` or `unverified` (the
 //!   self-test or the base probe failed). `verified` means every base probe token read `1`.
 //! - `hardening_mount`: `not_checked`, `verified`, `partial` (applied, some token not `1`),
-//!   `dropped` (the tier does not apply on this host) or `not_applicable` (no install root yet).
-//! - `hardening_unverified`: `not_checked`, `none`, or a comma list of the probe tokens that did
+//!   `dropped` (the tier does not apply on this host), `not_applicable` (no install root yet) or
+//!   `unverified` (a `--retry` check ran and failed).
+//! - `hardening_unverified`: `not_checked`, `unverified` (a failed `--retry`), `none`, or a comma list of the probe tokens that did
 //!   not read `1` in an applied tier (`hardening.rs` holds the fixed vocabulary).
 //! - `run_records`: `ok`, `full` (a managed start would refuse with `run_records_full`) or
 //!   `unavailable` (`run/` missing, unmarked or unreadable).
@@ -117,6 +118,8 @@ pub fn gather(
             Err(_) => {
                 x.containment = "unverified".to_string();
                 x.hardening_base = "unverified".to_string();
+                x.hardening_mount = "unverified".to_string();
+                x.hardening_unverified = "unverified".to_string();
             }
         }
     }

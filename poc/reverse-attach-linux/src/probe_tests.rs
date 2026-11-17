@@ -140,8 +140,8 @@ fn a_retry_fills_the_hardening_fields_from_what_the_probes_found() {
     // A failed self-test or base probe: unverified, and nothing else is claimed.
     let x = gather(&t.base(), true, None, &none, &|| Err(UNVERIFIED));
     assert_eq!(x.hardening_base, "unverified");
-    assert_eq!(x.hardening_mount, "not_checked");
-    assert_eq!(x.hardening_unverified, "not_checked");
+    assert_eq!(x.hardening_mount, "unverified");
+    assert_eq!(x.hardening_unverified, "unverified");
     // Without --retry the CLI never reports a tier it did not probe.
     let x = gather(&t.base(), false, None, &none, &nothing);
     assert_eq!(x.hardening_base, "not_checked");

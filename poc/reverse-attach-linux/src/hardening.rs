@@ -401,9 +401,10 @@ pub fn probe_mount(sys: &Sys, prefix: &str, props: &[String], rw: &[PathBuf]) ->
 /// namespace tier on that host"). A user manager that is not allowed a mount namespace starts the
 /// unit and silently ignores the three properties; that reads `protect_home=0` here. `na` (the
 /// host's home is not writable to begin with) cannot show it either way, so the tier stays and is
-/// reported `partial`. The other results are reported, not gating.
+/// reported `partial`. At least one mount-namespace effect (`private_tmp` or `protect_system`) must
+/// have been observed too: with none, the properties did nothing and the tier is dropped.
 pub fn mount_applies(v: &MountVals) -> bool {
-    v[3] == Val::One && v[1] != Val::Zero
+    v[3] == Val::One && v[1] != Val::Zero && (v[0] == Val::One || v[2] == Val::One)
 }
 
 /// Whether `/proc/self/mountinfo` text shows `mount_point` as a read-only mount (the last entry for
