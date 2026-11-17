@@ -217,3 +217,32 @@ fn a_refusal_is_one_of_two_classes_and_is_not_a_run_record() {
     let text = std::fs::read_to_string(run_dir(&t).join(REFUSAL_NAME)).unwrap();
     assert!(text.len() < 100, "{text}");
 }
+
+#[test]
+fn unparsable_files_count_toward_the_cap_and_a_flood_fails_closed() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    // Garbage that comes first in any listing cannot push real records out of view.
+    for i in 0..MAX_RECORDS {
+        std::fs::write(run_dir(&t).join(format!("a-{i}.json")), b"not json").unwrap();
+    }
+    assert!(saturated(&root));
+    let mut c = sleeper();
+    assert_eq!(
+        write(&root, "cli", c.id(), None).err(),
+        Some(Fail("run_records_full"))
+    );
+    c.kill().unwrap();
+    c.wait().unwrap();
+}
+
+#[test]
+fn more_entries_than_the_scan_limit_is_saturated_even_without_json_names() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    assert!(!saturated(&root));
+    for i in 0..(SCAN_LIMIT + 8) {
+        std::fs::write(run_dir(&t).join(format!("x{i}")), b"").unwrap();
+    }
+    assert!(saturated(&root));
+}

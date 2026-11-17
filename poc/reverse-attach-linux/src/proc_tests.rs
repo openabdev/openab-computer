@@ -200,16 +200,17 @@ fn a_detached_grandchild_under_the_scope_is_killed_and_a_lookalike_outside_survi
     std::fs::create_dir_all(&scope).unwrap();
     std::fs::create_dir_all(&outside).unwrap();
     for d in [&scope, &outside] {
-        let bin = d.join("bleeper");
+        std::fs::create_dir_all(d.join("bleeper")).unwrap();
+        let bin = d.join("bleeper").join("sleep");
         std::fs::copy("/bin/sleep", &bin).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let mut look = std::process::Command::new(outside.join("bleeper"))
+    let mut look = std::process::Command::new(outside.join("bleeper/sleep"))
         .arg("300")
         .spawn()
         .unwrap();
     let script = format!(
-        "setsid {}/bleeper 300 & echo $!; sleep 300",
+        "setsid {}/bleeper/sleep 300 & echo $!; sleep 300",
         scope.display()
     );
     let mut c = Child::spawn(&sh(&script, &t.path), false, true, 1024, &scope).unwrap();
@@ -354,7 +355,8 @@ fn kill_matching_honours_protect_and_the_exe_test() {
     let t = TempDir::new();
     let dir = t.path.join("scope/bin");
     std::fs::create_dir_all(&dir).unwrap();
-    let exe = dir.join("sleeper");
+    std::fs::create_dir_all(dir.join("sleeper")).unwrap();
+    let exe = dir.join("sleeper").join("sleep");
     std::fs::copy("/bin/sleep", &exe).unwrap();
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();

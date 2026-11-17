@@ -40,7 +40,10 @@ fn helper_cli() {
     let bin = root.abs_path().join("pw-1/node/bin");
     let tag = std::env::var("OAB_L2_HELPER_TAG").unwrap_or_default();
     let (c_name, g_name) = (format!("cli_child_{tag}"), format!("cli_grand_{tag}"));
-    let (c_exe, g_exe) = (bin.join(&c_name), bin.join(&g_name));
+    let (c_exe, g_exe) = (
+        bin.join(&c_name).join("sleep"),
+        bin.join(&g_name).join("sleep"),
+    );
     // The grandchild starts its own session, as a Chromium helper does.
     let spec = Spec {
         exe: "/bin/sh".into(),
@@ -67,9 +70,10 @@ fn helper_cli() {
     // Wait until the grandchild exists, then tell the outer test.
     let end = Instant::now() + Duration::from_secs(10);
     let find = |name: &str| {
-        crate::proc::proc_pids()
-            .into_iter()
-            .find(|p| std::fs::read_link(format!("/proc/{p}/exe")).is_ok_and(|e| e.ends_with(name)))
+        crate::proc::proc_pids().into_iter().find(|p| {
+            std::fs::read_link(format!("/proc/{p}/exe"))
+                .is_ok_and(|e| e.parent().is_some_and(|d| d.ends_with(name)))
+        })
     };
     while Instant::now() < end && (find(&g_name).is_none() || find(&c_name).is_none()) {
         std::thread::sleep(Duration::from_millis(50));

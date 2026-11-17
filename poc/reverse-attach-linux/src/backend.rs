@@ -6,9 +6,9 @@
 //!   (D15). The backend is reported available only once containment has verified (R1.2).
 //! - **External**: the loopback HTTP upstream of `external.rs`. It forwards every tool it lists.
 //! - **The router** answers one question: which one serves `browser_*`. Rules, in order:
-//!   1. `OAB_BROWSER=off`: the managed tier is switched off. A `MCP_UPSTREAM browser=` line alone
-//!      then still serves as external (the cutover runbook's "set `OAB_BROWSER=off` in a drop-in"
-//!      before step 5 relies on it); with no such line the backend is `off`.
+//!   1. `OAB_BROWSER=off`: the managed tier is switched off. With nothing installed, a
+//!      `MCP_UPSTREAM browser=` line alone still serves as external; with a managed install the line
+//!      is ignored (D5: external needs `MCP_BROWSER_BACKEND=external`) and the backend is `off`.
 //!   2. A valid managed install is selected, and wins over a `MCP_UPSTREAM browser=` line, which is
 //!      ignored with one logged event and a `sys_info` field, unless `MCP_BROWSER_BACKEND=external`.
 //!   3. `MCP_BROWSER_BACKEND=external` without such a line is `unavailable: external_not_configured`
@@ -290,12 +290,11 @@ pub fn select(env: &EnvIn, installed: Installed) -> Decision {
         Some(_) => return d(Choice::Unavailable("backend_invalid"), false),
     }
     if off {
-        return if want == Some("managed") {
-            d(Choice::Off, false)
-        } else if ext {
-            d(Choice::External, false)
-        } else {
-            d(Choice::Off, false)
+        // A managed install still wins over a stale line: external needs the explicit flag (D5,
+        // R4.1), so with an install the line is ignored and the backend is off.
+        return match installed {
+            Installed::No if ext && want != Some("managed") => d(Choice::External, false),
+            _ => d(Choice::Off, ext),
         };
     }
     match installed {

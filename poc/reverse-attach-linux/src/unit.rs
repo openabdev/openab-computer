@@ -86,8 +86,10 @@ fn env_name_ok(n: &str) -> bool {
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// One word of the command line. `$` and `%` are refused: `systemd-run` expands `${VAR}` and `%`
+/// specifiers in the command, which would let a value change what runs.
 fn text_ok(s: &str) -> bool {
-    s.len() <= 4096 && !s.contains(['\0', '\n', '\r'])
+    s.len() <= 4096 && !s.contains(['\0', '\n', '\r', '$', '%'])
 }
 
 /// A path that is one word to systemd: absolute, no whitespace, no `%` specifier, no `:` prefix
@@ -109,7 +111,9 @@ pub fn run_args(r: &Req) -> Result<Vec<String>, &'static str> {
         || !r.cwd.is_absolute()
         || r.cwd.to_str().is_none_or(|s| !text_ok(s))
         || !r.exe.is_absolute()
-        || r.exe.to_str().is_none_or(|s| !text_ok(s))
+        || r.exe
+            .to_str()
+            .is_none_or(|s| !text_ok(s) || s.contains('='))
         || r.args.iter().any(|a| !text_ok(a))
         || r.env.iter().any(|(k, v)| !env_name_ok(k) || !text_ok(v))
     {

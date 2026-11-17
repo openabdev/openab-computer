@@ -266,21 +266,26 @@ impl Sys {
         )
     }
 
-    /// Names of units that match `<prefix>-*`.
+    /// Names of units that match `<prefix>-*`. `None` when `systemctl` failed or more than
+    /// `MAX_LISTED` match: an incomplete list cannot show that none are left.
     pub(crate) fn list_prefixed(&self, prefix: &str) -> Option<Vec<String>> {
+        const MAX_LISTED: usize = 256;
         let pat = format!("{prefix}-*");
-        let (_, t) = self.systemctl(
+        let (ok, t) = self.systemctl(
             &["list-units", "--all", "--plain", "--no-legend", &pat],
             Duration::from_secs(10),
         )?;
-        Some(
-            t.lines()
-                .filter_map(|l| l.split_whitespace().next())
-                .filter(|n| is_unit_name(n) && n.starts_with(prefix))
-                .take(16)
-                .map(str::to_string)
-                .collect(),
-        )
+        if !ok {
+            return None;
+        }
+        let v: Vec<String> = t
+            .lines()
+            .filter_map(|l| l.split_whitespace().next())
+            .filter(|n| is_unit_name(n) && n.starts_with(prefix))
+            .take(MAX_LISTED + 1)
+            .map(str::to_string)
+            .collect();
+        (v.len() <= MAX_LISTED).then_some(v)
     }
 
     /// The pids in a unit's cgroup.
@@ -396,17 +401,31 @@ impl Systemd {
                 return fail;
             }
         }
+        let daemon_unit = if self.require_unit_main {
+            own_unit(s)
+        } else {
+            None
+        };
+        // The fixture is bound to the daemon's unit, so that unit must be one that ends with its
+        // main process: not `RemainAfterExit`, not `ExitType=cgroup`, and a plain `simple`/`exec`
+        // service. Anything else would keep the binding alive after the daemon is gone.
+        if let Some(u) = &daemon_unit {
+            let shape_ok = s.show(u, "RemainAfterExit").as_deref() == Some("no")
+                && s.show(u, "ExitType")
+                    .is_some_and(|t| t == "main" || t.is_empty())
+                && s.show(u, "Type")
+                    .is_some_and(|t| matches!(t.as_str(), "simple" | "exec" | "notify"));
+            if !shape_ok {
+                return fail;
+            }
+        }
         let base = format!("{}-{}", self.selftest_prefix, crate::state::random_hex(4));
         let mut fx = Fixture {
             sys: s,
             units: Vec::new(),
             // The daemon's own unit: the fixture parent is bound to it, so a daemon that dies
             // during the test takes the fixture with it at once, not at `RuntimeMaxSec`.
-            daemon_unit: if self.require_unit_main {
-                own_unit(s)
-            } else {
-                None
-            },
+            daemon_unit,
         };
         let r = fx.run(&base);
         let clean = fx.cleanup();
@@ -430,6 +449,14 @@ impl Systemd {
             return false;
         };
         let rw_prop = format!("ReadWritePaths={rw}");
+        // Named under the self-test prefix so a leftover is found by the next sweep of leftovers,
+        // and bounded so it cannot outlive its probe.
+        let name = format!(
+            "{}-mount-{}",
+            self.selftest_prefix,
+            crate::state::random_hex(4)
+        );
+        let unit_arg = format!("--unit={name}");
         let probe = self.sys.run(
             "systemd-run",
             &[
@@ -437,6 +464,9 @@ impl Systemd {
                 "--quiet",
                 "--collect",
                 "--wait",
+                &unit_arg,
+                "-p",
+                "RuntimeMaxSec=20",
                 "-p",
                 "PrivateTmp=yes",
                 "-p",
@@ -453,7 +483,8 @@ impl Systemd {
             ],
             Duration::from_secs(15),
         );
-        probe.is_some_and(|(ok, _)| ok)
+        let gone = self.sys.stop(&format!("{name}.service"));
+        probe.is_some_and(|(ok, _)| ok) && gone
     }
 }
 
@@ -703,7 +734,10 @@ impl Mechanism for Systemd {
     }
 
     fn stop_unit(&self, unit: &str) {
-        self.sys.stop(unit);
+        // A run record is a file an application could rewrite: only a unit this daemon names.
+        if unit.starts_with(&format!("{}-", self.browser_prefix)) {
+            self.sys.stop(unit);
+        }
     }
 }
 

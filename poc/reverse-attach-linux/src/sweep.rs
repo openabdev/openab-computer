@@ -23,7 +23,7 @@ use rustix::fs::FlockOperation;
 use crate::manifest::is_safe_id;
 use crate::proc;
 use crate::run_record::{self, Record};
-use crate::state::{self, Root, DATA_DIRS, IO, R, SWEEP_LOCK_NAME};
+use crate::state::{self, Fail, Root, DATA_DIRS, IO, R, SWEEP_LOCK_NAME};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -78,6 +78,10 @@ pub fn sweep_before_start(root: &Root, stop_unit: &dyn Fn(&str)) -> R<Outcome> {
             stop_unit(&u);
             units_stopped += 1;
         }
+    }
+    // Fail closed: with a `run/` too full to list, a live record could be hidden and its child swept.
+    if run_record::saturated(root) {
+        return Err(Fail("run_records_full"));
     }
     let live = run_record::live(root);
     let abs = root.abs_path().to_path_buf();

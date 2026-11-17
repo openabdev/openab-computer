@@ -5,8 +5,9 @@
 //! - `run/<kind>-<pid>.json` holds `{"pid":N,"start":T,"kind":"managed"|"cli","unit":"<name>.service"}`.
 //!   `T` is field 22 of `/proc/<pid>/stat`, so a reused PID is not mistaken for the recorded process.
 //!   `state::live_run_records` reads only `pid` and `start`; the other fields are ours.
-//! - Bounded: a record is at most `RUN_RECORD_CAP` (4 KiB), at most `MAX_RECORDS` exist, and dead
-//!   ones are pruned on every write. `run/` must carry its marker; without it nothing is written.
+//! - Bounded: a record is at most `RUN_RECORD_CAP` (4 KiB), at most `MAX_RECORDS` are read, dead
+//!   ones are pruned on every write, and a `run/` with `MAX_RECORDS` or more record files or more
+//!   than `SCAN_LIMIT` entries is `saturated`: writes and the sweep refuse (fail closed). `run/` must carry its marker; without it nothing is written.
 //! - Reached only through directory fds with `O_NOFOLLOW` (`state.rs`), created 0600.
 //! - A record names no profile path, URL, token or stderr text: a PID, a start time and two fixed
 //!   strings.
@@ -20,8 +21,8 @@ use crate::state::{self, Fail, Root, IO, OWNED_DATA, R, RUN_RECORD_CAP};
 
 /// The most run records that may exist at once, live or not yet pruned.
 pub const MAX_RECORDS: usize = 64;
-/// The most directory entries looked at when reading `run/`.
-const SCAN_LIMIT: usize = 512;
+/// The most directory entries listed when reading `run/`; more than this is `saturated`.
+const SCAN_LIMIT: usize = 4096;
 /// The marker of the five-failure latch (`child.rs`). Not a run record; it holds no PID.
 pub const LATCH_NAME: &str = "latch.json";
 /// The recorded refusal that D17 needs before `--use-system-chromium` may be offered (L3 reads it).
@@ -89,29 +90,73 @@ fn parse(name: &str, bytes: &[u8]) -> Option<Record> {
     })
 }
 
-/// Every parsable record in `run/` with the identity of the file that was read.
-fn read_all(run: &OwnedFd) -> Vec<(Record, Stat)> {
+/// What a look at `run/` found.
+struct Scan {
+    /// Every parsable record, with the identity of the file that was read.
+    records: Vec<(Record, Stat)>,
+    /// `.json` names that are neither the latch nor the refusal: parsable or not.
+    candidates: usize,
+    /// More than `SCAN_LIMIT` directory entries: the listing is incomplete.
+    overflow: bool,
+}
+
+impl Scan {
+    /// Full, or too large to be sure nothing is hidden. Callers fail closed on it.
+    fn saturated(&self) -> bool {
+        self.overflow || self.candidates >= MAX_RECORDS
+    }
+}
+
+fn scan(run: &OwnedFd) -> Scan {
+    let mut s = Scan {
+        records: Vec::new(),
+        candidates: 0,
+        overflow: false,
+    };
     let Ok(dir) = rustix::fs::Dir::read_from(run) else {
-        return Vec::new();
+        // An unreadable directory cannot be shown to be empty.
+        s.overflow = true;
+        return s;
     };
     let mut names = Vec::new();
-    for e in dir.flatten().take(SCAN_LIMIT) {
+    let mut seen = 0usize;
+    for e in dir.flatten() {
+        seen += 1;
+        if seen > SCAN_LIMIT {
+            s.overflow = true;
+            break;
+        }
         let n = e.file_name().to_bytes();
         if n.ends_with(b".json") && n != LATCH_NAME.as_bytes() && n != REFUSAL_NAME.as_bytes() {
-            if let Ok(s) = std::str::from_utf8(n) {
-                names.push(s.to_string());
+            s.candidates += 1;
+            // Past the cap the names are counted but not read: reads stay bounded.
+            if names.len() < MAX_RECORDS {
+                if let Ok(t) = std::str::from_utf8(n) {
+                    names.push(t.to_string());
+                }
             }
         }
     }
-    let mut out = Vec::new();
     for n in names {
         if let Ok((bytes, id)) = state::read_file_id(run, &n, RUN_RECORD_CAP) {
             if let Some(r) = parse(&n, &bytes) {
-                out.push((r, id));
+                s.records.push((r, id));
             }
         }
     }
-    out
+    s
+}
+
+/// Every parsable record in `run/` with the identity of the file that was read.
+fn read_all(run: &OwnedFd) -> Vec<(Record, Stat)> {
+    scan(run).records
+}
+
+/// True when `run/` holds `MAX_RECORDS` or more record files (parsable or not) or is too large to
+/// list. A caller that must not miss a live record (the sweep) refuses to act then; `write`
+/// refuses to add one.
+pub fn saturated(root: &Root) -> bool {
+    open_run(root).is_ok_and(|run| scan(&run).saturated())
 }
 
 /// The records whose process is alive. A missing or unmarked `run/` gives none.
@@ -173,7 +218,7 @@ pub fn write(root: &Root, kind: &str, pid: u32, unit: Option<&str>) -> R<Handle>
     let start = state::proc_start_time(pid).ok_or(Fail("run_record_invalid"))?;
     let run = open_run(root)?;
     prune_in(&run);
-    if read_all(&run).len() >= MAX_RECORDS {
+    if scan(&run).saturated() {
         return Err(Fail("run_records_full"));
     }
     let name = format!("{kind}-{pid}.json");

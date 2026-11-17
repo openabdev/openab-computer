@@ -6,10 +6,12 @@ use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// A copy of `sleep` placed at `dir/name`, so a process started from it has its executable there.
+/// A copy of `sleep` placed at `dir/name/sleep`, so a process started from it has its executable
+/// under `dir`. The file keeps the name `sleep` because a multi-call coreutils dispatches on the
+/// basename of the program it was started as.
 pub(crate) fn sleeper_at(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
-    std::fs::create_dir_all(dir).unwrap();
-    let p = dir.join(name);
+    std::fs::create_dir_all(dir.join(name)).unwrap();
+    let p = dir.join(name).join("sleep");
     std::fs::copy("/bin/sleep", &p).unwrap();
     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     p

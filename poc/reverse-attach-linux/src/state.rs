@@ -775,10 +775,15 @@ pub fn live_run_records(root: &Root) -> usize {
         return 0;
     }
     let Ok(dir) = rustix::fs::Dir::read_from(&run) else {
-        return 0;
+        // Cannot be listed: not shown to be empty.
+        return 1;
     };
     let mut names = Vec::new();
-    for e in dir.flatten().take(10_000) {
+    for (i, e) in dir.flatten().enumerate() {
+        // More entries than can be read: records may be hidden, so count one as live (fail closed).
+        if i >= 10_000 {
+            return 1;
+        }
         let n = e.file_name().to_bytes();
         if n.ends_with(b".json") {
             names.push(String::from_utf8_lossy(n).into_owned());

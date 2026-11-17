@@ -404,8 +404,8 @@ pub fn kill_matching(matches: &dyn Fn(&Path) -> bool, protect: &dyn Fn(u32) -> b
 ///
 /// A number read from `/proc` can name a different process by the time it is used. `pidfd_open`
 /// pins the process the number names *now*; `recheck` then examines that same number, which cannot
-/// be reused while the pidfd is held, and `pidfd_send_signal` can only reach the pinned process (or
-/// fail with `ESRCH` if it has exited). A process that fails the recheck is never signalled.
+/// be reused until the process is reaped, and `pidfd_send_signal` can only reach the pinned process
+/// (or fail with `ESRCH` if it has exited). A process that fails the recheck is never signalled.
 #[cfg(target_os = "linux")]
 pub fn kill_pid_checked(pid: u32, recheck: &dyn Fn(u32) -> bool) -> bool {
     let Some(p) = Pid::from_raw(pid as i32) else {

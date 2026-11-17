@@ -99,9 +99,20 @@ fn off_switches_managed_off_and_the_line_alone_still_serves_as_before_the_cutove
         pick(&env(Some("off"), None, None), Installed::No),
         (Off, false)
     );
-    // The runbook (section 2.4): before step 5 the line and the old unit still serve.
+    // With a managed install the stale line is not adopted without the explicit flag (D5, R4.1).
     assert_eq!(
         pick(&env(Some("off"), None, Some(LINE)), Installed::Yes),
+        (Off, true)
+    );
+    assert_eq!(
+        pick(&env(Some("off"), None, Some(LINE)), Installed::No),
+        (External, false)
+    );
+    assert_eq!(
+        pick(
+            &env(Some("off"), Some("external"), Some(LINE)),
+            Installed::Yes
+        ),
         (External, false)
     );
     assert_eq!(
@@ -109,7 +120,7 @@ fn off_switches_managed_off_and_the_line_alone_still_serves_as_before_the_cutove
             &env(Some("off"), Some("managed"), Some(LINE)),
             Installed::Yes
         ),
-        (Off, false)
+        (Off, true)
     );
     // Only the exact word turns it off.
     assert_eq!(
