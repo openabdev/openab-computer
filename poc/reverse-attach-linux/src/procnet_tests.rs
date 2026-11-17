@@ -166,3 +166,134 @@ fn the_real_table_gives_this_users_uid_for_a_loopback_connection() {
         Err(UNKNOWN)
     );
 }
+
+// ---- a dual-stack listener shows its IPv4 peers as `::ffff:a.b.c.d` in tcp6 (#132) ------------
+
+/// `0000000000000000FFFF00000100007F`: `::ffff:127.0.0.1` in the table's per-word byte order.
+const MAPPED_LOOPBACK: &str = "0000000000000000FFFF00000100007F";
+
+fn row6(local: &str, remote: &str, uid: u32) -> String {
+    format!("   0: {local} {remote} 01 00000000:00000000 00:00000000 00000000  {uid}        0 30000 1 0000000000000000 20 4 30 10 -1\n")
+}
+
+#[cfg(target_endian = "little")]
+#[test]
+fn a_v4_mapped_row_in_tcp6_is_the_server_end_of_an_ipv4_connection() {
+    // Port 0x1F90 = 8080, 0xD2A4 = 53924.
+    let t6 = format!(
+        "{HEAD}{}",
+        row6(
+            &format!("{MAPPED_LOOPBACK}:1F90"),
+            &format!("{MAPPED_LOOPBACK}:D2A4"),
+            1234
+        )
+    );
+    // `tcp` has only the client end of the pair (local and remote swapped): not the server's row.
+    let t4 = format!(
+        "{HEAD}   0: 0100007F:D2A4 0100007F:1F90 01 00000000:00000000 00:00000000 00000000  4321        0 30001 1 0000000000000000 20 4 30 10 -1\n"
+    );
+    let src = Fixture([("tcp", Ok(t4)), ("tcp6", Ok(t6))].into_iter().collect());
+    assert_eq!(
+        peer_owner_uid(&src, addr("127.0.0.1:53924"), addr("127.0.0.1:8080")),
+        Ok(1234)
+    );
+    // The same connection named in its mapped form resolves the same way.
+    assert_eq!(
+        peer_owner_uid(
+            &src,
+            addr("[::ffff:127.0.0.1]:53924"),
+            addr("[::ffff:127.0.0.1]:8080")
+        ),
+        Ok(1234)
+    );
+    // A different peer port has no row.
+    assert_eq!(
+        peer_owner_uid(&src, addr("127.0.0.1:1"), addr("127.0.0.1:8080")),
+        Err(UNKNOWN)
+    );
+}
+
+#[cfg(target_endian = "little")]
+#[test]
+fn the_same_row_in_plain_tcp_is_still_found_and_tcp6_is_best_effort_for_an_ipv4_server() {
+    let src = Fixture([("tcp", Ok(tcp()))].into_iter().collect());
+    // No `tcp6` at all (a host without IPv6): the IPv4 row still answers.
+    assert_eq!(
+        peer_owner_uid(&src, addr("127.0.0.1:53924"), addr("127.0.0.1:8080")),
+        Ok(1001)
+    );
+    // An unreadable `tcp6` cannot turn a missing row into a match.
+    let bad6 = Fixture(
+        [
+            ("tcp", Ok(tcp())),
+            ("tcp6", Err(std::io::Error::other("x"))),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert_eq!(
+        peer_owner_uid(&bad6, addr("127.0.0.1:53924"), addr("127.0.0.1:8080")),
+        Ok(1001)
+    );
+    assert_eq!(
+        peer_owner_uid(&bad6, addr("127.0.0.1:1"), addr("127.0.0.1:8080")),
+        Err(UNKNOWN)
+    );
+}
+
+#[cfg(target_endian = "little")]
+#[test]
+fn rows_of_different_owners_for_one_connection_fail_closed() {
+    let t6 = format!(
+        "{HEAD}{}",
+        row6(
+            &format!("{MAPPED_LOOPBACK}:D2A4"),
+            &format!("{MAPPED_LOOPBACK}:1F90"),
+            9999
+        )
+    );
+    // `tcp()` has the 8080 <- 53924 row owned by 1001; give tcp6 the same pair with another uid.
+    let t6 = format!(
+        "{t6}{}",
+        row6(
+            &format!("{MAPPED_LOOPBACK}:1F90"),
+            &format!("{MAPPED_LOOPBACK}:D2A4"),
+            2222
+        )
+    );
+    let src = Fixture([("tcp", Ok(tcp())), ("tcp6", Ok(t6))].into_iter().collect());
+    assert_eq!(
+        peer_owner_uid(&src, addr("127.0.0.1:53924"), addr("127.0.0.1:8080")),
+        Err(UNKNOWN)
+    );
+    // The same uid twice is not a conflict.
+    let t6 = format!(
+        "{HEAD}{}",
+        row6(
+            &format!("{MAPPED_LOOPBACK}:1F90"),
+            &format!("{MAPPED_LOOPBACK}:D2A4"),
+            1001
+        )
+    );
+    let src = Fixture([("tcp", Ok(tcp())), ("tcp6", Ok(t6))].into_iter().collect());
+    assert_eq!(
+        peer_owner_uid(&src, addr("127.0.0.1:53924"), addr("127.0.0.1:8080")),
+        Ok(1001)
+    );
+}
+
+#[cfg(target_endian = "little")]
+#[test]
+fn an_ipv6_server_reads_tcp6_only_and_an_unreadable_own_table_fails_closed() {
+    // For `[::1]` only `tcp6` is searched: a `tcp` that would be unreadable does not matter.
+    let src = Fixture([("tcp6", Ok(tcp6()))].into_iter().collect());
+    assert_eq!(
+        peer_owner_uid(&src, addr("[::1]:50000"), addr("[::1]:8081")),
+        Ok(1002)
+    );
+    let none = Fixture([("tcp", Ok(tcp()))].into_iter().collect());
+    assert_eq!(
+        peer_owner_uid(&none, addr("[::1]:50000"), addr("[::1]:8081")),
+        Err(UNKNOWN)
+    );
+}
