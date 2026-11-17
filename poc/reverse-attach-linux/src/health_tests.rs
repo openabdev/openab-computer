@@ -319,23 +319,38 @@ exec sleep 30
 }
 
 #[test]
-fn a_child_that_drains_slowly_ends_the_check_by_the_deadline() {
-    // Page one names a cursor of 1 MiB; the child then takes its input a few KiB at a time, so the
-    // request for page two goes on making progress without ever finishing.
-    let script = r#"IFS= read -r line
-printf '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"Playwright"},"capabilities":{}}}\n'
-IFS= read -r line
-IFS= read -r line
-printf '{"jsonrpc":"2.0","id":2,"result":{"tools":[],"nextCursor":"'
-head -c 1048576 /dev/zero | tr '\0' a
-printf '"}}\n'
-while sleep 0.05; do head -c 4096 >/dev/null; done
-"#;
-    let started = Instant::now();
-    assert_eq!(run(script), Err(Failure::Check));
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
+fn a_sink_that_drains_slowly_is_not_written_to_after_the_deadline() {
+    // Each write accepts one byte and takes 20 ms, never returning WouldBlock. The write loop must
+    // still stop at the deadline instead of draining the whole line.
+    struct Slow {
+        end: Instant,
+        late: usize,
+        writes: usize,
+    }
+    impl std::io::Write for Slow {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            if Instant::now() >= self.end {
+                self.late += 1;
+            }
+            self.writes += 1;
+            std::thread::sleep(Duration::from_millis(20));
+            Ok(b.len().min(1))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let end = Instant::now() + Duration::from_millis(100);
+    let mut sink = Slow {
+        end,
+        late: 0,
+        writes: 0,
+    };
+    let line = vec![b'a'; 1000];
+    assert!(matches!(
+        super::write_before(&mut sink, &line, end),
+        Err(super::RpcError::Timeout)
+    ));
+    assert_eq!(sink.late, 0);
+    assert!(sink.writes < 20, "{}", sink.writes);
 }

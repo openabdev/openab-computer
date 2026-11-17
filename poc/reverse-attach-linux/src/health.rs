@@ -121,37 +121,44 @@ pub(crate) struct Rpc<'a> {
     pub(crate) next: u64,
 }
 
+/// Writes all of `rest` to a nonblocking sink, giving up at `end`. The deadline is checked before
+/// every write, not only after a refused one: a sink that takes a little at a time never fails.
+fn write_before(
+    sink: &mut impl std::io::Write,
+    mut rest: &[u8],
+    end: Instant,
+) -> Result<(), RpcError> {
+    use std::io::ErrorKind;
+    while !rest.is_empty() {
+        if crate::cancel::is_cancelled() {
+            return Err(RpcError::Cancelled);
+        }
+        if Instant::now() >= end {
+            return Err(RpcError::Timeout);
+        }
+        match sink.write(rest) {
+            Ok(0) => return Err(RpcError::Exited),
+            Ok(n) => rest = &rest[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(_) => return Err(RpcError::Exited),
+        }
+    }
+    Ok(())
+}
+
 impl Rpc<'_> {
     /// Writes one line before `end`. The pipe is made nonblocking and polled, so a child that stops
     /// reading its stdin cannot hold the caller past `end`, whatever the size of the line.
     fn send(&mut self, v: &Value, end: Instant) -> Result<(), RpcError> {
-        use std::io::{ErrorKind, Write};
         let stdin = self.child.stdin.as_mut().ok_or(RpcError::Exited)?;
         let mut line = v.to_string();
         line.push('\n');
         rustix::fs::fcntl_setfl(&*stdin, rustix::fs::OFlags::NONBLOCK)
             .map_err(|_| RpcError::Exited)?;
-        let mut rest = line.as_bytes();
-        while !rest.is_empty() {
-            if crate::cancel::is_cancelled() {
-                return Err(RpcError::Cancelled);
-            }
-            // Every iteration, not only after a refused write: a child that drains a little at a
-            // time never makes the write fail, and must still end by `end`.
-            if Instant::now() >= end {
-                return Err(RpcError::Timeout);
-            }
-            match stdin.write(rest) {
-                Ok(0) => return Err(RpcError::Exited),
-                Ok(n) => rest = &rest[n..],
-                Err(e) if e.kind() == ErrorKind::Interrupted => {}
-                Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-                Err(_) => return Err(RpcError::Exited),
-            }
-        }
-        Ok(())
+        write_before(stdin, line.as_bytes(), end)
     }
 
     pub(crate) fn notify(&mut self, method: &str) -> Result<(), RpcError> {
