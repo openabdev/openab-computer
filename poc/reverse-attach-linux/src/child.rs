@@ -278,7 +278,9 @@ impl Default for Spawner {
 
 /// A private directory with a short path for the child's `TMPDIR` (Chromium puts a Unix socket
 /// below it, and a socket path over about 100 bytes is refused). One fixed name per install root,
-/// so a directory a killed child left behind is found, and removed, by the next start.
+/// so a directory a killed child left behind is found, and removed, by the next start. The base is
+/// `XDG_RUNTIME_DIR` when that is a private directory of ours and `/tmp/oab-<euid>` (0700, ours)
+/// otherwise; see `state::open_private_base`.
 pub(crate) struct RuntimeTmp {
     parent: OwnedFd,
     name: String,
@@ -294,18 +296,9 @@ impl RuntimeTmp {
     /// starting it never removes the directory of a managed child that started a moment earlier:
     /// the profile lock decides who may run, and each side only ever touches its own directory.
     pub(crate) fn create_named(root_abs: &Path, prefix: &str) -> Result<RuntimeTmp, &'static str> {
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute() && p.as_os_str().len() <= 40 && p.is_dir());
-        let base = runtime.unwrap_or_else(|| PathBuf::from("/tmp"));
-        let parent = rustix::fs::open(
-            &base,
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|_| "tmp_unavailable")?;
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        let (parent, base) =
+            state::open_private_base(runtime.as_deref()).map_err(|_| "tmp_unavailable")?;
         let h = Sha256::digest(root_abs.as_os_str().as_encoded_bytes());
         let name = format!("{prefix}-{}", crate::manifest::hex(&h[..4]));
         let mut rep = state::Report::default();
