@@ -79,7 +79,7 @@ extension WizardCopy {
     /// `PlaywrightInstaller.remove()`: only items that carry the installer's marker, or that an `install.json`
     /// written by the installer owns. A foreign or unreadable `install.json`, and the profile, stay.
     public static func removalConfirmation(path: String, home: String = NSHomeDirectory()) -> String {
-        "This removes what this app installed in \(displayPath(path, home: home)). Version folders that carry this app's marker (Node.js, the Playwright MCP server and the downloaded Chromium) are removed even if install.json is unreadable, invalid or made by hand. The browser profile with its cookies and sign-ins, the output folder and install.json are removed only when a readable install.json written by this app confirms it created them. Anything else stays, and it does not touch Chrome, Safari or ~/.local/oab-computer/. Agents lose the browser tools until you install it again."
+        "This removes what this app installed in \(displayPath(path, home: home)). Version folders that carry this app's marker (Node.js, the Playwright MCP server and the downloaded Chromium) are removed even if install.json is unreadable, invalid or made by hand. The browser profile with its cookies and sign-ins, the output folder and install.json are removed only when a readable install.json written by this app confirms it created them. Anything else stays, and it does not touch Chrome, Safari or ~/.local/oab-computer/. Agents lose the browser tools until you install it again. If you had chosen your installed Google Chrome, that choice is removed too, and Chrome itself is left as it is."
     }
 
     public static let removalDone = "Playwright was removed."
@@ -147,6 +147,7 @@ extension WizardCopy {
         case .healthCheckFailed:
             return "The downloaded browser tools did not start. Nothing was installed."
         case .other(let c):
+            if let chrome = chromeFailureMessage(c) { return chrome }
             let safe = c.unicodeScalars.allSatisfy { ($0.value >= 97 && $0.value <= 122) || ($0.value >= 48 && $0.value <= 57) || $0 == "_" }
             return "Playwright could not be installed (\(safe && !c.isEmpty && c.count <= 64 ? c : "unknown"))."
         }

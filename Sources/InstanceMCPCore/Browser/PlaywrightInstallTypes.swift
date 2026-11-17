@@ -61,6 +61,8 @@ enum InstallLogEvent {
     case step(PlaywrightInstallStep)
     case installOK(id: String)
     case installFailed(String)
+    /// The install drives the user's installed Google Chrome instead of downloading Chromium.
+    case chromeInstall
     case updateRolledBack
     case removed
     case swept(Int)
@@ -70,6 +72,7 @@ enum InstallLogEvent {
         case .installStart(let id): return "browser: playwright_install_start id=\(Self.safe(id))"
         case .step(let s): return "browser: playwright_install_step step=\(s.rawValue)"
         case .installOK(let id): return "browser: playwright_install_ok id=\(Self.safe(id))"
+        case .chromeInstall: return "browser: playwright_install_engine engine=installed_chrome"
         case .installFailed(let c): return "browser: playwright_install_failed class=\(Self.safe(c))"
         case .updateRolledBack: return "browser: playwright_update_rolled_back"
         case .removed: return "browser: playwright_removed"

@@ -275,6 +275,8 @@ flowchart TB
     installed["Installed"]
     failed["Failed, message shown, Retry and Continue without offered"]
     without["Continued without, Playwright not installed"]
+    consent["Consent for the installed Chrome, nothing installed or recorded yet"]
+    chromeInstalled["Installed, driving the user's Chrome"]
     complete(["Page complete, the wizard advances"])
 
     start -- "nothing installed" --> pre
@@ -298,6 +300,30 @@ flowchart TB
     failed -- "user unchecks the box" --> declined
     failed -- "Continue without" --> without
     without --> complete
+    failed -- "launch refused and Chrome installed, Use my installed Google Chrome" --> consent
+    consent -- "Cancel" --> failed
+    consent -- "confirm, Chrome checked, Node and MCP installed" --> chromeInstalled
+    chromeInstalled --> complete
+```
+
+The Chrome states, from the next release after 0.12.0 (R7.3.1). The choice is a setting in `install.json`, not a separate install:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Downloaded
+    Downloaded: Downloaded Chromium (default, pinned)
+    Refused: macOS refused the downloaded Chromium
+    Consent: Consent step, nothing recorded
+    SystemChrome: Installed Google Chrome (not pinned, no digest)
+    Blocked: Chrome check failed, browser tools stopped
+    Downloaded --> Refused: launch refused
+    Refused --> Consent: Use my installed Google Chrome
+    Consent --> Refused: Cancel
+    Consent --> SystemChrome: confirm and the check passes
+    SystemChrome --> Blocked: missing, not Google, bad signature or too old
+    Blocked --> SystemChrome: Chrome passes the check again
+    SystemChrome --> Downloaded: Use the downloaded Chromium instead
+    SystemChrome --> [*]: Remove Playwright removes the setting
 ```
 
 Closing the window is not completion, so the page reopens from **Set up browser tools…**. After
@@ -444,11 +470,57 @@ Each failure offers **Retry**, and **Skip** or **Continue without** only after t
 | Not enough disk | preflight | "Not enough free space: needs X, has Y." | numbers |
 | Archive rejected | stage 1 of the extractor | "An archive had unsafe contents. Nothing was installed." | artifact name |
 | Node signature check fails | after extract, before first run | "The downloaded Node.js failed its signature check." | event |
-| Gatekeeper or launch refusal | health-check exit status or stderr class | "macOS would not run the downloaded browser." Retry, or, only if Google Chrome is installed, **Use my installed Chrome**. The app launches it with its own profile directory. This Chrome is not version-pinned or digest-checked by the app, and the user is told so | event and class |
+| Gatekeeper or launch refusal | health-check exit status or stderr class | "macOS would not run the downloaded browser." Retry, or, only if Google Chrome is installed, **Use my installed Chrome** (R7.3.1, from the next release after 0.12.0). The app launches it with its own profile directory. This Chrome is not version-pinned or digest-checked by the app, and the user is told so | event and class |
 | Lock held | `mkdir` fails 50 times | "Another install is running." | event |
 | Crash after install | supervisor | menu: "Playwright: failed, see log" | event and exit status |
 
 Log lines use the `browser:` prefix and never contain URLs with tokens or response bodies.
+
+##### R7.3.1 Use my installed Google Chrome (#128)
+
+Applies from the next release after 0.12.0. Decided answers: Q3 and Q5 of the ADR.
+
+- R7.3.1.1 **When it is offered.** The page footer and the menu offer it only when the last
+  install failed with launch refusal and `Google Chrome.app` exists in `/Applications` or
+  `~/Applications`. No other failure offers it, and it is never chosen by default, by Retry or on
+  a later failure.
+- R7.3.1.2 **Consent.** Choosing it checks Chrome read-only and shows a text that says: Playwright
+  drives the user's Chrome program with this app's own profile folder (`playwright/profile`), never the
+  user's Chrome profile; **this app does not pin Chrome's version and checks no digest of it**; what is
+  checked at install and on every start; that Node.js and the MCP server are downloaded and checked
+  against the built-in values and Chromium is not; that the app never copies, changes or deletes
+  Chrome. Nothing is installed, launched or recorded until the user confirms. Cancel returns to
+  the failure state unchanged. If the check fails, the reason is shown instead and there is no consent step.
+- R7.3.1.3 **What is accepted.** Only `Google Chrome.app` in `/Applications` or `~/Applications`, not a
+  symbolic link, whose `Info.plist` has bundle identifier `com.google.Chrome` and executable
+  `Google Chrome`, whose code (nested code included, strict validation, all architectures) satisfies
+  `identifier "com.google.Chrome" and anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "EQHXZ8M8AV"`
+  (Google LLC, Developer ID Application), and whose major version is at least 120. The floor of 120 is
+  this app's own choice, not a compatibility promise. The version is read from the bundle after the
+  signature check. A recorded path outside the two folders is refused before any check.
+- R7.3.1.4 **Install.** The usual install flow runs without the Chromium download, extraction and
+  digest: free disk is computed without it, the health check starts the MCP server against Chrome's
+  program headlessly, and `install.json` gets a `systemChrome` setting (path, version at consent,
+  time) and no Chromium revision or digest. The marker, ownership and compare-and-swap rules of R7.7
+  do not change.
+- R7.3.1.5 **Every start.** `locate()` runs the same check again before the child is launched
+  (an unchanged bundle is reused for 30 seconds), so a Chrome update is picked up with no restart and
+  a Chrome that is missing, replaced, unsigned or older than the floor stops the browser tools with
+  the classes `chrome_missing`, `chrome_not_google`, `chrome_invalid_signature`, `chrome_too_old` or
+  `chrome_unreadable`. There is no fall back to using it unchecked.
+- R7.3.1.6 **Launch vector.** The child gets `--browser chromium --executable-path <Chrome program>`
+  and `--user-data-dir <root>/profile`, the same vector as the downloaded Chromium with another
+  executable. The user's Chrome profile never appears in it.
+- R7.3.1.7 **Status.** The menu shows "Browser: your installed Google Chrome <version> (not pinned, no
+  digest checked)" and the backend reports `chrome: system <version>` (version read from the bundle) in
+  `sys_info`. Updates keep the chosen browser. **Use the downloaded Chromium instead…** runs the normal
+  install and, only if it succeeds, replaces the setting; a failed switch leaves the Chrome choice working.
+- R7.3.1.8 **Remove.** Removes the setting with `install.json` under the rules of R7.7. Chrome, its
+  profile and its bundle are never copied, moved, changed or deleted by the app, and
+  `com.apple.quarantine` is never set or removed.
+- R7.3.1.9 **Logs.** `browser: chrome_consent_shown`, `chrome_consent_cancelled`,
+  `chrome_consent_confirmed`, `chrome_check_failed class=<chrome class>`, `chrome_switch_back` and
+  `playwright_install_engine engine=installed_chrome`. No paths or URLs.
 
 #### R7.4 Running it
 

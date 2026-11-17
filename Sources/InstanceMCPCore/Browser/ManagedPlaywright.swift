@@ -16,15 +16,27 @@ public struct ManagedLaunchSpec: Equatable, Sendable {
 /// Inside `<root>/<version>/`: `node/bin/node` and `pkg/node_modules/@playwright/mcp/cli.js`.
 public struct ManagedPlaywrightLocator: Sendable {
     public let root: URL
+    /// Checks the user's Chrome when `install.json` records that the user chose it. Never used otherwise.
+    public let chrome: any InstalledChromeChecking
 
-    public init(root: URL) { self.root = root }
+    public init(root: URL, chrome: any InstalledChromeChecking = InstalledChromeChecker()) {
+        self.root = root; self.chrome = chrome
+    }
 
     public static var defaultRoot: URL {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/oab-computer/playwright", isDirectory: true)
     }
 
-    private struct Manifest: Decodable { let version: String; let chromiumExecutable: String }
+    private struct Manifest: Decodable { let version: String; let chromiumExecutable: String; let systemChrome: SystemChromeRecord? }
+
+    /// `chrome: system` with the live bundle version when `install.json` records the user's Chrome; nil otherwise.
+    /// Reads the record and the bundle's Info.plist only; the signature is checked by `locate()`.
+    public func systemChromeSummary() -> BrowserEngineSummary? {
+        guard let data = try? Data(contentsOf: root.appendingPathComponent("install.json")),
+              let m = try? JSONDecoder().decode(Manifest.self, from: data), let choice = m.systemChrome else { return nil }
+        return .systemChrome(version: chrome.displayVersion(appPath: choice.appPath))
+    }
 
     public func locate() -> Result<ManagedLaunchSpec, PlaywrightTransportError> {
         let fm = FileManager.default
@@ -46,8 +58,19 @@ public struct ManagedPlaywrightLocator: Sendable {
             return u.path
         }
         guard let node = inside("node/bin/node", executable: true),
-              let cli = inside("pkg/node_modules/@playwright/mcp/cli.js", executable: false),
-              let chromium = inside(m.chromiumExecutable, executable: true) else { return invalid }
+              let cli = inside("pkg/node_modules/@playwright/mcp/cli.js", executable: false) else { return invalid }
+        let chromium: String
+        if let choice = m.systemChrome {
+            // The user's own Chrome, chosen with consent. It is checked again here, on every start: a Chrome that
+            // was replaced, downgraded below the floor or lost its signature stops being used until it passes.
+            switch chrome.check(appPath: choice.appPath) {
+            case .success(let c): chromium = c.executablePath
+            case .failure(let problem): return .failure(.init(errorClass: problem.errorClass))
+            }
+        } else {
+            guard let c = inside(m.chromiumExecutable, executable: true) else { return invalid }
+            chromium = c
+        }
         let profile = root.appendingPathComponent("profile").path
         let output = root.appendingPathComponent("output").path
         for d in [profile, output] {

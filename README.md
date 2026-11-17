@@ -137,8 +137,10 @@ The accessibility-tree tools are macOS only for now; Linux is deferred
   [#16](https://github.com/openabdev/openab-sb/pull/16)).
 - Browser tools use one persistent browser profile per computer, with its cookies and logins.
 - The browser router in 0.12.0 has only the Playwright backend. The Apple Events tier is not built,
-  and neither is the "use my installed Chrome" fallback if macOS refuses the downloaded Chromium
-  ([#128](https://github.com/openabdev/openab-computer/issues/128)).
+  and neither is the "use my installed Chrome" fallback if macOS refuses the downloaded Chromium.
+  That fallback applies from the next release after 0.12.0
+  ([#128](https://github.com/openabdev/openab-computer/issues/128)): your Chrome is then not
+  version-pinned and not digest-checked by the app (see [What the app downloads](#what-the-app-downloads)).
 - Linux in 0.12.0 and earlier has no managed browser tier: Playwright there is an external unit on
   `127.0.0.1:8794`. The managed tier ([#119](https://github.com/openabdev/openab-computer/issues/119),
   [ADR](docs/adr/linux-browser-tier.md)) comes in releases after 0.12.0; the tarball's installer and
@@ -361,6 +363,20 @@ unpacked size. It is not the 593 MB figure: that is what remains afterwards.
   which is why the lockfile allows no other host.
 - The app never adds or removes `com.apple.quarantine`. If macOS refuses to run the downloaded
   browser, the install stops with that message.
+- **After 0.12.0 (applies from the next release):** if the stop was macOS refusing the downloaded
+  Chromium and Google Chrome is installed, the page and the menu also offer **Use my installed Google
+  Chrome**. It asks first. Playwright then drives your Chrome program with this app's own browser
+  profile (`playwright/profile`), never your Chrome profile. Only Node.js and the Playwright MCP
+  server are downloaded and checked as above; **Chromium is not downloaded, and your Chrome is not
+  version-pinned and no digest of it is checked by the app**, so whatever version you have is what
+  agents drive, including after Chrome updates itself. What the app does check, at install and
+  again on every start: the app is `Google Chrome.app` in `/Applications` or `~/Applications`
+  (not a link, not Chromium, Chrome Beta or another fork), it carries Google LLC's code signature
+  (requirement `identifier "com.google.Chrome"`, an Apple-rooted chain, a Developer ID Application
+  leaf and team `EQHXZ8M8AV`), and its major version is 120 or newer. If a check fails the browser tools stop
+  until it passes. The choice is stored in `install.json`; the menu shows it with the version read
+  from the Chrome bundle and a way back to the downloaded Chromium. Remove Playwright removes that
+  choice as a setting. The app never copies, moves, changes or deletes Chrome, and never touches its profile.
 - The Chromium it installs is a browser: the connections it makes while running (the pages it opens, and any background service Chrome for Testing contacts) are Chromium's, not the installer's, and the app does not bound them. On the pinned build it opened no listening TCP or UDP socket, and it exits when its stdin closes.
 - The install adds no LaunchAgent and no listener. An update is only ever offered, never applied
   silently. Removing Playwright deletes the version folders that carry the installer's marker (even when `install.json` is unreadable, invalid or hand-made), and also the browser profile and its cookies when the installer's own, readable `install.json` confirms it created that profile (a profile or output folder that already existed is never used: install stops and leaves it alone). A hand-made `install.json` is never replaced or removed: install refuses and remove leaves it alone (a version folder carrying the installer's marker is still removed). An `install.json` that is unreadable or invalid proves nothing, so remove leaves it and the profile and output folder too, even if this app created them.
@@ -678,7 +694,9 @@ Playwright's tools under its own `tools/list`, filtered by the connection's prof
   the browser profile and its cookies when the app's own readable `install.json` confirms it created that profile. A hand-made, unreadable or invalid
   `install.json` and what it points to stay, and the app then says it removed only part; Chrome,
   Safari and `~/.local/oab-computer/` are never touched), and **Open Playwright
-  window to sign in…**. With `--upstream browser=…` the page and the menu items (except sign-in) are still offered,
+  window to sign in…**. After 0.12.0 (applies from the next release), after macOS refuses the
+  downloaded Chromium the page and the menu add **Use my installed Google Chrome…**, and while it is in
+  use the menu adds **Use the downloaded Chromium instead…**. With `--upstream browser=…` the page and the menu items (except sign-in) are still offered,
   with a note that the external provider is used first in Automatic mode. A launch with every
   permission granted opens the Browser tools page until it has been completed once. Opening the
   menu reads `install.json` and checks the installed files, and starts nothing. The installer

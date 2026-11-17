@@ -37,7 +37,7 @@ only the first slot exists.
 | Playwright (Tier P) | `@playwright/mcp` driving Chromium. Managed or external. | Built on macOS. Linux has both forms after 0.12.0, and the external form only before |
 | Apple Events (Tier A) | Drive Safari or Chrome through Apple Events, no download | Not built. A call that asks for `appleEvents` answers "not set up" |
 | CDP (Tier C) | Attach to a browser over the DevTools protocol | Not built |
-| Installed-Chrome fallback | Use your own Chrome when macOS refuses the downloaded Chromium | Not built ([#128](https://github.com/openabdev/openab-computer/issues/128)) |
+| Installed-Chrome fallback | Use your own Chrome when macOS refuses the downloaded Chromium | Not in 0.12.0. Applies from the next release ([#128](https://github.com/openabdev/openab-computer/issues/128)) |
 
 A caller can send an `OAB-Browser-Backend` request header with `auto`, `playwright` or `appleEvents`.
 Only direct `/mcp` requests are read for it; switchboard and reverse-attach callers use the stored
@@ -82,6 +82,42 @@ full list of what the app fetches and never does is in the README
 
 An install takes effect on the next `browser_*` call with no restart. With nothing installed the
 browser tools are not listed, and a call says Playwright is not installed.
+
+### If macOS refuses the downloaded Chromium (after 0.12.0)
+
+This applies from the next release after 0.12.0. In 0.12.0 the install stops with the message
+"macOS would not run the downloaded browser" and offers Retry only.
+
+When the install stops for that reason and Google Chrome is installed, the page offers **Retry**,
+**Continue without** and **Use my installed Google Chrome**. The menu offers **Use my installed
+Google Chrome…** next to **Install Playwright…**. With any other failure (offline, a digest
+mismatch, not enough disk) or without Chrome, it is never offered.
+
+It asks first. The text says what changes, and nothing is installed or recorded until you confirm;
+Cancel leaves the page as it was.
+
+- Playwright drives your Chrome program, but with this app's own profile folder
+  (`~/Library/Application Support/oab-computer/playwright/profile`), never your Chrome profile. A
+  Chrome you have open keeps running on its own profile.
+- **Your Chrome is not version-pinned and no digest of it is checked by the app.** Whatever version is
+  installed is what agents drive, including after Chrome updates itself.
+- Only Node.js and the Playwright MCP server are downloaded, checked against the values built into the
+  app as for a normal install. Chromium is not downloaded.
+- At install and on every start the app checks that it is `Google Chrome.app` in `/Applications` or
+  `~/Applications` (not a link, not Chromium, Chrome Beta or another fork), signed by Google LLC (a
+  Developer ID Application certificate with team `EQHXZ8M8AV`, checked with the Security framework,
+  nested code included), and version 120 or newer. A failed check stops the browser tools and the menu
+  says why (`chrome_missing`, `chrome_not_google`, `chrome_invalid_signature`, `chrome_too_old`,
+  `chrome_unreadable`); they work again once Chrome passes. A Chrome update is picked up on the next
+  call with no restart, and the check runs again; it is never skipped.
+- The choice is stored in `install.json`, so it survives a restart. The menu then shows
+  **Browser: your installed Google Chrome <version> (not pinned, no digest checked)**, and `sys_info`
+  shows `chrome: system <version>` for the backend. **Use the downloaded Chromium instead…** downloads
+  and checks the pinned Chromium and switches to it; if that fails, your Chrome choice keeps working.
+- An update keeps the chosen browser and downloads no Chromium.
+- **Remove Playwright…** removes the choice as a setting along with `install.json`. The app never
+  copies, moves, changes or deletes Chrome, never touches its profile, and still never adds or removes
+  `com.apple.quarantine`.
 
 ### Update
 
@@ -194,8 +230,12 @@ The Linux external pass-through is described in [Tool profiles](tool-profiles.md
 - **"Browser tools are not set up"** (macOS): install Playwright from the wizard, or pass
   `--upstream browser=…`. The menu row names the state.
 - **macOS refuses to run the downloaded Chromium:** the install stops with that message. The app never
-  adds or removes the `com.apple.quarantine` attribute, and the installed-Chrome fallback is not built
-  ([#128](https://github.com/openabdev/openab-computer/issues/128)).
+  adds or removes the `com.apple.quarantine` attribute. From the next release after 0.12.0 it also
+  offers **Use my installed Google Chrome** ([#128](https://github.com/openabdev/openab-computer/issues/128),
+  [above](#if-macos-refuses-the-downloaded-chromium-after-0120)); 0.12.0 offers Retry only.
+- **The browser tools stopped and the menu names a `chrome_…` code** (after 0.12.0): the installed
+  Chrome you chose no longer passes its check. Reinstall or update Google Chrome, or choose **Use the
+  downloaded Chromium instead…**.
 - **No `browser_*` tools on Linux:** run `~/.local/oab-computer/oab-computer browser status` (the binary is not on `PATH`; later `oab-computer` commands here mean that path) and read `sys_info.browser`. `not_installed` means run
   `oab-computer browser install`; `containment_unverified` means this host has no working user
   manager, and the managed browser will not start without one; `off` means `OAB_BROWSER=off`. On an

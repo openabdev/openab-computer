@@ -157,9 +157,11 @@ public struct NetworkBrowser: Equatable, Sendable {
     public var playwrightText: String? {
         guard let e = playwright else { return nil }
         switch (e.state, e.errorClass) {
-        case ("ready", _): return "Playwright ready"
+        case ("ready", _): return "Playwright ready" + (e.engine.map { " (\($0))" } ?? "")
         case ("needs_setup", "playwright_not_installed"?): return "Playwright not installed"
         case ("needs_setup", "playwright_install_invalid"?): return "Playwright install not usable"
+        case ("needs_setup", let c?) where InstalledChromeProblem.classes.contains(c):
+            return "Playwright cannot use your Chrome (\(c))"
         case (_, let c?): return "Playwright unavailable (\(c))"
         default: return "Playwright unavailable"
         }
@@ -311,6 +313,8 @@ public struct PlaywrightMenuItem: Equatable, Sendable {
         /// A disabled text line.
         case line
         case setUp, install, update, remove, signIn, cancelInstall
+        /// **Use my installed Google Chrome…** (after macOS refused the downloaded Chromium) and its way back.
+        case useChrome, useDownloaded
     }
     public let kind: Kind
     public let title: String
@@ -325,7 +329,8 @@ extension MenuModel {
     /// `installing` carries the progress of an install that is running now (nil while idle).
     public static func playwrightMenu(state: PlaywrightInstallState, plan: PlaywrightInstallPlan,
                                       installing: PlaywrightInstallProgress??, lastFailed: Bool,
-                                      externalProvider: Bool = false) -> [PlaywrightMenuItem] {
+                                      externalProvider: Bool = false, chromeOffered: Bool = false,
+                                      engine: BrowserEngine? = nil, chromeVersion: String? = nil) -> [PlaywrightMenuItem] {
         var items = [PlaywrightMenuItem(.setUp, WizardCopy.browserSetUpMenu)]
         if let progress = installing {
             let pct = progress?.fraction.map { " \(Int(min(max($0, 0), 1) * 100))%" } ?? ""
@@ -338,11 +343,18 @@ extension MenuModel {
             if lastFailed { items.append(PlaywrightMenuItem(.line, "Playwright: the last install did not finish")) }
             items.append(PlaywrightMenuItem(.install, WizardCopy.browserInstallMenu,
                                             tip: "Downloads Node.js, the Playwright MCP server and Chromium after you confirm."))
+            if chromeOffered {
+                items.append(PlaywrightMenuItem(.useChrome, WizardCopy.browserUseChromeMenu, tip: WizardCopy.browserUseChromeTip))
+            }
         case .invalid:
             items.append(PlaywrightMenuItem(.line, "Playwright: install not usable"))
             items.append(PlaywrightMenuItem(.install, WizardCopy.browserInstallMenu))
             items.append(PlaywrightMenuItem(.remove, WizardCopy.browserRemoveMenu))
         case .installed(let id, let updateAvailable, let stale):
+            if engine == .installedChrome {
+                items.append(PlaywrightMenuItem(.line, WizardCopy.chromeStatusLine(version: chromeVersion)))
+                items.append(PlaywrightMenuItem(.useDownloaded, WizardCopy.browserUseDownloadedMenu, tip: WizardCopy.browserUseDownloadedTip))
+            }
             // With `--upstream browser=` the sign-in call would reach the external browser, not the managed one.
             if !externalProvider {
                 items.append(PlaywrightMenuItem(.signIn, WizardCopy.browserSignInMenu,

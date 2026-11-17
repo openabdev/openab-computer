@@ -51,7 +51,10 @@ Things that are new in 0.12.0 and are worth knowing before you install:
   control the mapping afterwards (the menu item **Allow tailnet access…** turns it on).
 - **macOS browser tools are managed by the app.** The wizard offers to install Playwright
   (about 249 MB download, about 593 MB installed, about 842 MB free space needed while it runs on Apple silicon).
-  See [Browser tools](browser-tools.md).
+  See [Browser tools](browser-tools.md). If macOS refuses the downloaded Chromium, 0.12.0 stops the
+  install; from the next release after 0.12.0 the wizard and menu then offer **Use my installed Google
+  Chrome**, which the app does not pin or check against a digest
+  ([details](browser-tools.md#if-macos-refuses-the-downloaded-chromium-after-0120)).
 - **macOS permissions are asked again** (next section).
 
 ## How the upgrade flows

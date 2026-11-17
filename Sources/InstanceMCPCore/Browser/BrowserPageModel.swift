@@ -34,7 +34,15 @@ public struct BrowserPageModel: Equatable, Sendable {
         case installed(updateAvailable: Bool)
     }
 
-    public private(set) var phase: Phase
+    public private(set) var phase: Phase {
+        didSet { if case .failed = phase {} else { chromeConsentOpen = false } }
+    }
+    /// A Google Chrome.app exists in an allowed folder. Set by the controller; the model does no I/O.
+    public private(set) var chromeDetected = false
+    /// The consent step for the installed Chrome is showing. Nothing is installed or recorded while it is.
+    public private(set) var chromeConsentOpen = false
+    /// What is installed drives the user's installed Google Chrome (not pinned, no digest), not the downloaded Chromium.
+    public private(set) var usesInstalledChrome = false
     /// The Playwright box. Pre-checked unless Playwright is already installed (R5.8).
     public private(set) var checked: Bool
 
@@ -62,6 +70,8 @@ public struct BrowserPageModel: Equatable, Sendable {
         /// Hidden once Playwright is installed: the "Installed" status replaces the box.
         public let showsCheckbox: Bool
         public let showsSignIn: Bool
+        /// **Use my installed Chrome**: only after macOS refused the downloaded browser, and only when Chrome is installed.
+        public var showsUseInstalledChrome: Bool = false
     }
 
     public var footer: Footer {
@@ -72,9 +82,11 @@ public struct BrowserPageModel: Equatable, Sendable {
         case .installing:
             return Footer(continueEnabled: false, showsContinue: true, showsCancel: true, showsRetry: false,
                           showsContinueWithout: false, checkboxEnabled: false, showsCheckbox: true, showsSignIn: false)
-        case .failed:
-            return Footer(continueEnabled: false, showsContinue: false, showsCancel: false, showsRetry: true,
-                          showsContinueWithout: true, checkboxEnabled: true, showsCheckbox: true, showsSignIn: false)
+        case .failed(let f):
+            var footer = Footer(continueEnabled: false, showsContinue: false, showsCancel: false, showsRetry: true,
+                                showsContinueWithout: true, checkboxEnabled: true, showsCheckbox: true, showsSignIn: false)
+            footer.showsUseInstalledChrome = f == .launchRefused && chromeDetected
+            return footer
         case .installed:
             return Footer(continueEnabled: true, showsContinue: true, showsCancel: false, showsRetry: false,
                           showsContinueWithout: false, checkboxEnabled: false, showsCheckbox: false, showsSignIn: !externalProvider)
@@ -85,6 +97,30 @@ public struct BrowserPageModel: Equatable, Sendable {
 
     /// The failure to show, if the last install failed.
     public var failure: PlaywrightInstallFailure? { if case .failed(let f) = phase { return f }; return nil }
+
+    public mutating func setChromeDetected(_ value: Bool) { chromeDetected = value }
+    public mutating func setUsesInstalledChrome(_ value: Bool) { usesInstalledChrome = value }
+
+    /// **Use my installed Chrome** was pressed. It only opens the consent step: nothing is checked, launched or recorded
+    /// here. False when the button is not on offer.
+    public mutating func useInstalledChromePressed() -> Bool {
+        guard footer.showsUseInstalledChrome else { return false }
+        chromeConsentOpen = true
+        return true
+    }
+
+    /// Cancel in the consent step: the failure state is exactly as it was.
+    public mutating func chromeConsentCancelled() { chromeConsentOpen = false }
+
+    /// Confirm in the consent step. True when an install that drives the installed Chrome may start now; the model is then
+    /// in `.installing`. Without an open consent step, or when the offer is gone, nothing starts.
+    public mutating func chromeConsentConfirmed() -> Bool {
+        guard chromeConsentOpen, footer.showsUseInstalledChrome else { chromeConsentOpen = false; return false }
+        chromeConsentOpen = false
+        checked = true
+        phase = .installing(nil)
+        return true
+    }
 
     /// The checkbox. Ignored while an install runs or once Playwright is installed. Changing it after a failure
     /// clears the failure: unchecking is then a plain decline.

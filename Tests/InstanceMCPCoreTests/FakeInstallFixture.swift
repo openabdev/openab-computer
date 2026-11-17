@@ -178,7 +178,8 @@ final class FakeInstallFixture {
                    freeDisk: @escaping @Sendable (URL) -> Int64 = { _ in Int64.max / 4 },
                    lockTries: Int = 50, npmTimeout: TimeInterval = 30, healthTimeout: TimeInterval = 20,
                    now: @escaping @Sendable () -> Date = { Date() },
-                   downloader: (any ArtifactDownloader)? = nil, lockfile: String? = nil) -> PlaywrightInstaller {
+                   downloader: (any ArtifactDownloader)? = nil, lockfile: String? = nil,
+                   chromeChecker: any InstalledChromeChecking = InstalledChromeChecker()) -> PlaywrightInstaller {
         let man = m ?? manifest!
         return PlaywrightInstaller(
             root: root, manifest: man, archProvider: FixedArch(.arm64),
@@ -186,7 +187,7 @@ final class FakeInstallFixture {
             verifier: verifier, packageJSON: packageJSON, lockfileJSON: lockfile ?? lockfileJSON, allowLoopbackHTTP: true,
             freeDisk: freeDisk, now: now, lockTries: lockTries, lockInterval: 20_000_000, npmTimeout: npmTimeout,
             healthTimeout: healthTimeout, stopManaged: stop, verifyServing: serving, onRemoved: removed,
-            log: { l in logs.value += [l] })
+            log: { l in logs.value += [l] }, chromeChecker: chromeChecker)
     }
 }
 

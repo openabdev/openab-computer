@@ -28,6 +28,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
     private let verifyServing: @Sendable () async -> Bool
     private let onRemoved: @Sendable () -> Void
     private let log: @Sendable (String) -> Void
+    let chromeChecker: any InstalledChromeChecking
 
     private let stateLock = NSLock()
     private var current: Task<Result<PlaywrightInstallState, PlaywrightInstallFailure>, Never>?
@@ -38,7 +39,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
                                 stopManaged: @escaping @Sendable () async -> Void,
                                 verifyServing: @escaping @Sendable () async -> Bool,
                                 onRemoved: @escaping @Sendable () -> Void,
-                                log: @escaping @Sendable (String) -> Void) -> PlaywrightInstaller {
+                                log: @escaping @Sendable (String) -> Void,
+                                chromeChecker: any InstalledChromeChecking = InstalledChromeChecker()) -> PlaywrightInstaller {
         let m = PlaywrightManifest.embedded
         return PlaywrightInstaller(root: root, manifest: m, archProvider: SystemArchProvider(),
                                    downloader: URLSessionArtifactDownloader(policy: .production(manifest: m)),
@@ -46,7 +48,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
                                    packageJSON: PlaywrightPins.packageJSON, lockfileJSON: PlaywrightPins.lockfileJSON,
                                    allowLoopbackHTTP: false, freeDisk: { PlaywrightInstaller.systemFreeDisk($0) }, now: { Date() },
                                    lockTries: 50, lockInterval: 100_000_000, npmTimeout: 600, healthTimeout: 60,
-                                   stopManaged: stopManaged, verifyServing: verifyServing, onRemoved: onRemoved, log: log)
+                                   stopManaged: stopManaged, verifyServing: verifyServing, onRemoved: onRemoved, log: log,
+                                   chromeChecker: chromeChecker)
     }
 
     init(root: URL, manifest: PlaywrightManifest, archProvider: any ArchProvider, downloader: any ArtifactDownloader,
@@ -54,7 +57,9 @@ public final class PlaywrightInstaller: @unchecked Sendable {
          freeDisk: @escaping @Sendable (URL) -> Int64, now: @escaping @Sendable () -> Date,
          lockTries: Int, lockInterval: UInt64, npmTimeout: TimeInterval, healthTimeout: TimeInterval,
          stopManaged: @escaping @Sendable () async -> Void, verifyServing: @escaping @Sendable () async -> Bool,
-         onRemoved: @escaping @Sendable () -> Void, log: @escaping @Sendable (String) -> Void) {
+         onRemoved: @escaping @Sendable () -> Void, log: @escaping @Sendable (String) -> Void,
+         chromeChecker: any InstalledChromeChecking = InstalledChromeChecker()) {
+        self.chromeChecker = chromeChecker
         self.root = root; self.manifest = manifest; self.archProvider = archProvider; self.downloader = downloader
         self.verifier = verifier; self.packageJSON = packageJSON; self.lockfileJSON = lockfileJSON
         self.allowLoopbackHTTP = allowLoopbackHTTP; self.freeDisk = freeDisk; self.now = now
@@ -90,7 +95,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         guard fm.fileExists(atPath: base.path, isDirectory: &isDir), isDir.boolValue,
               fm.isExecutableFile(atPath: base.appendingPathComponent("node/bin/node").path),
               fm.fileExists(atPath: base.appendingPathComponent("pkg/node_modules/@playwright/mcp/cli.js").path),
-              fm.isExecutableFile(atPath: base.appendingPathComponent(rec.chromiumExecutable).path) else { return .invalid }
+              rec.systemChrome != nil || fm.isExecutableFile(atPath: base.appendingPathComponent(rec.chromiumExecutable).path) else { return .invalid }
         var stale = false
         if let installed = rec.chromiumReleasedAt.flatMap(PlaywrightManifest.parseDay),
            let latest = PlaywrightManifest.parseDay(manifest.chromium.releasedAt) {
@@ -99,13 +104,38 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         return .installed(id: rec.version, updateAvailable: rec.version != manifest.id, stale: stale)
     }
 
-    /// One flow for a first install and for an update.
-    public func install(progress: @escaping @Sendable (PlaywrightInstallProgress) -> Void)
+    /// Which browser the installed record drives, or nil when nothing usable is installed.
+    public func selectedEngine() -> BrowserEngine? {
+        guard case .installed = state(), let r = readRecord() else { return nil }
+        return r.systemChrome != nil ? .installedChrome : .downloadedChromium
+    }
+
+    /// The installed-Chrome choice stored in the record: the path and the version at consent (not the live version).
+    public func installedChromeSelection() -> (appPath: String, versionAtConsent: String)? {
+        guard case .installed = state(), let c = readRecord()?.systemChrome else { return nil }
+        return (c.appPath, c.versionAtConsent)
+    }
+
+    /// A Google Chrome.app exists in /Applications or ~/Applications (no signature check).
+    public func installedChromeDetected() -> Bool { chromeChecker.isInstalled() }
+
+    /// The full check the install and every start run: location, bundle identity, Google LLC signature, minimum version.
+    public func checkInstalledChrome() -> Result<InstalledChrome, InstalledChromeProblem> { chromeChecker.check() }
+
+    /// The version in the Chrome bundle now (no signature check), for a status line.
+    public func installedChromeLiveVersion() -> String? {
+        installedChromeSelection().flatMap { chromeChecker.displayVersion(appPath: $0.appPath) }
+    }
+
+    /// One flow for a first install and for an update. With `.installedChrome` the Chromium is not downloaded: the
+    /// Node.js and the MCP server are installed and checked as usual, and the health check drives the user's Chrome.
+    public func install(engine: BrowserEngine = .downloadedChromium,
+                        progress: @escaping @Sendable (PlaywrightInstallProgress) -> Void)
         async -> Result<PlaywrightInstallState, PlaywrightInstallFailure> {
         // One install at a time in this process, so `cancel()` always reaches the running one.
         let started: Task<Result<PlaywrightInstallState, PlaywrightInstallFailure>, Never>? = stateLock.withLock {
             if current != nil { return nil }
-            let t = Task { await self.runInstall(progress) }
+            let t = Task { await self.runInstall(engine, progress) }
             current = t
             return t
         }
@@ -247,7 +277,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
     // MARK: install.json
 
-    struct Digests: Codable { let node: String; let chromium: String; let lockfile: String }
+    struct Digests: Codable { let node: String; let chromium: String?; let lockfile: String }
     struct Record: Codable {
         var version: String
         var chromiumExecutable: String
@@ -258,6 +288,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         var installedAt: String?
         var previous: String?
         var digests: Digests?
+        /// Set only after the user agreed to drive their installed Google Chrome. Not pinned, no digest.
+        var systemChrome: SystemChromeRecord?
     }
 
     /// A record is the installer's own only if `manifestId` names its version AND that version directory
@@ -380,11 +412,12 @@ public final class PlaywrightInstaller: @unchecked Sendable {
 
     // MARK: the flow
 
-    private func runInstall(_ progress: @escaping @Sendable (PlaywrightInstallProgress) -> Void)
+    private func runInstall(_ engine: BrowserEngine, _ progress: @escaping @Sendable (PlaywrightInstallProgress) -> Void)
         async -> Result<PlaywrightInstallState, PlaywrightInstallFailure> {
         emit(.installStart(id: manifest.id))
+        if engine == .installedChrome { emit(.chromeInstall) }
         do {
-            let s = try await doInstall(progress)
+            let s = try await doInstall(engine, progress)
             emit(.installOK(id: manifest.id))
             return .success(s)
         } catch let f as PlaywrightInstallFailure {
@@ -412,7 +445,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         }
     }
 
-    private func doInstall(_ progress: @escaping @Sendable (PlaywrightInstallProgress) -> Void) async throws -> PlaywrightInstallState {
+    private func doInstall(_ engine: BrowserEngine, _ progress: @escaping @Sendable (PlaywrightInstallProgress) -> Void) async throws -> PlaywrightInstallState {
         guard manifest.validate(allowLoopbackHTTP: allowLoopbackHTTP).isEmpty,
               manifest.validateEmbeddedFiles(packageJSON: packageJSON, lockfileJSON: lockfileJSON).isEmpty else {
             throw PlaywrightInstallFailure.other("manifest_invalid")
@@ -421,6 +454,14 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         guard let nodeArt = manifest.nodeArtifact(arch), let crArt = manifest.chromiumArtifact(arch),
               let crExec = crArt.executable else { throw PlaywrightInstallFailure.other("manifest_invalid") }
         try step(.preflight, nil, progress)
+        // The user's Chrome is checked before anything is downloaded: location, identity, signature, version.
+        var chrome: InstalledChrome?
+        if engine == .installedChrome {
+            switch chromeChecker.check() {
+            case .success(let c): chrome = c
+            case .failure(let p): throw PlaywrightInstallFailure.other(p.errorClass)
+            }
+        }
         let lockFD = try await acquireLock()
         defer { releaseLock(lockFD) }
         // Before any download: foreign profile/output data stops the install now.
@@ -435,10 +476,20 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         // The install.json as it was when the install began: the commit replaces exactly this, or nothing.
         let initialBytes = try? Data(contentsOf: root.appendingPathComponent("install.json"))
         let before = state()
-        if case .installed(let id, _, _) = before, id == manifest.id { return before }
+        // Already installed with the same browser: nothing to do. A different browser is a change of choice.
+        let beforeRecord = readRecord()
+        let sameEngine: Bool = {
+            switch engine {
+            case .downloadedChromium: return beforeRecord?.systemChrome == nil
+            case .installedChrome: return beforeRecord?.systemChrome?.appPath == chrome?.appPath
+            }
+        }()
+        if case .installed(let id, _, _) = before, id == manifest.id, sameEngine { return before }
 
         // Preflight: free disk at least three times the download (or what the install may use).
-        let needed = max(Int64(manifest.freeDiskFactor) * manifest.downloadBytes(arch), manifest.diskBytes(arch))
+        let withChromium = engine == .downloadedChromium
+        let needed = withChromium ? max(Int64(manifest.freeDiskFactor) * manifest.downloadBytes(arch), manifest.diskBytes(arch))
+            : max(Int64(manifest.freeDiskFactor) * manifest.downloadBytesWithoutChromium(arch), manifest.diskBytesWithoutChromium(arch))
         let available = freeDisk(root)
         if available < needed { throw PlaywrightInstallFailure.notEnoughDisk(needed: needed, available: available) }
 
@@ -459,7 +510,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         // Download and verify, size then digest, into staging.
         let nodeFile = dl.appendingPathComponent("node.tar.gz")
         let crFile = dl.appendingPathComponent("chromium.zip")
-        for (s, art, file) in [(PlaywrightInstallStep.downloadNode, nodeArt, nodeFile), (.downloadChromium, crArt, crFile)] {
+        let downloads = [(PlaywrightInstallStep.downloadNode, nodeArt, nodeFile), (.downloadChromium, crArt, crFile)]
+        for (s, art, file) in withChromium ? downloads : Array(downloads.prefix(1)) {
             try step(s, 0, progress)
             guard let url = URL(string: art.url) else { throw PlaywrightInstallFailure.other("manifest_invalid") }
             let total = Double(art.size)
@@ -479,7 +531,8 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         let nodeDir = staging.appendingPathComponent("node", isDirectory: true)
         let crDir = staging.appendingPathComponent("chromium", isDirectory: true)
         try await blocking {
-            for (file, art, dir, format) in [(nodeFile, nodeArt, nodeDir, ArchiveFormat.tarGz), (crFile, crArt, crDir, .zip)] {
+            let all = [(nodeFile, nodeArt, nodeDir, ArchiveFormat.tarGz), (crFile, crArt, crDir, .zip)]
+            for (file, art, dir, format) in withChromium ? all : Array(all.prefix(1)) {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
                 let plan = try SafeArchiveExtractor.validate(file: file, format: format, limits: ArchiveLimits(art))
                 try SafeArchiveExtractor.extract(plan, from: file, into: dir)
@@ -510,7 +563,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         case .failed: throw PlaywrightInstallFailure.other("packages_failed")
         }
         let cli = pkg.appendingPathComponent("node_modules/@playwright/mcp/cli.js")
-        let chromiumBin = crDir.appendingPathComponent(crExec)
+        let chromiumBin = chrome.map { URL(fileURLWithPath: $0.executablePath) } ?? crDir.appendingPathComponent(crExec)
         guard fm.fileExists(atPath: cli.path), Self.isRegularExecutable(chromiumBin.path) else {
             throw PlaywrightInstallFailure.healthCheckFailed
         }
@@ -554,12 +607,14 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         do { try Data("oab-computer playwright install\n".utf8).write(to: staging.appendingPathComponent(Self.ownershipMarker)) }
         catch { throw PlaywrightInstallFailure.other("commit") }
         guard rename(staging.path, target.path) == 0 else { throw PlaywrightInstallFailure.other("commit") }
-        let rec = Record(version: manifest.id, chromiumExecutable: "chromium/" + crExec, manifestId: manifest.id,
-                         arch: arch.rawValue, chromiumRevision: manifest.chromium.revision,
-                         chromiumReleasedAt: manifest.chromium.releasedAt,
+        let rec = Record(version: manifest.id, chromiumExecutable: withChromium ? "chromium/" + crExec : "", manifestId: manifest.id,
+                         arch: arch.rawValue, chromiumRevision: withChromium ? manifest.chromium.revision : nil,
+                         chromiumReleasedAt: withChromium ? manifest.chromium.releasedAt : nil,
                          installedAt: ISO8601DateFormatter().string(from: now()),
                          previous: old.map(\.version).flatMap { $0 == manifest.id ? nil : $0 },
-                         digests: Digests(node: nodeArt.sha256, chromium: crArt.sha256, lockfile: manifest.mcp.lockfileSHA256))
+                         digests: Digests(node: nodeArt.sha256, chromium: withChromium ? crArt.sha256 : nil, lockfile: manifest.mcp.lockfileSHA256),
+                         systemChrome: chrome.map { SystemChromeRecord(appPath: $0.appPath, versionAtConsent: $0.version,
+                                                                       consentedAt: ISO8601DateFormatter().string(from: now())) })
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         let recData = try enc.encode(rec)

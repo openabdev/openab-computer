@@ -142,6 +142,8 @@ public struct BrowserReport: Equatable, Sendable {
         public let errorClass: String?
         public let mode: String?          // managed | external
         public let ownerSummary: String?
+        /// `chrome: system 157.0.1` when the managed backend drives the user's installed Chrome, else nil.
+        public var engine: String? = nil
     }
     public let preference: BrowserPreference
     public let active: BrowserBackendID?
@@ -151,7 +153,7 @@ public struct BrowserReport: Equatable, Sendable {
     public var line: String {
         let parts = backends.map { e -> String in
             let name = e.id == .playwright ? "playwright" : "apple events"
-            let m = e.mode.map { " (\($0))" } ?? ""
+            let m = e.mode.map { " (\($0)\(e.engine.map { ", \($0)" } ?? ""))" } ?? ""
             switch e.state {
             case "ready": return "\(name)\(m) ready"
             case "needs_setup" where e.errorClass == "playwright_not_installed": return "\(name) not installed"
@@ -170,6 +172,7 @@ public struct BrowserReport: Equatable, Sendable {
                 if let c = e.errorClass { o["class"] = .string(c) }
                 if let m = e.mode { o["mode"] = .string(m) }
                 if let w = e.ownerSummary { o["owner"] = .string(w) }
+                if let g = e.engine { o["engine"] = .string(g) }
                 return .object(o)
             }),
         ]
@@ -191,7 +194,8 @@ extension BrowserRouter {
             case .needsSetup(let c): (state, cls) = ("needs_setup", c)
             case .unavailable(let c): (state, cls) = ("unavailable", c)
             }
-            entries.append(.init(id: b.id, state: state, errorClass: cls, mode: await b.mode, ownerSummary: await b.ownerSummary))
+            entries.append(.init(id: b.id, state: state, errorClass: cls, mode: await b.mode, ownerSummary: await b.ownerSummary,
+                                    engine: await b.engineSummary?.text))
         }
         var active: BrowserBackendID?
         switch pref {
