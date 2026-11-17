@@ -936,3 +936,28 @@ fn pending_cleanup_leaves_a_pending_record_swapped_in_before_its_unlink() {
         b"foreign"
     );
 }
+
+/// #132: a temp record is claimed by the rule of the record itself, not by its shape. One that
+/// parses but names a version directory without the installer's marker is left in place.
+#[test]
+fn a_temp_record_naming_an_unmarked_version_is_left_in_place() {
+    let t = TempDir::new();
+    let root = t.root();
+    make_version(&t, "id-1", true);
+    make_version(&t, "id-2", false);
+    write_record_file(&t, &record("id-1"));
+    let stray = rootp(&t).join("install.json.tmp-0123456789abcdef");
+    put(&stray, &record("id-2").to_json());
+    let marked = rootp(&t).join("install.json.tmp-fedcba9876543210");
+    put(&marked, &record("id-1").to_json());
+    let rep = remove_all(&root).unwrap();
+    assert!(
+        exists(&stray),
+        "a record that names an unmarked version was deleted"
+    );
+    assert!(!exists(&marked), "a record of ours was left");
+    assert!(rep
+        .left
+        .iter()
+        .any(|(n, _)| n == "install.json.tmp-0123456789abcdef"));
+}

@@ -16,9 +16,8 @@ use serde_json::{json, Value};
 use crate::attach::store;
 use crate::mcp::{
     handle_tool_call_with, local_tool_allowed, local_tool_class, profile_is_shell_equivalent,
-    tool_list_with, upstream_tool_allowed, ToolClass, Upstream, DEFAULT_PROFILE,
-    DESKTOP_RETIRED_WARNING, INVALID_PARAMS, LOCAL_TOOL_CLASS, LOCAL_TOOL_NAMES, PROFILES,
-    PROFILE_REJECTION,
+    tool_list_with, upstream_tool_allowed, ToolClass, DEFAULT_PROFILE, DESKTOP_RETIRED_WARNING,
+    INVALID_PARAMS, LOCAL_TOOL_CLASS, LOCAL_TOOL_NAMES, PROFILES, PROFILE_REJECTION,
 };
 
 const VECTORS: &str = include_str!("../../../conformance/profile_vectors.json");
@@ -297,12 +296,9 @@ fn owner_reaches_every_upstream_tool_and_observe_none() {
     let mut fixture = strings(&d["upstream_fixture"]);
     fixture.extend(strings(&d["unlisted_upstream"]));
     let (url, calls) = fake_upstream(fixture.clone());
-    let ups = vec![Arc::new(Upstream {
-        name: "browser".to_string(),
-        url,
-        session_id: Mutex::new(None),
-        cache: Mutex::new(None),
-    })];
+    let ups: Vec<Arc<dyn crate::backend::Upstream>> = vec![Arc::new(
+        crate::external::External::for_test("browser", &url),
+    )];
 
     let owner = listed(&tool_list_with("owner", &ups));
     for t in &fixture {
