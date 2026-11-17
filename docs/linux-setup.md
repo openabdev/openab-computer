@@ -486,17 +486,25 @@ trust.
 **Recipe, not installed by this project:** a VNC server for the headless seat. It is a listener
 that exposes the whole desktop, which is why the project does not ship or start it. If you choose to
 run `wayvnc`, bind it to loopback with authentication, reach it through an SSH port forward, and
-stop it afterwards. This recipe is not tested by this project, and the option names should be
-checked against the `wayvnc` documentation for your version:
+stop it afterwards. This recipe is **not tested by this project**. The options below are the ones the
+`wayvnc` README names (checked against its README, not run here); check them against the manual of
+your version:
 
 ```sh
-# on the node, in the seat's environment (WAYLAND_DISPLAY and XDG_RUNTIME_DIR set)
-wayvnc 127.0.0.1 5900          # loopback only; enable its authentication in its config file first
+# on the node. ~/.config/wayvnc/config, mode 600 (the password stays in this file, not in a command line):
+#   address=127.0.0.1
+#   enable_auth=true
+#   username=<a user name you choose>
+#   password=<a password you choose>
+#   rsa_private_key_file=rsa_key.pem    # key from: ssh-keygen -m pem -f ~/.config/wayvnc/rsa_key.pem -t rsa -N ""
+WAYLAND_DISPLAY=wayland-1 XDG_RUNTIME_DIR=/run/user/$(id -u) wayvnc 127.0.0.1 5900
+
 # on your machine
-ssh -N -L 5900:127.0.0.1:5900 <node>   # then point a VNC viewer at 127.0.0.1:5900
-# when done, on the node: stop wayvnc, then check that nothing still listens on 5900
+ssh -N -L 5900:127.0.0.1:5900 <node>     # then point a VNC viewer at 127.0.0.1:5900
+
+# when done, on the node: stop wayvnc, then check that nothing listens on 5900 any more
 pkill -x wayvnc
-ss -ltn 'sport = :5900'               # must print no listener line
+ss -ltn 'sport = :5900'                  # must print no listener line
 ```
 
 ## 5. Expose it
