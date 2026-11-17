@@ -232,10 +232,8 @@ Confirm that the new agent, not a leftover, owns the port.
 lsof -nP -iTCP:8795 -sTCP:LISTEN
 # Linux
 ss -ltnp 'sport = :8795'
-ss -ltnp 'sport = :8794'   # only on a node with the old browser unit (0.12.0): that unit should own it
+ss -ltnp 'sport = :8794'   # only on a node with the old browser unit (0.12.0): that unit should own it; right after a start, wait a few seconds for it to bind
 ```
-
-Browser sign-ins live in the old profile, which step 8 deletes, so sign in again after the upgrade.
 
 You should see one `oab-computer` process (macOS may shorten the name). Then `curl -s http://127.0.0.1:8795/healthz` prints `ok`,
 and a client with the token should reach the MCP URL (`https://<host>.<tailnet>.ts.net:8444/mcp`).
@@ -258,6 +256,8 @@ the unauthenticated Playwright port to the tailnet: `tailscale serve status`, an
   Installers after 0.12.0 write neither a browser unit nor that policy file: they offer the managed
   browser, which has no port ([linux-browser-tier ADR](adr/linux-browser-tier.md),
   [Linux setup](linux-setup.md#4-browser-tools-playwrightmcp)).
+
+The new install starts with an empty browser profile, so sign in again. The old profile is deleted in step 8.
 
 Full guide: [Browser tools](browser-tools.md).
 
@@ -293,9 +293,15 @@ launchctl bootout gui/$(id -u)/dev.openab.computer.pw-mcp   # only if step 7 ins
 mv ~/Library/LaunchAgents/dev.openab.computer.pw-mcp.plist ~/oab-instance-mcp-backup/ 2>/dev/null   # else it starts again at login and holds 127.0.0.1:8794 (only if step 7 installed it)
 mv ~/Library/LaunchAgents/dev.openab.computer.plist ~/oab-instance-mcp-backup/   # else it starts again at login and races the old agent for 127.0.0.1:8795
 cp ~/oab-instance-mcp-backup/dev.openab.instance-mcp*.plist ~/Library/LaunchAgents/
+# only if you had the old Playwright agent: start it first (see the note below)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist
+lsof -nP -iTCP:8794 -sTCP:LISTEN   # only then: the old Playwright agent must own the port
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist   # only if you had the old Playwright agent
 ```
+
+The 0.11 daemon does not check who owns port 8794 (that check first shipped in 0.12.0). Until the old Playwright
+agent holds the port, any local process that binds it would answer your `browser_*` calls. So start the
+Playwright agent first, confirm it is the listener, and only then start the daemon.
 
 If the old app the plist points to is gone, install the 0.11.0 package from its release page instead.
 If you ran the step 8 `tccutil` resets anyway, grant the old app its permissions again.
@@ -306,12 +312,16 @@ Linux:
 systemctl --user disable --now oab-computer.service
 systemctl --user disable --now oab-computer-pw-mcp.service   # only if the 0.12.0 installer installed the browser unit
 cp ~/oab-instance-mcp-backup/*.service ~/.config/systemd/user/
-# restore the old MCP_UPSTREAM line in the daemon unit now, before daemon-reload (the backup copy already has it)
+# the copied daemon unit already has the old MCP_UPSTREAM line; check it before daemon-reload
 systemctl --user daemon-reload
-systemctl --user enable --now oab-pw-mcp.service   # only if you used the Playwright unit; start it first
-ss -ltnp 'sport = :8794'                           # the old Playwright unit must be listening before the daemon starts
+# only if you used the Playwright unit: start it first
+systemctl --user enable --now oab-pw-mcp.service
+# wait until this shows the Playwright unit as the listener (a few seconds), then start the daemon
+ss -ltnp 'sport = :8794'
 systemctl --user enable --now oab-instance-mcp.service
 ```
+
+As on macOS, the Playwright unit goes first because the 0.11 daemon does not check who owns port 8794.
 
 The tailnet mapping on `:8444` points at `127.0.0.1:8795` in both versions, so it can stay. The old
 token file was never changed, so clients that used it keep working. Remove the new agent's files

@@ -120,8 +120,8 @@ sudo apt-get install -y sway grim wtype python3 \
 - `sway` 1.9 comes from the Ubuntu 24.04 archive. It runs the headless seat in 3.5.
 - `grim` takes screenshots. `wtype` sends keys.
 - Fonts stop pages from rendering as empty boxes.
-- `wlrctl` is not installed on the reference VM. Nothing needs it. The 0.12.0 installer required it
-  anyway (section 7.7); installers after 0.12.0 no longer do
+- `wlrctl` is not installed on the reference VM, which is arm64. On Ubuntu 24.04 it is missing from the arm64 archive only; amd64 has it in universe. Nothing needs it. The 0.12.0 installer required it
+  anyway (section 7.7), so on arm64 it could not run; installers after 0.12.0 no longer do
   ([#130](https://github.com/openabdev/openab-computer/issues/130)).
 
 ### 3.2 Service user (admin account)
@@ -632,8 +632,9 @@ sudo tailscale serve --https=8444 off
   `--headless-seat`). The 0.12.0 `scripts/install-linux.sh` checked for `tailscale`,
   `grim`, `wlrctl`, `wtype` and `python3`, and stopped at the first missing one. The reference VM
   has no `wlrctl`, so the installer was not run there. The hand-written units in section 3 do the
-  same job. `wlrctl` is not in the Ubuntu 24.04 archive (`apt-cache show wlrctl` finds nothing),
-  so the installer cannot run on that release as written.
+  same job. On arm64, `wlrctl` is not in the Ubuntu 24.04 archive (`apt-cache show wlrctl` finds nothing),
+  so the 0.12.0 installer cannot run on that release as written (amd64 has it in universe).
+  Until you use a later installer, arm64 takes the hand-written unit path.
 - **The installer exits 78 without a Wayland socket.** It needs a running desktop or
   `--headless-seat`. The `--headless-seat` path was not run on this VM. Section 3.5 is what runs
   here.
@@ -660,7 +661,7 @@ sudo tailscale serve --https=8444 off
 |---|---|---|
 | `401` on `127.0.0.1:8795` with a valid token | No `Tailscale-User-Login` header on loopback | Expected. Test through the serve URL (4.3). |
 | Serve URL returns `000` from the node itself | The node cannot route to its own MagicDNS name | Probe from another tailnet machine |
-| Installer exits 78, "missing: wlrctl" | The 0.12.0 installer's hard requirement. `wlrctl` is not in the Ubuntu 24.04 archive. Later installers do not ask for it | Use a later installer, or the hand-written units in section 3 |
+| Installer exits 78, "missing: wlrctl" | The 0.12.0 installer's hard requirement. On arm64 `wlrctl` is not in the Ubuntu 24.04 archive (amd64 has it in universe). Later installers do not ask for it | Use a later installer, or the hand-written units in section 3 |
 | Installer exits 78, "no Wayland socket" | No seat running | Use `--headless-seat`, or start a desktop. Check `oab-seat` is active. |
 | Connect cannot reach the computer | Serve mapping missing, or daemon down | `sudo tailscale serve status`; `ouser systemctl --user status oab-instance-mcp` |
 | Connect reports an auth failure | Token in Connect differs from `<token-file>` | Re-paste the token (7.2) |
