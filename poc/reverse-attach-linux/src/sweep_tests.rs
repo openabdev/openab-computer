@@ -1,7 +1,6 @@
 use super::*;
 use crate::run_record::tests::root_with_run;
 use crate::state::tests::TempDir;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -12,8 +11,7 @@ use std::time::{Duration, Instant};
 pub(crate) fn sleeper_at(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(dir.join(name)).unwrap();
     let p = dir.join(name).join("sleep");
-    std::fs::copy("/bin/sleep", &p).unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::copy_exec(std::path::Path::new("/bin/sleep"), &p);
     p
 }
 
@@ -28,15 +26,9 @@ pub(crate) fn detached(exe: &std::path::Path) -> std::process::Child {
             Ok(())
         });
     }
-    // A sibling test thread that forked while the copy's write fd was open leaves the file briefly
-    // "busy" (ETXTBSY); the fd closes at that fork's exec, so retry.
-    for _ in 0..50 {
-        match c.spawn() {
-            Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(Duration::from_millis(20)),
-            r => return r.unwrap(),
-        }
-    }
-    c.spawn().unwrap()
+    // `copy_exec` already waited until no fork holds the file open for writing (#147); the bounded
+    // ETXTBSY retry stays as a second line of defence in this test helper only.
+    crate::test_exec::spawn_retry(&mut c).unwrap()
 }
 
 pub(crate) fn dies(c: &mut std::process::Child) -> bool {

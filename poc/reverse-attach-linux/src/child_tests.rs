@@ -48,8 +48,13 @@ impl Fx {
         ] {
             let f = v.join(p);
             std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-            std::fs::write(&f, if p.ends_with("node") { node } else { "x" }).unwrap();
-            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+            let body = if p.ends_with("node") { node } else { "x" };
+            if mode == 0o755 {
+                crate::test_exec::write_exec(&f, body.as_bytes());
+            } else {
+                std::fs::write(&f, body).unwrap();
+                std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
         }
         std::fs::write(v.join(state::OWNED), MARKER_TEXT).unwrap();
         std::fs::set_permissions(&v, std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -2,7 +2,6 @@ use super::*;
 use crate::elf::tests::build_elf;
 use crate::manifest::PlatformId;
 use crate::state::tests::TempDir;
-use std::os::unix::fs::PermissionsExt;
 
 const LDCONF: &str = "1234 libs found in cache `/etc/ld.so.cache'
 \tlibc.so.6 (libc6,AArch64, OS ABI: Linux 3.7.0) => /lib/aarch64-linux-gnu/libc.so.6
@@ -220,15 +219,14 @@ fn facts_are_gathered_from_injected_sources() {
     )
     .unwrap();
     let script = d.join("ldconfig");
-    std::fs::write(
+    crate::test_exec::write_exec(
         &script,
         format!(
             "#!/bin/sh\ncase \"$1\" in -p) printf '\\tlibc.so.6 (libc6,AArch64) => {}\\n';; *) exit 3;; esac\n",
             libc.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        )
+        .as_bytes(),
+    );
     // A running "binary" whose interpreter is glibc's.
     let me = d.join("me");
     std::fs::write(
@@ -286,8 +284,7 @@ fn facts_are_gathered_from_injected_sources() {
 fn a_failing_ldconfig_is_treated_as_unavailable() {
     let t = TempDir::new();
     let script = t.path.join("ldconfig");
-    std::fs::write(&script, "#!/bin/sh\necho partial\nexit 1\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::write_exec(&script, b"#!/bin/sh\necho partial\nexit 1\n");
     assert!(run_ldconfig(&[script]).is_none());
 }
 
@@ -392,8 +389,7 @@ fn a_missing_library_is_a_blocker_with_its_own_class() {
 fn an_ldconfig_that_does_not_end_is_killed_and_reported_as_not_checked() {
     let t = TempDir::new();
     let script = t.path.join("ldconfig");
-    std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::write_exec(&script, b"#!/bin/sh\nexec sleep 30\n");
     let start = Instant::now();
     assert!(run_ldconfig_within(&[script], Duration::from_millis(300)).is_none());
     assert!(
@@ -402,12 +398,10 @@ fn an_ldconfig_that_does_not_end_is_killed_and_reported_as_not_checked() {
     );
     // A normal run inside the deadline still answers.
     let ok = t.path.join("ok-ldconfig");
-    std::fs::write(
+    crate::test_exec::write_exec(
         &ok,
-        "#!/bin/sh\necho '\tlibc.so.6 (libc6,AArch64) => /lib/libc.so.6'\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&ok, std::fs::Permissions::from_mode(0o755)).unwrap();
+        b"#!/bin/sh\necho '\tlibc.so.6 (libc6,AArch64) => /lib/libc.so.6'\n",
+    );
     assert!(run_ldconfig_within(&[ok], Duration::from_secs(5)).is_some());
 }
 

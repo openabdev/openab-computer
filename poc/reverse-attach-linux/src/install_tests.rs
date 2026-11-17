@@ -238,11 +238,7 @@ impl Env {
         let mut pk = String::new();
         for (i, (n, b)) in npm.iter().enumerate() {
             let key = ["@playwright/mcp", "playwright", "playwright-core"][i];
-            let scope = if key.starts_with('@') {
-                key.to_string()
-            } else {
-                key.to_string()
-            };
+            let scope = key;
             pk.push_str(&format!(
                 r#","node_modules/{key}":{{"version":"1","resolved":"https://registry.npmjs.org/{scope}/-/{n}","integrity":"sha512-{}"}}"#,
                 b64(&Sha512::digest(b))

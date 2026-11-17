@@ -193,7 +193,6 @@ fn the_stderr_ring_keeps_only_the_newest_bytes() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_detached_grandchild_under_the_scope_is_killed_and_a_lookalike_outside_survives() {
-    use std::os::unix::fs::PermissionsExt;
     let t = TempDir::new();
     let scope = t.path.join("staging");
     let outside = t.path.join("outside");
@@ -202,8 +201,7 @@ fn a_detached_grandchild_under_the_scope_is_killed_and_a_lookalike_outside_survi
     for d in [&scope, &outside] {
         std::fs::create_dir_all(d.join("bleeper")).unwrap();
         let bin = d.join("bleeper").join("sleep");
-        std::fs::copy("/bin/sleep", &bin).unwrap();
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_exec::copy_exec(std::path::Path::new("/bin/sleep"), &bin);
     }
     let mut look = std::process::Command::new(outside.join("bleeper/sleep"))
         .arg("300")
@@ -357,9 +355,7 @@ fn kill_matching_honours_protect_and_the_exe_test() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::create_dir_all(dir.join("sleeper")).unwrap();
     let exe = dir.join("sleeper").join("sleep");
-    std::fs::copy("/bin/sleep", &exe).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::copy_exec(std::path::Path::new("/bin/sleep"), &exe);
     let mut a = std::process::Command::new(&exe).arg("30").spawn().unwrap();
     let mut b = std::process::Command::new(&exe).arg("30").spawn().unwrap();
     let scope = t.path.join("scope");

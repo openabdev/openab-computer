@@ -52,6 +52,8 @@ mod sigstop;
 mod state;
 mod stdio_client;
 mod sweep;
+#[cfg(test)]
+mod test_exec;
 mod tools;
 mod unit;
 #[cfg(test)]

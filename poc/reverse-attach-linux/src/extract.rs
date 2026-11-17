@@ -686,7 +686,13 @@ impl TreeWriter {
         let Some(f) = self.current.take() else {
             return Ok(());
         };
-        rustix::fs::fchmod(f.as_fd(), Mode::from_bits_truncate((mode & 0o755) as _)).map_err(io_err)
+        let r = rustix::fs::fchmod(f.as_fd(), Mode::from_bits_truncate((mode & 0o755) as _))
+            .map_err(io_err);
+        // Close the writer here, before the next entry starts and before anything can run what was
+        // just written: an open write descriptor makes `exec` fail with ETXTBSY (#147). No fsync:
+        // durability of the tree is the commit rename's job.
+        drop(f);
+        r
     }
 }
 

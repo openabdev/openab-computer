@@ -546,8 +546,10 @@ fn build(
 
 // Tests only: runs between the rename into place and the record write.
 #[cfg(test)]
+type RootHook = Box<dyn Fn(&Root)>;
+#[cfg(test)]
 thread_local! {
-    pub(crate) static AFTER_RENAME: std::cell::RefCell<Option<Box<dyn Fn(&Root)>>> =
+    pub(crate) static AFTER_RENAME: std::cell::RefCell<Option<RootHook>> =
         const { std::cell::RefCell::new(None) };
 }
 

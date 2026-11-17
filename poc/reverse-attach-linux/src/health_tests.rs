@@ -167,13 +167,11 @@ fn the_launch_vector_has_no_listener_and_no_sandbox_bypass() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_detached_grandchild_under_staging_does_not_outlive_the_check() {
-    use std::os::unix::fs::PermissionsExt;
     let t = TempDir::new();
     let scope = t.path.join("staging");
     std::fs::create_dir_all(&scope).unwrap();
     let bin = scope.join("bleeper");
-    std::fs::copy("/bin/sleep", &bin).unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::copy_exec(std::path::Path::new("/bin/sleep"), &bin);
     let pidfile = t.path.join("pid");
     let script = format!(
         "setsid {} 300 & echo $! > {}; exit 1",
