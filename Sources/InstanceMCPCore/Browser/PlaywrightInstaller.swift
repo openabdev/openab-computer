@@ -595,7 +595,6 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         var tst = stat()
         if lstat(target.path, &tst) == 0 {
             guard hasOwnershipMarker(manifest.id) else { throw PlaywrightInstallFailure.other("commit_collision") }
-            try? fm.removeItem(at: target)   // an invalid leftover of ours
         }
         let oldBytes = initialBytes
         guard (try? Data(contentsOf: root.appendingPathComponent("install.json"))) == initialBytes else {
@@ -606,7 +605,20 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         unlink(staging.appendingPathComponent(Self.stagingMarker).path)
         do { try Data("oab-computer playwright install\n".utf8).write(to: staging.appendingPathComponent(Self.ownershipMarker)) }
         catch { throw PlaywrightInstallFailure.other("commit") }
-        guard rename(staging.path, target.path) == 0 else { throw PlaywrightInstallFailure.other("commit") }
+        // A directory of ours already at the name (a same-version engine switch, or a leftover) is moved
+        // beside the new one, not deleted: it is only removed after the new install served, and put back
+        // if anything fails before that.
+        var backup: URL?
+        if lstat(target.path, &tst) == 0 {
+            let b = root.appendingPathComponent("\(manifest.id).prev-\(UUID().uuidString)", isDirectory: true)
+            guard rename(target.path, b.path) == 0 else { throw PlaywrightInstallFailure.other("commit") }
+            backup = b
+        }
+        func restoreBackup() {
+            try? fm.removeItem(at: target)
+            if let b = backup { _ = rename(b.path, target.path) }
+        }
+        guard rename(staging.path, target.path) == 0 else { restoreBackup(); throw PlaywrightInstallFailure.other("commit") }
         let rec = Record(version: manifest.id, chromiumExecutable: withChromium ? "chromium/" + crExec : "", manifestId: manifest.id,
                          arch: arch.rawValue, chromiumRevision: withChromium ? manifest.chromium.revision : nil,
                          chromiumReleasedAt: withChromium ? manifest.chromium.releasedAt : nil,
@@ -624,7 +636,7 @@ public final class PlaywrightInstaller: @unchecked Sendable {
         if hadInstall { await stopManaged() }
         do { try writeAtomically(recData, to: root.appendingPathComponent("install.json"), replacing: oldBytes) }
         catch {
-            try? fm.removeItem(at: target)
+            restoreBackup()
             if !hadInstall { for d in createdDirs { try? fm.removeItem(at: root.appendingPathComponent(d)) } }
             throw error
         }
@@ -637,13 +649,14 @@ public final class PlaywrightInstaller: @unchecked Sendable {
                 if let oldBytes { try? writeAtomically(oldBytes, to: ij, replacing: recData) }
                 else { try? fm.removeItem(at: ij) }
             }
-            try? fm.removeItem(at: target)
+            restoreBackup()
             if hadInstall { _ = await verifyServing() }   // bring the old version's child back
             else { for d in createdDirs { try? fm.removeItem(at: root.appendingPathComponent(d)) } }
             emit(.updateRolledBack)
             throw PlaywrightInstallFailure.healthCheckFailed
         }
         // The new version served once: the previous directory can go.
+        if let b = backup { try? fm.removeItem(at: b) }
         for n in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] where n != manifest.id && hasOwnershipMarker(n) {
             try? fm.removeItem(at: root.appendingPathComponent(n))
         }

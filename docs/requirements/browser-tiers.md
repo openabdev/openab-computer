@@ -504,10 +504,11 @@ Applies from the next release after 0.12.0. Decided answers: Q3 and Q5 of the AD
   time) and no Chromium revision or digest. The marker, ownership and compare-and-swap rules of R7.7
   do not change.
 - R7.3.1.5 **Every start.** `locate()` runs the same check again before the child is launched
-  (an unchanged bundle is reused for 30 seconds), so a Chrome update is picked up with no restart and
-  a Chrome that is missing, replaced, unsigned or older than the floor stops the browser tools with
-  the classes `chrome_missing`, `chrome_not_google`, `chrome_invalid_signature`, `chrome_too_old` or
-  `chrome_unreadable`. There is no fall back to using it unchecked.
+  (every time, with the full signature validation, no result is reused), so a Chrome update is picked
+  up when the managed child next starts, and a Chrome that is missing, replaced, unsigned or older than
+  the floor stops the browser tools with the classes `chrome_missing`, `chrome_not_google`, `chrome_invalid_signature`, `chrome_too_old` or
+  `chrome_unreadable`. There is no fall back to using it unchecked. The check happens just before the
+  launch, so a swap between the check and the program start cannot be excluded.
 - R7.3.1.6 **Launch vector.** The child gets `--browser chromium --executable-path <Chrome program>`
   and `--user-data-dir <root>/profile`, the same vector as the downloaded Chromium with another
   executable. The user's Chrome profile never appears in it.

@@ -108,8 +108,8 @@ Cancel leaves the page as it was.
   Developer ID Application certificate with team `EQHXZ8M8AV`, checked with the Security framework,
   nested code included), and version 120 or newer. A failed check stops the browser tools and the menu
   says why (`chrome_missing`, `chrome_not_google`, `chrome_invalid_signature`, `chrome_too_old`,
-  `chrome_unreadable`); they work again once Chrome passes. A Chrome update is picked up on the next
-  call with no restart, and the check runs again; it is never skipped.
+  `chrome_unreadable`); they work again once Chrome passes. The check runs in full each time the managed
+  child is started, and a Chrome update is picked up then; it is never skipped.
 - The choice is stored in `install.json`, so it survives a restart. The menu then shows
   **Browser: your installed Google Chrome <version> (not pinned, no digest checked)**, and `sys_info`
   shows `chrome: system <version>` for the backend. **Use the downloaded Chromium instead…** downloads

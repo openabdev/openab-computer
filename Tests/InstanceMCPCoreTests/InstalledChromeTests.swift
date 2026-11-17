@@ -36,9 +36,8 @@ final class FakeChromeBundle {
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
     }
 
-    func checker(_ v: StubChromeVerifier = StubChromeVerifier(), minimumMajor: Int = 120, cacheSeconds: TimeInterval = 0,
-                 clock: @escaping @Sendable () -> Date = { Date() }) -> InstalledChromeChecker {
-        InstalledChromeChecker(directories: [applications], verifier: v, minimumMajor: minimumMajor, cacheSeconds: cacheSeconds, clock: clock)
+    func checker(_ v: StubChromeVerifier = StubChromeVerifier(), minimumMajor: Int = 120) -> InstalledChromeChecker {
+        InstalledChromeChecker(directories: [applications], verifier: v, minimumMajor: minimumMajor)
     }
 
     /// Names, sizes and bytes of every file: proves the app did not change the bundle.
@@ -120,24 +119,18 @@ final class InstalledChromeCheckerTests: XCTestCase {
         XCTAssertEqual(junk.checker().check(), .failure(.unreadable))
     }
 
-    func testTheSignatureIsCheckedAgainOnEveryStartAndWhenTheBundleChanges() throws {
+    func testTheSignatureIsCheckedOnEveryCallEvenForAnUnchangedBundle() throws {
         let b = try FakeChromeBundle()
         let v = StubChromeVerifier()
-        let now = MutableBox(Date(timeIntervalSince1970: 1_000_000))
-        let c = b.checker(v, cacheSeconds: 30, clock: { now.value })
+        let c = b.checker(v)
         _ = c.check(); _ = c.check()
-        XCTAssertEqual(v.calls.value, 1, "an unchanged bundle is not re-verified inside the window")
-        now.value = now.value.addingTimeInterval(31)
-        _ = c.check()
-        XCTAssertEqual(v.calls.value, 2, "after the window it is verified again")
-        // A Chrome update changes the program and Info.plist: verified again at once, and the new version shows.
+        XCTAssertEqual(v.calls.value, 2, "no result is reused, so nested code changes are always seen")
         try b.write(version: "158.0.1")
         guard case .success(let updated) = c.check() else { return XCTFail() }
         XCTAssertEqual(updated.version, "158.0.1")
         XCTAssertEqual(v.calls.value, 3)
-        // A check that fails is never cached.
+        // A mutation that touches neither Info.plist nor the program (nested code only) is caught by the next check.
         v.result.value = false
-        try b.write(version: "159.0.1")
         XCTAssertEqual(c.check(), .failure(.invalidSignature))
         XCTAssertEqual(c.check(), .failure(.invalidSignature))
         XCTAssertEqual(v.calls.value, 5)
@@ -192,7 +185,7 @@ final class InstalledChromeFlowTests: InstallerTestCase {
         async -> (BrowserToolsController, PlaywrightInstaller)? {
         let dl = refusingDownloader(fx)
         let checker: any InstalledChromeChecking = chromePresent ? chrome.checker(verifier)
-            : InstalledChromeChecker(directories: [chrome.tmp.dir("Empty")], verifier: verifier, cacheSeconds: 0)
+            : InstalledChromeChecker(directories: [chrome.tmp.dir("Empty")], verifier: verifier)
         let installer = fx.installer(root: root, logs: logs, downloader: dl, chromeChecker: checker)
         let c = controller(installer, logs: logs)
         let r = await finish(c) { c.startInstall(finished: $0) }

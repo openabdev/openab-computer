@@ -93,25 +93,18 @@ public final class InstalledChromeChecker: InstalledChromeChecking, @unchecked S
     private let directories: [URL]
     private let verifier: any ChromeSignatureVerifying
     private let minimumMajor: Int
-    private let cacheSeconds: TimeInterval
-    private let clock: @Sendable () -> Date
-    private let lock = NSLock()
-    private var verified: (key: String, at: Date)?
 
     public static func defaultDirectories(home: String = NSHomeDirectory()) -> [URL] {
         [URL(fileURLWithPath: "/Applications", isDirectory: true),
          URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent("Applications", isDirectory: true)]
     }
 
-    /// `cacheSeconds` bounds how long one successful signature check is reused for an unchanged bundle (same
-    /// Info.plist and executable by size, time and inode). 0 checks every time.
+    /// Every check runs the full signature validation: the result is never reused.
     public init(directories: [URL] = InstalledChromeChecker.defaultDirectories(),
                 verifier: any ChromeSignatureVerifying = SecurityFrameworkChromeVerifier(),
-                minimumMajor: Int = InstalledChromePolicy.minimumMajor, cacheSeconds: TimeInterval = 30,
-                clock: @escaping @Sendable () -> Date = { Date() }) {
+                minimumMajor: Int = InstalledChromePolicy.minimumMajor) {
         self.directories = directories.map { $0.standardizedFileURL }
         self.verifier = verifier; self.minimumMajor = minimumMajor
-        self.cacheSeconds = cacheSeconds; self.clock = clock
     }
 
     private func candidates() -> [URL] {
@@ -144,13 +137,6 @@ public final class InstalledChromeChecker: InstalledChromeChecking, @unchecked S
         return plist(app)?["CFBundleShortVersionString"] as? String
     }
 
-    private func fingerprint(_ app: URL, _ exec: URL) -> String? {
-        var a = stat(), b = stat()
-        guard lstat(app.appendingPathComponent("Contents/Info.plist").path, &a) == 0, lstat(exec.path, &b) == 0 else { return nil }
-        return "\(app.path)|\(a.st_ino):\(a.st_size):\(a.st_mtimespec.tv_sec).\(a.st_mtimespec.tv_nsec)"
-            + "|\(b.st_ino):\(b.st_size):\(b.st_mtimespec.tv_sec).\(b.st_mtimespec.tv_nsec)"
-    }
-
     public func check(appPath: String) -> Result<InstalledChrome, InstalledChromeProblem> {
         let app = URL(fileURLWithPath: appPath, isDirectory: true).standardizedFileURL
         // Only the two Applications folders. A hand-edited record cannot point the app at another binary.
@@ -162,19 +148,7 @@ public final class InstalledChromeChecker: InstalledChromeChecking, @unchecked S
               p["CFBundleExecutable"] as? String == InstalledChromePolicy.executableName else { return .failure(.notGoogleChrome) }
         let exec = app.appendingPathComponent("Contents/MacOS/\(InstalledChromePolicy.executableName)")
         guard Self.kind(exec.path) == S_IFREG, access(exec.path, X_OK) == 0 else { return .failure(.unreadable) }
-        guard let key = fingerprint(app, exec) else { return .failure(.unreadable) }
-        let now = clock()
-        let cached = lock.withLock { () -> Bool in
-            guard let v = verified, v.key == key else { return false }
-            return now.timeIntervalSince(v.at) < cacheSeconds
-        }
-        if !cached {
-            guard verifier.verify(app: app) else {
-                lock.withLock { verified = nil }
-                return .failure(.invalidSignature)
-            }
-            lock.withLock { verified = (key, now) }
-        }
+        guard verifier.verify(app: app) else { return .failure(.invalidSignature) }
         // The version is read after the signature check: the Info.plist is sealed by it.
         guard let v = plist(app)?["CFBundleShortVersionString"] as? String,
               let major = Int(v.prefix(while: { $0.isASCII && $0.isNumber })), v.count < 64 else { return .failure(.unreadable) }
