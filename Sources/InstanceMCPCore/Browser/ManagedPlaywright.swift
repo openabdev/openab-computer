@@ -164,7 +164,18 @@ public actor ManagedPlaywrightTransport: PlaywrightTransport {
     public func listTools() async throws -> [JSONValue] {
         try await ensureRunning()
         do { return try await client!.listTools(timeout: callTimeout) }
-        catch { await noteFailure(error); throw error }
+        catch {
+            // A cap, cycle or bad cursor is the server's answer on a live channel, not a crash or a hang.
+            // Whether the child died while answering is still checked, and still counts.
+            if Self.isServerProtocolError(error) { await noteFailureIfDead() } else { await noteFailure(error) }
+            throw error
+        }
+    }
+
+    private static func isServerProtocolError(_ error: Error) -> Bool {
+        guard let e = error as? PlaywrightTransportError else { return false }
+        return ["tools_list_too_many_tools", "tools_list_too_many_pages", "tools_list_cursor_cycle",
+                "tools_list_bad_cursor"].contains(e.errorClass)
     }
 
     public func callTool(_ name: String, arguments: JSONValue) async throws -> JSONValue {
