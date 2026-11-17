@@ -153,10 +153,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if snapshot.allGranted {
             store.hasShown = true
             // Permissions are done, but the Browser tools page is offered until it has been completed once (R5.1).
-            let offerBrowser = BrowserWizardPolicy.showsBrowserPageOnAutoSetup(
-                allGranted: true, browserOffered: browserTools != nil,
-                pageCompleted: browserTools?.pageIsCompleted ?? true)
-            if offerBrowser { openPermissionSetup(page: .browser) }
+            if let page = BrowserWizardPolicy.pageOnAutoSetup(allGranted: true, browserTools: browserTools) {
+                openPermissionSetup(page: page)
+            }
             return
         }
         if PermissionSetupPolicy.shouldAutoShow(hasShown: store.hasShown, snapshot: snapshot) {
