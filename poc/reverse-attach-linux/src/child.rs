@@ -299,6 +299,19 @@ impl RuntimeTmp {
         RuntimeTmp::create_named(root_abs, "oab-pw")
     }
 
+    fn dir_name(root_abs: &Path, prefix: &str) -> String {
+        let h = Sha256::digest(root_abs.as_os_str().as_encoded_bytes());
+        format!("{prefix}-{}", crate::manifest::hex(&h[..4]))
+    }
+
+    /// Where the managed child's `TMPDIR` is for this install root, decided without creating
+    /// anything (`browser status` checks it, V2). Uses this process's `XDG_RUNTIME_DIR`, so it
+    /// matches the daemon's only when both run in the same user session.
+    pub(crate) fn expected_path(root_abs: &Path) -> PathBuf {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        state::private_base_path(runtime.as_deref()).join(RuntimeTmp::dir_name(root_abs, "oab-pw"))
+    }
+
     /// Same, under another fixed prefix of the same length. `browser signin` uses its own so that
     /// starting it never removes the directory of a managed child that started a moment earlier:
     /// the profile lock decides who may run, and each side only ever touches its own directory.
@@ -306,8 +319,7 @@ impl RuntimeTmp {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
         let (parent, base) =
             state::open_private_base(runtime.as_deref()).map_err(|_| "tmp_unavailable")?;
-        let h = Sha256::digest(root_abs.as_os_str().as_encoded_bytes());
-        let name = format!("{prefix}-{}", crate::manifest::hex(&h[..4]));
+        let name = RuntimeTmp::dir_name(root_abs, prefix);
         let mut rep = state::Report::default();
         // A directory of ours that an earlier child left: marker-gated removal.
         let _ = state::remove_marked_tree(&parent, &name, OWNED_DATA, &mut rep);

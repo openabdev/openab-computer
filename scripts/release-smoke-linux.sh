@@ -22,15 +22,16 @@
 #   12 install (the pinned source, install and the headless health check)
 #   13 no systemd user manager (a real cell FAILS without one, section 3.3)
 #   14 the harness never became ready
-#   20 V2  the managed tree holds a TCP, UDP or Unix listener, or its listeners cannot be read
+#   20 V2  a TCP or UDP listener, a Unix listener outside the private TMPDIR, a TMPDIR that is not
+#          0700 or not the daemon's, or listeners that cannot be read
 #   24 V4  containment is not `systemd` or `systemd+mount`
 #   30 R1.3 something from the install directory survived `kill -9` of the harness
 #   64 usage
 # V3 (Chromium exit timing after SIGKILL) and V9, V11 are informational and never fail the cell.
 #
-# V2 has no allow-list on purpose. As built, the tree holds two private listening Unix sockets
-# (docs/requirements/linux-browser-tier.md, V2), so this gate is red until the owner decides; do not
-# special-case it here.
+# V2 (decided): no TCP or UDP listener, and any Unix listener must be inside the child's private
+# per-run 0700 TMPDIR owned by the daemon's uid (the Playwright browser socket and Chromium's
+# SingletonSocket). The gate has no other allow-list.
 
 set -u
 
@@ -42,15 +43,39 @@ json_field() {
   printf '%s' "$1" | sed -n "s/.*\"$2\":\"\\([^\"]*\\)\".*/\\1/p"
 }
 
-# gate_v2 STATUS_JSON: pass only when the managed tree holds no listener of any kind.
+# list_field LISTENERS KEY: the value of `KEY=` in the `listeners` word, or empty.
+list_field() {
+  printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n 1
+}
+
+# gate_v2 STATUS_JSON: the decided V2 rule (R1.1). Passes when the managed tree holds no listener at
+# all, or when it holds no TCP or UDP listener and every Unix listener is inside the child's private
+# per-run TMPDIR, which `status` has checked to be a real directory of the daemon's uid with mode
+# exactly 0700. The word is `tcp=N udp=N unix=N unix_outside=N tmpdir=S result=pass|fail`. This
+# gate trusts no `result=` alone: it recomputes the rule from the counts, and a missing or unknown
+# field fails. There is no path allow-list here; "inside" is decided by `status`.
 gate_v2() {
-  local l
+  local l tcp udp unix out tmp res
   l=$(json_field "$1" listeners)
   if [ "$l" = none ]; then
     echo "GATE V2 pass listeners=none"
     return 0
   fi
-  echo "GATE V2 fail listeners=${l:-missing}"
+  tcp=$(list_field "$l" tcp)
+  udp=$(list_field "$l" udp)
+  unix=$(list_field "$l" unix)
+  out=$(list_field "$l" unix_outside)
+  tmp=$(list_field "$l" tmpdir)
+  res=$(list_field "$l" result)
+  case "$tcp$udp$unix$out" in
+    '' | *[!0-9]*) echo "GATE V2 fail listeners=${l:-missing}"; return 1 ;;
+  esac
+  if [ -n "$tcp$udp$unix$out" ] && [ "$tcp" = 0 ] && [ "$udp" = 0 ] && [ "$out" = 0 ] \
+    && [ "$res" = pass ] && { [ "$unix" = 0 ] || [ "$tmp" = ok ]; }; then
+    echo "GATE V2 pass listeners=$l"
+    return 0
+  fi
+  echo "GATE V2 fail listeners=$l"
   return 1
 }
 

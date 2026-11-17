@@ -1073,3 +1073,31 @@ fn a_planted_or_loose_fallback_directory_is_refused() {
     dir_with_mode(&t.path.join("tmp").join(format!("oab-{other}")), 0o700);
     assert!(open_private_base_in(None, &t.path.join("tmp"), other).is_err());
 }
+
+#[test]
+fn the_read_only_base_path_matches_the_one_that_creates_and_creates_nothing() {
+    let t = TempDir::new();
+    dir_with_mode(&t.path.join("tmp"), 0o1777);
+    let shared = t.path.join("tmp");
+    let rt = t.path.join("run");
+    dir_with_mode(&rt, 0o700);
+    assert_eq!(private_base_path_in(Some(&rt), &shared, uid()), rt);
+    // A group-writable candidate, a missing one and none at all fall back to `oab-<uid>`.
+    let loose = t.path.join("loose");
+    dir_with_mode(&loose, 0o770);
+    let want = shared.join(format!("oab-{}", uid()));
+    assert_eq!(private_base_path_in(Some(&loose), &shared, uid()), want);
+    assert_eq!(
+        private_base_path_in(Some(&t.path.join("no")), &shared, uid()),
+        want
+    );
+    assert_eq!(private_base_path_in(None, &shared, uid()), want);
+    assert_eq!(
+        std::fs::read_dir(&shared).unwrap().count(),
+        0,
+        "nothing created"
+    );
+    // Same answer as the creating version, for each case.
+    assert_eq!(base_of(&t, Some(&rt)).unwrap(), rt);
+    assert_eq!(base_of(&t, Some(&loose)).unwrap(), want);
+}

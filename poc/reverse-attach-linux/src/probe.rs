@@ -9,7 +9,8 @@
 //! - `external_configured`: `yes` when this process's `MCP_UPSTREAM` has a `browser=` entry.
 //! - `listeners`: what the managed tree (every same-uid process whose executable is below a version
 //!   or staging directory of the root, the sweep's own rule) holds. `not_running`, `none`,
-//!   `tcp=N udp=N unix=N` or `unknown` when a table cannot be read.
+//!   `tcp=N udp=N unix=N unix_outside=N tmpdir=S result=pass|fail` (see `listeners_word`) or
+//!   `unknown` when a table cannot be read.
 //! - `refusal`: `none`, `launch_refused` or `sandbox_unavailable`.
 //!
 //! L4 adds four more, appended after those so existing readers keep their order:
@@ -102,6 +103,28 @@ fn tree_pids(root_abs: &Path) -> Vec<u32> {
         .collect()
 }
 
+/// The `listeners` field. `none`, `unknown`, or the counts with the V2 verdict:
+/// `tcp=N udp=N unix=N unix_outside=N tmpdir=<state> result=pass|fail` (R1.1 as decided: only
+/// Unix listeners inside the child's verified private `TMPDIR` pass).
+pub(crate) fn listeners_word(
+    l: Result<procnet::Listeners, &'static str>,
+    tmp: procnet::TmpState,
+) -> String {
+    match l {
+        Ok(l) if l.total() == 0 => "none".into(),
+        Ok(l) => format!(
+            "tcp={} udp={} unix={} unix_outside={} tmpdir={} result={}",
+            l.tcp,
+            l.udp,
+            l.unix,
+            l.unix_outside,
+            tmp.word(),
+            if l.passes_v2() { "pass" } else { "fail" }
+        ),
+        Err(_) => "unknown".into(),
+    }
+}
+
 /// `verify` runs the containment self-test (only called with `retry`).
 pub fn gather(
     base: &Path,
@@ -127,11 +150,15 @@ pub fn gather(
         x.run_records = run_record::state(&root).word().into();
         let pids = tree_pids(root.abs_path());
         if !pids.is_empty() {
-            x.listeners = match procnet::listeners_of_tree(src, &pids) {
-                Ok(l) if l.total() == 0 => "none".into(),
-                Ok(l) => format!("tcp={} udp={} unix={}", l.tcp, l.udp, l.unix),
-                Err(_) => "unknown".into(),
-            };
+            let tmp = crate::child::RuntimeTmp::expected_path(root.abs_path());
+            let tmp_state = procnet::tmp_state(&tmp, rustix::process::geteuid().as_raw());
+            let private = (tmp_state == procnet::TmpState::Ok)
+                .then(|| tmp.to_str().map(str::to_owned))
+                .flatten();
+            x.listeners = listeners_word(
+                procnet::listeners_of_tree_in(src, &pids, private.as_deref()),
+                tmp_state,
+            );
         }
     }
     if retry {

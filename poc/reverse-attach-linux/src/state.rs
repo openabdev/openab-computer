@@ -156,6 +156,29 @@ pub fn open_private_base(candidate: Option<&Path>) -> R<(OwnedFd, PathBuf)> {
     open_private_base_in(candidate, Path::new("/tmp"), euid())
 }
 
+/// The path `open_private_base` would choose, decided read-only (nothing is created or opened for
+/// writing). For `browser status`, which must name the child's `TMPDIR` without making it.
+pub fn private_base_path(candidate: Option<&Path>) -> PathBuf {
+    private_base_path_in(candidate, Path::new("/tmp"), euid())
+}
+
+pub(crate) fn private_base_path_in(
+    candidate: Option<&Path>,
+    shared_tmp: &Path,
+    uid: u32,
+) -> PathBuf {
+    use std::os::unix::fs::MetadataExt;
+    if let Some(c) = candidate.filter(|c| c.is_absolute() && c.as_os_str().len() <= SHORT_BASE_MAX)
+    {
+        if std::fs::symlink_metadata(c)
+            .is_ok_and(|m| m.is_dir() && m.uid() == uid && m.mode() & 0o022 == 0)
+        {
+            return c.to_path_buf();
+        }
+    }
+    shared_tmp.join(format!("oab-{uid}"))
+}
+
 pub(crate) fn open_private_base_in(
     candidate: Option<&Path>,
     shared_tmp: &Path,

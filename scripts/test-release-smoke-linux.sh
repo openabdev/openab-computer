@@ -17,13 +17,24 @@ status_json() { # listeners
   printf '{"state":"installed","platform":"linux-x64","containment":"not_checked","listeners":"%s","refusal":"none","hardening_mount":"verified"}' "$1"
 }
 
-# V2: no allow-list. Only `none` passes; `unix=2` (the tree as built today) fails.
+# V2 (decided): no TCP or UDP listener, and every Unix listener inside the verified private TMPDIR.
+P='tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass'
 out=$(gate_v2 "$(status_json none)"); expect "V2 none passes" 0 $?
 case $out in "GATE V2 pass"*) ok "V2 pass line" ;; *) bad "V2 pass line: $out" ;; esac
-out=$(gate_v2 "$(status_json 'tcp=0 udp=0 unix=2')"); expect "V2 unix=2 fails (no narrowed rule)" 1 $?
-case $out in *"unix=2"*) ok "V2 fail line names the listeners" ;; *) bad "V2 fail line: $out" ;; esac
-gate_v2 "$(status_json 'tcp=1 udp=0 unix=0')" >/dev/null; expect "V2 tcp=1 fails" 1 $?
-gate_v2 "$(status_json 'tcp=0 udp=1 unix=0')" >/dev/null; expect "V2 udp=1 fails" 1 $?
+out=$(gate_v2 "$(status_json "$P")"); expect "V2 two private unix sockets pass" 0 $?
+case $out in *"unix=2"*"result=pass"*) ok "V2 pass line names the listeners" ;; *) bad "V2 pass line: $out" ;; esac
+out=$(gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=fail')"); expect "V2 a unix listener outside the private dir fails" 1 $?
+case $out in "GATE V2 fail"*) ok "V2 fail line" ;; *) bad "V2 fail line: $out" ;; esac
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=mode result=fail')" >/dev/null; expect "V2 TMPDIR not 0700 fails" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=owner result=fail')" >/dev/null; expect "V2 TMPDIR of another uid fails" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=mode result=pass')" >/dev/null; expect "V2 recomputed: tmpdir=mode fails even if result=pass" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=missing result=pass')" >/dev/null; expect "V2 recomputed: tmpdir=missing fails" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=pass')" >/dev/null; expect "V2 recomputed: unix_outside=1 fails even if result=pass" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=fail')" >/dev/null; expect "V2 result=fail fails" 1 $?
+gate_v2 "$(status_json 'tcp=1 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass')" >/dev/null; expect "V2 tcp=1 fails even with a private dir" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=1 unix=0 unix_outside=0 tmpdir=ok result=pass')" >/dev/null; expect "V2 udp=1 fails" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=2')" >/dev/null; expect "V2 the old word without the verdict fails" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=x tmpdir=ok result=pass')" >/dev/null; expect "V2 a non-number fails" 1 $?
 gate_v2 "$(status_json unknown)" >/dev/null; expect "V2 unknown fails" 1 $?
 gate_v2 "$(status_json not_running)" >/dev/null; expect "V2 not_running fails (nothing was measured)" 1 $?
 gate_v2 '{"state":"installed"}' >/dev/null; expect "V2 missing field fails" 1 $?

@@ -194,3 +194,39 @@ fn a_full_run_directory_is_named_in_the_status() {
         "full"
     );
 }
+
+#[test]
+fn the_listeners_word_carries_the_v2_verdict() {
+    use crate::procnet::{Listeners, TmpState};
+    let w = |l: Listeners, t| listeners_word(Ok(l), t);
+    assert_eq!(w(Listeners::default(), TmpState::Missing), "none");
+    let two = Listeners {
+        unix: 2,
+        ..Default::default()
+    };
+    assert_eq!(
+        w(two, TmpState::Ok),
+        "tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass"
+    );
+    let out = Listeners {
+        unix: 2,
+        unix_outside: 1,
+        ..Default::default()
+    };
+    assert!(w(out, TmpState::Ok).ends_with("unix_outside=1 tmpdir=ok result=fail"));
+    let all_out = Listeners {
+        unix: 2,
+        unix_outside: 2,
+        ..Default::default()
+    };
+    assert_eq!(
+        w(all_out, TmpState::Mode),
+        "tcp=0 udp=0 unix=2 unix_outside=2 tmpdir=mode result=fail"
+    );
+    let tcp = Listeners {
+        tcp: 1,
+        ..Default::default()
+    };
+    assert!(w(tcp, TmpState::Ok).ends_with("result=fail"));
+    assert_eq!(listeners_word(Err("x"), TmpState::Ok), "unknown");
+}
