@@ -15,11 +15,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::consent;
+use crate::containment::{Mechanism, Systemd};
 use crate::download::{DownloadPolicy, Limits};
 use crate::health::Timeouts;
 use crate::install::{self, Done, Files, Io, Opts, Source};
 use crate::manifest::{Manifest, PlatformId, LOCKFILE_JSON, PACKAGE_JSON};
 use crate::preflight::{self, Facts, Sources};
+use crate::sigstop;
 use crate::state::{Fail, Root};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,19 +38,22 @@ pub enum Cmd {
     Remove,
     Status {
         json: bool,
+        /// Clear the five-failure latch and re-run the containment self-test now (R1.5).
+        retry: bool,
     },
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Usage(pub String);
 
-const USAGE: &str = "usage: oab-computer browser <plan|preflight|install|update|remove|status> [flags]\n  plan                      print what an install downloads and where it goes\n  preflight                 check this host; installs nothing and never uses root\n  install [--from-dir DIR]  install the pinned browser\n  update [--yes] [--from-dir DIR]\n  remove                    delete what this installer created\n  status [--json]";
+const USAGE: &str = "usage: oab-computer browser <plan|preflight|install|update|remove|status> [flags]\n  plan                      print what an install downloads and where it goes\n  preflight                 check this host; installs nothing and never uses root\n  install [--from-dir DIR]  install the pinned browser\n  update [--yes] [--from-dir DIR]\n  remove                    delete what this installer created\n  status [--json] [--retry]  --retry clears the unavailable latch and re-runs the containment check";
 
 pub fn parse(args: &[String]) -> Result<Cmd, Usage> {
     let (sub, rest) = args.split_first().ok_or_else(|| Usage(USAGE.into()))?;
     let mut from_dir: Option<PathBuf> = None;
     let mut yes = false;
     let mut json = false;
+    let mut retry = false;
     let mut it = rest.iter();
     while let Some(a) = it.next() {
         match (sub.as_str(), a.as_str()) {
@@ -62,6 +67,7 @@ pub fn parse(args: &[String]) -> Result<Cmd, Usage> {
             }
             ("update", "--yes") => yes = true,
             ("status", "--json") => json = true,
+            ("status", "--retry") => retry = true,
             (_, "--apply-system-changes" | "--use-system-chromium") => {
                 return Err(Usage(format!("{a} is not available in this build")))
             }
@@ -74,7 +80,7 @@ pub fn parse(args: &[String]) -> Result<Cmd, Usage> {
         "install" => Cmd::Install { from_dir },
         "update" => Cmd::Update { yes, from_dir },
         "remove" => Cmd::Remove,
-        "status" => Cmd::Status { json },
+        "status" => Cmd::Status { json, retry },
         "signin" => {
             return Err(Usage(
                 "browser signin is not available in this build".into(),
@@ -95,7 +101,7 @@ fn hint(class: &str) -> Option<&'static str> {
         "lock_held" => "another install, update or remove is running",
         "record_changed" => "a record in the install root changed while this ran; nothing of it was overwritten or deleted. Run the command again",
         "record_changed_left" => "a record changed while this ran and a file written by something else was left under a name like install.json.tmp-<hex>; it was not deleted. Inspect it, then run the command again",
-        "record_swap_stuck" => "the update was applied but a displaced file could not be put back; it is left under a name like install.json.tmp-<hex> and was not deleted",
+        "record_swap_stuck" => "install.json now names the new version, which is installed and kept; the old version stays in place with its cleanup record. A displaced file could not be put back and is left under a name like install.json.tmp-<hex>; it was not deleted. Look at it, then run `oab-computer browser status`",
         "record_replace_unsupported" => "this file system cannot replace a record atomically (RENAME_EXCHANGE); nothing was changed",
         "browser_running" => "a managed browser is running; stop it first. Nothing was deleted",
         "pins_changed_same_id" => "the embedded pins changed without a new manifest id; this needs a new release, and the installed version was left as it is",
@@ -207,7 +213,7 @@ pub fn execute(
             }
             Err(f) => fail(io, "remove", f),
         },
-        Cmd::Status { json } => match install::status(o) {
+        Cmd::Status { json, retry } => match install::status(o, *retry) {
             Ok(s) => {
                 if *json {
                     io.say(&s.to_json());
@@ -253,6 +259,18 @@ pub fn run(args: &[String]) -> i32 {
     let sources = Sources::system();
     let facts =
         move |p: &Path| Facts::gather(&sources, platform.unwrap_or(PlatformId::LinuxX64), p);
+    // The health check of an install runs in a transient unit with a runtime bound when the
+    // mechanism verifies (L2), and on the process-tree layers alone when it does not.
+    let launcher = sigstop::Supervised::new(std::sync::Arc::new(Systemd::new(None, false)));
+    let extras = |base: &Path, retry: bool| {
+        crate::probe::gather(
+            base,
+            retry,
+            std::env::var("MCP_UPSTREAM").ok().as_deref(),
+            &crate::procnet::Proc,
+            &|| Systemd::new(None, false).verify(),
+        )
+    };
     let o = Opts {
         manifest,
         files: Files {
@@ -272,6 +290,8 @@ pub fn run(args: &[String]) -> i32 {
         home: std::env::var_os("HOME").map(PathBuf::from),
         platform,
         facts: &facts,
+        launcher: &launcher,
+        extras: &extras,
     };
     let yes = matches!(cmd, Cmd::Update { yes: true, .. });
     let mut ask = |q: &str| -> Option<bool> {

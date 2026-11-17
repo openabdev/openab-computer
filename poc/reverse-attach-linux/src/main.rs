@@ -10,14 +10,21 @@
 mod attach;
 mod audit;
 mod auth;
+// L2 (#119): the managed child, its containment and the router. See the module docs.
+mod backend;
 // L1a and L1b (#119): the managed Playwright tier. `oab-computer browser ...` reaches all of it
 // from `main`, so the 6 MiB size check in CI measures the real code.
 mod browser_cli;
 mod cancel;
 mod catalog;
+mod child;
 mod consent;
+mod containment;
 mod download;
+#[cfg(test)]
+mod e2e_tests;
 mod elf;
+mod external;
 mod extract;
 mod health;
 mod http;
@@ -32,11 +39,18 @@ mod mcp;
 mod npm;
 mod platform;
 mod preflight;
+mod probe;
 mod proc;
+mod procnet;
 #[cfg(test)]
 mod profile_conformance;
+mod run_record;
+mod sigstop;
 mod state;
+mod stdio_client;
+mod sweep;
 mod tools;
+mod unit;
 #[cfg(test)]
 mod wire_conformance;
 
@@ -58,9 +72,24 @@ fn main() {
     install_crypto_provider();
     // `oab-computer browser <plan|preflight|install|update|remove|status>`: the managed Playwright
     // installer (L1b). Anything else keeps the daemon behaviour.
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("browser") {
-        std::process::exit(browser_cli::run(&args[2..]));
+    // `args_os`: a non-UTF-8 argument must not panic the daemon on start (#132). For `browser` it is
+    // a usage error.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|a| a == "browser") {
+        let Some(rest) = args[2..]
+            .iter()
+            .map(|a| a.to_str().map(str::to_string))
+            .collect::<Option<Vec<String>>>()
+        else {
+            eprintln!("browser: arguments must be UTF-8");
+            std::process::exit(2);
+        };
+        std::process::exit(browser_cli::run(&rest));
+    }
+    // SIGTERM, SIGINT and SIGHUP stop the managed child and its tree, then end the daemon. SIGKILL
+    // cannot be handled: the transient unit (BindsTo the daemon unit) is what covers it.
+    if let Err(e) = sigstop::install_daemon_handlers(sigstop::stop_all) {
+        eprintln!("signal handlers not installed: {e}");
     }
     // Input devices first, so clients see pointer/keyboard capabilities before any tool
     // call (see platform/linux/seat.rs). Non-fatal: a node without a seat still serves bash.

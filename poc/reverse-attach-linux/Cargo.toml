@@ -19,7 +19,8 @@ sha2 = "0.10"
 # gzip and raw deflate on the pure-Rust miniz_oxide backend; also provides the CRC-32 for zip entries.
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 # openat/mkdirat/symlinkat/renameat2/flock under a directory fd; `process` for geteuid (directory
-# ownership checks), kill, waitid and PR_SET_PDEATHSIG for the installer's child processes (L1b).
-rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process"] }
+# ownership checks), kill, waitid and PR_SET_PDEATHSIG for the installer's child processes (L1b);
+# L2 adds pidfd_open and pidfd_send_signal (process) and the self-pipe of the signal handler (pipe).
+rustix = { version = "1.1", default-features = false, features = ["std", "fs", "process", "pipe"] }
 # Synchronous HTTPS client on the same rustls ring provider. No proxy, cookie, gzip or json features.
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }

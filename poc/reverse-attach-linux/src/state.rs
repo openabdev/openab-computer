@@ -519,9 +519,15 @@ impl Lock {
 }
 
 fn open_lock_file(root: &Root) -> R<OwnedFd> {
+    open_named_lock(root, LOCK_NAME)
+}
+
+/// Opens (creating) a lock file directly below the root: a regular file we own, never followed
+/// through a link. The file is kept permanently; only the `flock` on it comes and goes.
+pub fn open_named_lock(root: &Root, name: &str) -> R<OwnedFd> {
     let fd = rustix::fs::openat(
         root.fd(),
-        LOCK_NAME,
+        name,
         OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::from_raw_mode(0o600),
     )
@@ -717,18 +723,21 @@ fn tmp_base(name: &str) -> Option<&'static str> {
 }
 
 /// A leftover temp file is ours only with the exact generated name and content that parses as
-/// the record it would have become. Anything else (a note someone named `install.json.tmp-x`) is
+/// the record it would have become. For `install.json` that is the rule of the record itself
+/// (`record_is_ours`: the version directory it names carries the installer's marker), so a file a
+/// third party left under that name, or that `write_record_cas` parked there, is not claimed on the
+/// strength of its shape alone (#132). Anything else (a note someone named `install.json.tmp-x`) is
 /// left in place.
-fn tmp_bytes_ours(name: &str, bytes: &[u8]) -> bool {
+fn tmp_bytes_ours(root: &Root, name: &str, bytes: &[u8]) -> bool {
     match tmp_base(name) {
-        Some(RECORD_NAME) => InstallRecord::parse(bytes).is_some(),
+        Some(RECORD_NAME) => InstallRecord::parse(bytes).is_some_and(|r| record_is_ours(root, &r)),
         Some(_) => parse_pending(bytes).is_some(),
         None => false,
     }
 }
 
 /// `pw-config.json` is ours only when it is a JSON object with `_oabInstallerOwned: true`.
-fn config_bytes_ours(bytes: &[u8]) -> bool {
+pub fn config_bytes_ours(bytes: &[u8]) -> bool {
     serde_json::from_slice::<Value>(bytes)
         .ok()
         .and_then(|v| v.get("_oabInstallerOwned").and_then(Value::as_bool))
@@ -766,10 +775,15 @@ pub fn live_run_records(root: &Root) -> usize {
         return 0;
     }
     let Ok(dir) = rustix::fs::Dir::read_from(&run) else {
-        return 0;
+        // Cannot be listed: not shown to be empty.
+        return 1;
     };
     let mut names = Vec::new();
-    for e in dir.flatten().take(10_000) {
+    for (i, e) in dir.flatten().enumerate() {
+        // More entries than can be read: records may be hidden, so count one as live (fail closed).
+        if i >= 10_000 {
+            return 1;
+        }
         let n = e.file_name().to_bytes();
         if n.ends_with(b".json") {
             names.push(String::from_utf8_lossy(n).into_owned());
@@ -1197,9 +1211,11 @@ pub fn remove_all(root: &Root) -> R<Report> {
             drop_checked(root, name, RECORD_CAP, &record_ours, &mut report);
         }
     }
+    // Files first: a record's rule (`record_is_ours`) reads the version directory it names, which
+    // must still be there. Directories after.
     for (name, p) in &plan {
         match p {
-            Plan::Record => {}
+            Plan::Record | Plan::Data | Plan::Staging | Plan::Version => {}
             Plan::Skip(why) => report.leave(name, why),
             Plan::Pending => drop_checked(
                 root,
@@ -1215,31 +1231,23 @@ pub fn remove_all(root: &Root) -> R<Report> {
                     root,
                     name,
                     RECORD_CAP,
-                    &move |b| tmp_bytes_ours(&nm, b),
+                    &move |b| tmp_bytes_ours(root, &nm, b),
                     &mut report,
                 )
             }
-            Plan::Data => {
-                // A walker error after the record was deleted must not hide the report.
-                if drop_dir(root, name, OWNED_DATA, &mut report).is_err() {
-                    report.failed = true;
-                    report.leave(name, "could not be fully removed");
-                }
-            }
-            Plan::Staging => {
-                // A walker error after the record was deleted must not hide the report.
-                if drop_dir(root, name, STAGING_MARK, &mut report).is_err() {
-                    report.failed = true;
-                    report.leave(name, "could not be fully removed");
-                }
-            }
-            Plan::Version => {
-                // A walker error after the record was deleted must not hide the report.
-                if drop_dir(root, name, OWNED, &mut report).is_err() {
-                    report.failed = true;
-                    report.leave(name, "could not be fully removed");
-                }
-            }
+        }
+    }
+    for (name, p) in &plan {
+        let marker = match p {
+            Plan::Data => OWNED_DATA,
+            Plan::Staging => STAGING_MARK,
+            Plan::Version => OWNED,
+            _ => continue,
+        };
+        // A walker error after the record was deleted must not hide the report.
+        if drop_dir(root, name, marker, &mut report).is_err() {
+            report.failed = true;
+            report.leave(name, "could not be fully removed");
         }
     }
     Ok(report)

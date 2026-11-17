@@ -59,6 +59,8 @@ pub fn tool_sys_info() -> Value {
         "arch": std::env::consts::ARCH,
         "displays": if display_ok { json!([{ "index": 0, "kind": "wayland" }]) } else { json!([]) },
         "permissions": { "screen_recording": display_ok, "accessibility": false },
-        "agent": { "name": AGENT_NAME, "version": AGENT_VERSION, "platform": "linux" }
+        "agent": { "name": AGENT_NAME, "version": AGENT_VERSION, "platform": "linux" },
+        // Which Playwright serves `browser_*` and whether it may start: fixed fields only (R4.1).
+        "browser": crate::backend::sys_info_field()
     })
 }

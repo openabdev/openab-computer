@@ -36,10 +36,19 @@ fn arguments_parse_and_everything_else_is_a_usage_error() {
         })
     );
     assert_eq!(parse(&args(&["remove"])), Ok(Cmd::Remove));
-    assert_eq!(parse(&args(&["status"])), Ok(Cmd::Status { json: false }));
+    assert_eq!(
+        parse(&args(&["status"])),
+        Ok(Cmd::Status {
+            json: false,
+            retry: false
+        })
+    );
     assert_eq!(
         parse(&args(&["status", "--json"])),
-        Ok(Cmd::Status { json: true })
+        Ok(Cmd::Status {
+            json: true,
+            retry: false
+        })
     );
     for bad in [
         vec![],
@@ -125,7 +134,10 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
     let r = exec(
         &e,
         &m,
-        &Cmd::Status { json: false },
+        &Cmd::Status {
+            json: false,
+            retry: false,
+        },
         None,
         good_facts(),
         None,
@@ -160,18 +172,24 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
     let r = exec(
         &e,
         &m,
-        &Cmd::Status { json: false },
+        &Cmd::Status {
+            json: false,
+            retry: false,
+        },
         None,
         good_facts(),
         None,
     );
-    assert_eq!(r.out.lines().count(), 10);
+    assert_eq!(r.out.lines().count(), 14);
     assert!(r.out.lines().all(|l| l.contains(": ")));
     assert!(r.out.contains("state: installed") && r.out.contains("installed_id: test-id-1"));
     let r = exec(
         &e,
         &m,
-        &Cmd::Status { json: true },
+        &Cmd::Status {
+            json: true,
+            retry: false,
+        },
         None,
         good_facts(),
         None,
@@ -181,7 +199,7 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
     assert_eq!(v["update_available"], false);
     assert_eq!(v["pins_match"], true);
     assert_eq!(v["previous"], Value::Null);
-    assert_eq!(v.as_object().unwrap().len(), 10);
+    assert_eq!(v.as_object().unwrap().len(), 14);
 
     // update without a yes, then declined, then confirmed.
     let u = Cmd::Update {
@@ -285,7 +303,10 @@ fn failures_print_one_fixed_line_and_a_hint_and_nothing_else() {
     let r = exec(
         &e,
         &m,
-        &Cmd::Status { json: true },
+        &Cmd::Status {
+            json: true,
+            retry: false,
+        },
         None,
         good_facts(),
         None,
@@ -315,6 +336,8 @@ fn an_unsupported_platform_is_reported() {
         home: None,
         platform: None,
         facts: &facts,
+        launcher: &crate::sigstop::Plain,
+        extras: &|_: &Path, _: bool| crate::probe::Extras::none(),
     };
     for cmd in [Cmd::Plan, Cmd::Preflight] {
         let (mut out, mut err) = (Vec::new(), Vec::new());

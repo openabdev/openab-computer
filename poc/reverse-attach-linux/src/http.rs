@@ -1,8 +1,9 @@
-//! HTTP/1.1, both directions, on std sockets: a tiny blocking client (upstream MCP, http:// only) and the loopback control server with its routes.
+//! HTTP/1.1 on std sockets: the loopback control server with its routes. (The upstream MCP client
+//! is `external.rs`.)
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -16,129 +17,7 @@ use crate::attach::{
     grant_json, new_grant_id, now_epoch_secs, valid_session, GrantInfo, Registry, GRANT_COUNTER,
 };
 use crate::auth::AuthPolicy;
-use crate::mcp::{answer_request, error_response, parse_request_bytes, Upstream, UPSTREAMS};
-
-// Tiny blocking HTTP/1.1 client for http:// only (used for the upstream MCP)
-// ---------------------------------------------------------------------------
-
-pub(crate) struct HttpReply {
-    pub(crate) status: u16,
-    pub(crate) headers: Vec<(String, String)>,
-    pub(crate) body: String,
-}
-
-pub(crate) fn http_post(
-    url: &str,
-    headers: &[(&str, &str)],
-    body: &str,
-    timeout: Duration,
-) -> Result<HttpReply, String> {
-    let after_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| format!("only http:// supported: {url}"))?;
-    let (authority, path) = match after_scheme.find('/') {
-        Some(idx) => (&after_scheme[..idx], &after_scheme[idx..]),
-        None => (after_scheme, "/"),
-    };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) => (
-            h.to_string(),
-            p.parse::<u16>().map_err(|_| "bad port".to_string())?,
-        ),
-        None => (authority.to_string(), 80u16),
-    };
-    let mut request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    );
-    for (k, v) in headers {
-        request.push_str(&format!("{k}: {v}\r\n"));
-    }
-    request.push_str("\r\n");
-    request.push_str(body);
-
-    let addr = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|e| format!("resolve failed: {e}"))?
-        .next()
-        .ok_or_else(|| "no address resolved".to_string())?;
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-        .map_err(|e| format!("connect failed: {e}"))?;
-    stream.set_read_timeout(Some(timeout)).ok();
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("write failed: {e}"))?;
-    let mut raw = Vec::new();
-    stream
-        .read_to_end(&mut raw)
-        .map_err(|e| format!("read failed: {e}"))?;
-    let text = String::from_utf8_lossy(&raw).to_string();
-    let (head, resp_body) = match text.find("\r\n\r\n") {
-        Some(i) => (&text[..i], &text[i + 4..]),
-        None => (text.as_str(), ""),
-    };
-    let mut lines = head.lines();
-    let status = lines
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-    let mut hdrs = Vec::new();
-    let mut chunked = false;
-    for l in lines {
-        if let Some((k, v)) = l.split_once(':') {
-            if k.trim().eq_ignore_ascii_case("transfer-encoding")
-                && v.to_lowercase().contains("chunked")
-            {
-                chunked = true;
-            }
-            hdrs.push((k.trim().to_lowercase(), v.trim().to_string()));
-        }
-    }
-    let body = if chunked {
-        dechunk(resp_body)
-    } else {
-        resp_body.to_string()
-    };
-    Ok(HttpReply {
-        status,
-        headers: hdrs,
-        body,
-    })
-}
-
-fn dechunk(s: &str) -> String {
-    let mut out = String::new();
-    let mut rest = s;
-    while let Some(nl) = rest.find("\r\n") {
-        let size = usize::from_str_radix(rest[..nl].trim().split(';').next().unwrap_or("0"), 16)
-            .unwrap_or(0);
-        if size == 0 {
-            break;
-        }
-        let start = nl + 2;
-        let end = (start + size).min(rest.len());
-        out.push_str(&rest[start..end]);
-        rest = rest.get(end + 2..).unwrap_or("");
-    }
-    out
-}
-
-/// JSON body, or the first `data:` line of an SSE body.
-pub(crate) fn parse_mcp_body(body: &str) -> Result<Value, String> {
-    let t = body.trim();
-    if let Ok(v) = serde_json::from_str::<Value>(t) {
-        return Ok(v);
-    }
-    for line in t.lines() {
-        if let Some(d) = line.strip_prefix("data:") {
-            if let Ok(v) = serde_json::from_str::<Value>(d.trim()) {
-                return Ok(v);
-            }
-        }
-    }
-    Err(format!("unparseable MCP body: {}", &t[..t.len().min(120)]))
-}
+use crate::mcp::{answer_request, error_response, parse_request_bytes, UPSTREAMS};
 
 // ---------------------------------------------------------------------------
 // HTTP control server
@@ -163,10 +42,8 @@ pub fn serve() {
         }
     };
     eprintln!("auth: {}", policy.describe());
-    let ups = Upstream::from_env();
-    for u in &ups {
-        eprintln!("upstream {} = {}", u.name, u.url);
-    }
+    // The router picks the browser backend (managed child or external listener) and may exit 64.
+    let ups = crate::backend::build_for_daemon(&crate::backend::EnvIn::from_env());
     if let Ok(mut g) = UPSTREAMS.lock() {
         *g = ups;
     }

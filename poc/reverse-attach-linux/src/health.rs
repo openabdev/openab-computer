@@ -211,17 +211,31 @@ fn is_error_result(r: &Value) -> bool {
 
 /// Runs the whole check. `scope` is the staging directory, so a detached grandchild whose
 /// executable is below it is killed with the rest of the tree before this returns.
+#[cfg(test)]
 pub fn check(spec: &Spec, scope: &Path, t: &Timeouts) -> Result<(), Failure> {
-    let mut child = Child::spawn(spec, true, true, MAX_LINE, scope).map_err(|_| Failure::Check)?;
+    check_with(
+        Child::spawn(spec, true, true, MAX_LINE, scope).map(crate::sigstop::Launched::plain),
+        t,
+    )
+}
+
+/// [`check`] over a child that the caller started (`sigstop::Launcher`: a transient unit when the
+/// mechanism verifies). The child, its unit and its run record end before this returns.
+pub fn check_with(
+    launched: std::io::Result<crate::sigstop::Launched>,
+    t: &Timeouts,
+) -> Result<(), Failure> {
+    let mut launched = launched.map_err(|_| Failure::Check)?;
     let result = {
         let mut rpc = Rpc {
-            child: &mut child,
+            child: &mut launched.child,
             next: 0,
         };
         steps(&mut rpc, t)
     };
-    let refused = child.stderr_class() == StderrClass::LaunchRefused;
-    child.stop();
+    let refused = launched.child.stderr_class() == StderrClass::LaunchRefused;
+    launched.child.stop();
+    drop(launched);
     match result {
         Ok(()) => Ok(()),
         Err(RpcError::Cancelled) => Err(Failure::Cancelled),

@@ -366,6 +366,8 @@ impl Env {
             home: None,
             platform: Some(PlatformId::LinuxX64),
             facts: &facts_fn,
+            launcher: &crate::sigstop::Plain,
+            extras: &|_: &Path, _: bool| crate::probe::Extras::none(),
         };
         f(&o)
     }
@@ -422,7 +424,7 @@ impl Env {
     }
 
     fn status(&self, m: &Manifest) -> Status {
-        self.with(m, None, good_facts(), |o| status(o).unwrap())
+        self.with(m, None, good_facts(), |o| status(o, false).unwrap())
     }
 
     fn remove(&self, m: &Manifest) -> R<Option<Removal>> {
@@ -616,6 +618,11 @@ fn a_full_install_commits_records_and_leaves_no_trace_of_the_build() {
         "chromium_revision",
         "pins_match",
         "pending_cleanup",
+        // L2, R6.4.
+        "containment",
+        "external_configured",
+        "listeners",
+        "refusal",
     ];
     want.sort_unstable();
     let mut got = keys.clone();
@@ -782,7 +789,9 @@ fn a_symlinked_root_stops_install_update_remove_and_status() {
     assert_eq!(e.install(&m).0, fail("root_not_directory"));
     assert_eq!(e.update(&m, Some(true), None).0, fail("root_not_directory"));
     assert_eq!(e.remove(&m).err(), Some(Fail("root_not_directory")));
-    assert!(e.with(&m, None, good_facts(), |o| status(o)).is_err());
+    assert!(e
+        .with(&m, None, good_facts(), |o| status(o, false))
+        .is_err());
     assert_sentinel(&sentinel);
     assert_eq!(std::fs::read_dir(&out).unwrap().count(), 1);
     assert_eq!(e.net.conns(), 0);
@@ -1405,6 +1414,8 @@ fn the_selection_check_refuses_a_bad_manifest_when_checking_is_on() {
         home: None,
         platform: Some(PlatformId::LinuxX64),
         facts: &facts,
+        launcher: &crate::sigstop::Plain,
+        extras: &|_: &Path, _: bool| crate::probe::Extras::none(),
     };
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let r = install(

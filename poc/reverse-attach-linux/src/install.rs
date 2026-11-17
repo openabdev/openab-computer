@@ -67,6 +67,10 @@ pub struct Opts<'a> {
     pub home: Option<PathBuf>,
     pub platform: Option<PlatformId>,
     pub facts: &'a dyn Fn(&Path) -> Facts,
+    /// How the health check's child is started (a unit when the mechanism verifies, L2).
+    pub launcher: &'a dyn crate::sigstop::Launcher,
+    /// The L2 `status` fields: `(base, retry)`.
+    pub extras: &'a dyn Fn(&Path, bool) -> crate::probe::Extras,
 }
 
 pub struct Io<'a> {
@@ -519,7 +523,7 @@ fn build(
     );
     io.note("running the headless health check");
     // The children are stopped inside `check`; the temporary directory goes when `short_tmp` drops.
-    let checked = health::check(&spec, &abs, &o.timeouts);
+    let checked = health::check_with(o.launcher.launch(root, &spec, &abs), &o.timeouts);
     drop(short_tmp);
     checked.map_err(|f| Fail(f.class()))?;
 
@@ -781,8 +785,16 @@ pub fn update(o: &Opts<'_>, io: &mut Io<'_>, ask: &mut dyn FnMut(&str) -> Option
         expected,
     ) {
         if e == Fail("record_swap_stuck") {
-            // `install.json` already names the new version, so that directory must stay.
+            // `install.json` already names the new version, so that directory and the data
+            // directories this run created must stay, and the old version must not be forgotten:
+            // it gets its cleanup record (#132).
             guard.new_version = None;
+            guard.created_data.clear();
+            let _ = state::write_record(
+                root.fd(),
+                state::PENDING_NAME,
+                state::pending_json(&old.version).as_bytes(),
+            );
         }
         return Err(e);
     }
@@ -844,9 +856,11 @@ pub struct Status {
     pub chromium_revision: Option<String>,
     pub pins_match: Option<bool>,
     pub pending_cleanup: Option<String>,
+    /// R6.4, L2: fixed vocabulary, see `probe.rs`.
+    pub extras: crate::probe::Extras,
 }
 
-pub fn status(o: &Opts<'_>) -> R<Status> {
+pub fn status(o: &Opts<'_>, retry: bool) -> R<Status> {
     let sel = selection(o)?;
     let path = o.base.join("oab-computer").join("playwright");
     let mut s = Status {
@@ -860,6 +874,7 @@ pub fn status(o: &Opts<'_>) -> R<Status> {
         chromium_revision: None,
         pins_match: None,
         pending_cleanup: None,
+        extras: (o.extras)(&o.base, retry),
     };
     let Some(root) = Root::open(&o.base, false)? else {
         return Ok(s);
@@ -899,6 +914,13 @@ impl Status {
         m.insert("chromium_revision".into(), jstr(&self.chromium_revision));
         m.insert("pins_match".into(), jbool(self.pins_match));
         m.insert("pending_cleanup".into(), jstr(&self.pending_cleanup));
+        m.insert("containment".into(), self.extras.containment.clone().into());
+        m.insert(
+            "external_configured".into(),
+            self.extras.external_configured.into(),
+        );
+        m.insert("listeners".into(), self.extras.listeners.clone().into());
+        m.insert("refusal".into(), self.extras.refusal.clone().into());
         Value::Object(m).to_string()
     }
 
@@ -916,6 +938,10 @@ impl Status {
             format!("chromium_revision: {}", opt(&self.chromium_revision)),
             format!("pins_match: {}", ob(self.pins_match)),
             format!("pending_cleanup: {}", opt(&self.pending_cleanup)),
+            format!("containment: {}", self.extras.containment),
+            format!("external_configured: {}", self.extras.external_configured),
+            format!("listeners: {}", self.extras.listeners),
+            format!("refusal: {}", self.extras.refusal),
         ]
     }
 }

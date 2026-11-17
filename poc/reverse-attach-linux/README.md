@@ -191,7 +191,7 @@ comment).
 | `install [--from-dir DIR]` | Installs the pinned Node.js, Playwright MCP and Chromium below `${XDG_DATA_HOME:-~/.local/share}/oab-computer/playwright/`. `--from-dir` installs from pre-fetched files in `DIR` (the basenames of the pinned URLs and of the lockfile's `resolved` URLs), hash-checked the same way, with `npm ci --offline` and no network. |
 | `update [--yes] [--from-dir DIR]` | Prompted, never silent (no terminal and no `--yes` is a refusal). Installs the new version beside the old one and keeps the old one if anything fails. |
 | `remove` | Deletes only what carries the installer's marker and prints `left in place:` for everything else. |
-| `status [--json]` | Install state, ids, platform, whether an update is available. `--json` has a fixed set of keys. |
+| `status [--json] [--retry]` | Install state, ids, platform, whether an update is available, and (L2) `containment`, `external_configured`, `listeners` and `refusal`. `--json` has a fixed set of keys. `--retry` removes the unavailable latch and re-runs the containment self-test in this process. |
 
 Exit codes: `0` success (including a no-op), `1` the operation failed or the preflight found a
 blocker (one `browser: <command>_failed class=<token>` line on stderr), `2` a usage error.
@@ -210,6 +210,85 @@ blocker (one `browser: <command>_failed class=<token>` line on stderr), `2` a us
 
 The L1b tests install into a temp root with a stub `node`; real Chromium runs only in the
 manual end-to-end check recorded in the PR.
+
+## Managed Playwright tier, L2: the managed child and the router (#119)
+
+`@playwright/mcp` runs as a stdio child of the daemon, inside a kernel-enforced whole-tree stop
+mechanism, and a router picks which Playwright serves `browser_*`. Design:
+`docs/adr/linux-browser-tier.md` ("Process containment", "Router", D4, D5, D15, D17) and
+`docs/requirements/linux-browser-tier.md` (R1, R4, R6.1, R6.2, R6.4).
+
+- `src/containment.rs`, `src/unit.rs`: the mechanism is a transient `systemd-run --user` service
+  (`KillMode=control-group`, `BindsTo` and `After` the daemon unit, `NoNewPrivileges`, `MemoryMax`,
+  `TasksMax`, and the mount namespace tier where a probe shows it works). The command is
+  `/usr/bin/env -i -C <dir> NAME=value ... node ...`, so the unit inherits nothing from the user
+  manager. A self-test (two fixture units, a `SIGKILL` of the parent's main process, then a check
+  that the bound unit and every process in its cgroup are gone and not revived when the parent
+  restarts under `Restart=always`) must pass on the host before any child is started. Otherwise the
+  backend is `unavailable: containment_unverified`. The daemon must be the main process of its own
+  unit, or the answer is `daemon_not_unit_main`. The fixture design is this module's own: the ADR
+  names the mechanism and says nothing about the fixture.
+- `src/child.rs`: launch vector (`--password-store=basic` always, in `pw-config.json`, rewritten
+  before every start; `--sandbox`; never `--no-sandbox`, `--port`, `--host`, `--allowed-hosts`),
+  start, restart rules, stop. Restart happens on the next call only, with a backoff of 1, 2, 4, up to
+  30 s; five failures in two minutes make the backend unavailable until `browser status --retry`
+  (which removes `run/latch.json`) or the next daemon start. `sandbox_unavailable` and a
+  `profile_locked` with a live holder are not retried, and the first is written as the recorded
+  refusal (`run/refusal.json`) that `--use-system-chromium` needs (L3). Long-lived children are forked
+  by one thread that never exits, because `PR_SET_PDEATHSIG` is tied to the forking thread.
+- `src/stdio_client.rs`: newline-delimited JSON-RPC; lines of at most 8 MiB, at most 64 calls in
+  flight, a bounded write queue, `ping` for the health check (2 s), `notifications/cancelled` on a
+  timeout. Errors are fixed classes (`upstream_timeout`, `upstream_bad_body`, `upstream_rpc_error`,
+  `upstream_unreachable`, `upstream_busy`); no child text reaches one.
+- `src/sweep.rs`, `src/run_record.rs`: the sweep before every child start (`.sweep.lock`, skipped
+  while another start holds it) kills same-user processes whose executable is under a version or
+  staging directory of the root, through a pidfd, except what a live run record claims. Run
+  records (`run/<kind>-<pid>.json`: pid, start time, kind, unit) are at most 4 KiB each and at most 64.
+  The sweep kills a process whose executable is there even if the user started it by hand.
+- `src/sigstop.rs`: `SIGTERM`, `SIGINT` and `SIGHUP` stop the managed child and exit. A CLI child
+  (the health check of `browser install|update`) runs in its own transient unit with a
+  `RuntimeMaxSec`, bound to nothing; `SIGKILL` of the CLI is cleaned by the next start's sweep, not by
+  the kernel.
+- `src/backend.rs`, `src/external.rs`, `src/procnet.rs`: the `Upstream` interface, the managed
+  backend (`tools/list` filtered to the 32 catalog names), the external backend and the router.
+
+Router, in order: `OAB_BROWSER=off` switches the managed tier off (a `MCP_UPSTREAM browser=` line
+alone then still serves as external, as the cutover runbook's rollback assumes; with no line the
+backend is `off`). A valid managed install wins, and a `MCP_UPSTREAM browser=` line is ignored with
+one `browser: external_upstream_ignored` log line and `sys_info.browser.external_upstream_ignored`,
+unless `MCP_BROWSER_BACKEND=external`. `MCP_BROWSER_BACKEND=external` with no such line is
+`unavailable: external_not_configured`. An installed but unusable managed tier is `unavailable` and
+never falls to external. With nothing installed the line alone is external. No call is retried on
+another backend.
+
+An external upstream must be `http://127.0.0.1:<port>/<path>` or `http://[::1]:<port>/<path>`
+(anything else, `localhost` included, makes the daemon exit 64 so its unit does not restart-loop).
+Redirects are refused, errors are fixed classes with no upstream text, bodies are bounded, and the
+owner uid of the server end of every connection is read from `/proc/net/tcp*` after the connect and
+before any request byte; a different uid or an unreadable table fails closed
+(`listener_owner_unknown`). Loopback is not private: a same-user process that listens on that port
+is outside this control.
+
+| Environment variable | Meaning |
+| --- | --- |
+| `OAB_BROWSER=off` | The managed tier starts no child (R1.6). |
+| `MCP_BROWSER_BACKEND=managed\|external` | Explicit choice. `external` is the explicit trust for the `MCP_UPSTREAM browser=` line. Any other value is `unavailable: backend_invalid`. |
+| `MCP_UPSTREAM` | Unchanged name; used as external only as described above, and only with a literal loopback host. |
+
+`sys_info` gains a `browser` object with fixed fields: `backend` (`managed`, `external`,
+`unavailable`, `off`), `reason` (a fixed class), `containment` (`systemd`, `systemd+mount`,
+`unverified`, `not_applicable`), `display` (`headed`, `headless`, `not_applicable`) and
+`external_upstream_ignored`. It carries no URL, path, token or page data.
+
+Known limit (V2): with the pinned Playwright and Chromium the managed tree opens no TCP or UDP
+socket, but it does hold two listening Unix sockets inside its private `0700` `TMPDIR`
+(Playwright's browser socket and Chromium's `SingletonSocket`). `browser status` reports them as
+`listeners: tcp=0 udp=0 unix=2`. R1.1 says none, so this is open against the requirement.
+
+The tests: the pure parts run anywhere; process, `/proc` and `systemd` tests are Linux-only. The
+tests that need a user manager are `#[ignore]`d and run with `OAB_L2_SYSTEMD=1 cargo test --release
+containment -- --ignored`; the end-to-end harness (`src/e2e_tests.rs`) runs as the main process of a
+transient unit with `OAB_L2_E2E=1`. Their units are named `oab-l2-test-*`.
 
 ## Not yet (vs the Swift implementation)
 

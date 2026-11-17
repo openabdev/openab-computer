@@ -2,157 +2,17 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::http::{http_post, parse_mcp_body, HttpReply};
+use crate::backend::Upstream;
 use crate::jobs::tools::JOB_TOOL_NAMES;
 use crate::tools::sysinfo::AGENT_VERSION;
 use crate::tools::{tool_bash, tool_key, tool_mouse, tool_result, tool_screenshot, tool_sys_info};
 
-// Upstream MCP (e.g. @playwright/mcp on loopback), re-served under our tools/list.
-// Mirrors Swift `UpstreamMCP`: Streamable HTTP request/response, session id held
-// here and re-established on 400/404, tools cached 30 s, down → tools absent.
+// Upstreams (the managed Playwright child or an external MCP on loopback) are re-served under our
+// tools/list. The interface, both backends and the router are in `backend.rs`.
 // ---------------------------------------------------------------------------
-
-pub(crate) struct Upstream {
-    pub(crate) name: String,
-    pub(crate) url: String,
-    pub(crate) session_id: Mutex<Option<String>>,
-    pub(crate) cache: Mutex<Option<(std::time::Instant, Vec<Value>)>>,
-}
-
-impl Upstream {
-    /// MCP_UPSTREAM="browser=http://127.0.0.1:8794/mcp[,name=url...]"
-    pub(crate) fn from_env() -> Vec<Arc<Upstream>> {
-        std::env::var("MCP_UPSTREAM")
-            .unwrap_or_default()
-            .split(',')
-            .filter_map(|e| e.trim().split_once('='))
-            .map(|(n, u)| {
-                Arc::new(Upstream {
-                    name: n.trim().to_string(),
-                    url: u.trim().to_string(),
-                    session_id: Mutex::new(None),
-                    cache: Mutex::new(None),
-                })
-            })
-            .collect()
-    }
-
-    fn post(&self, msg: &Value) -> Result<HttpReply, String> {
-        let sid = self.session_id.lock().ok().and_then(|g| g.clone());
-        let mut headers: Vec<(&str, &str)> = vec![
-            ("Content-Type", "application/json"),
-            ("Accept", "application/json, text/event-stream"),
-        ];
-        if let Some(s) = sid.as_deref() {
-            headers.push(("Mcp-Session-Id", s));
-        }
-        http_post(
-            &self.url,
-            &headers,
-            &msg.to_string(),
-            Duration::from_secs(90),
-        )
-    }
-
-    fn initialize(&self) -> Result<(), String> {
-        // Never send a stale id on initialize: the upstream answers 404 to it.
-        if let Ok(mut g) = self.session_id.lock() {
-            *g = None;
-        }
-        let r = self.post(&json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "oab-computer-rpi", "version": AGENT_VERSION}}
-        }))?;
-        if !(200..300).contains(&r.status) {
-            return Err(format!(
-                "upstream {} initialize HTTP {}",
-                self.name, r.status
-            ));
-        }
-        let sid = r
-            .headers
-            .iter()
-            .find(|(k, _)| k == "mcp-session-id")
-            .map(|(_, v)| v.clone());
-        if let Ok(mut g) = self.session_id.lock() {
-            *g = sid;
-        }
-        let _ = self.post(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
-        if let Ok(mut c) = self.cache.lock() {
-            *c = None;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn rpc(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
-        if self
-            .session_id
-            .lock()
-            .ok()
-            .map(|g| g.is_none())
-            .unwrap_or(true)
-        {
-            self.initialize()?;
-        }
-        let mut msg = json!({"jsonrpc": "2.0", "id": 1, "method": method});
-        if let Some(p) = &params {
-            msg["params"] = p.clone();
-        }
-        let mut r = self.post(&msg)?;
-        if r.status == 404 || r.status == 400 {
-            // Upstream lost our session (restart). One re-init, one retry.
-            self.initialize()?;
-            r = self.post(&msg)?;
-        }
-        if !(200..300).contains(&r.status) {
-            return Err(format!(
-                "upstream {} HTTP {}: {}",
-                self.name,
-                r.status,
-                &r.body[..r.body.len().min(120)]
-            ));
-        }
-        let v = parse_mcp_body(&r.body)?;
-        if let Some(e) = v.get("error") {
-            return Err(format!("upstream {} error: {e}", self.name));
-        }
-        Ok(v.get("result").cloned().unwrap_or(Value::Null))
-    }
-
-    pub(crate) fn tools(&self) -> Vec<Value> {
-        if let Ok(c) = self.cache.lock() {
-            if let Some((at, t)) = c.as_ref() {
-                if at.elapsed() < Duration::from_secs(30) {
-                    return t.clone();
-                }
-            }
-        }
-        let list = match self.rpc("tools/list", None) {
-            Ok(r) => r
-                .get("tools")
-                .and_then(|t| t.as_array())
-                .cloned()
-                .unwrap_or_default(),
-            Err(e) => {
-                eprintln!("upstream {}: {e}", self.name);
-                // Do not cache a failure: the next tools/list retries immediately.
-                if let Ok(mut c) = self.cache.lock() {
-                    *c = None;
-                }
-                return Vec::new();
-            }
-        };
-        if let Ok(mut c) = self.cache.lock() {
-            *c = Some((std::time::Instant::now(), list.clone()));
-        }
-        list
-    }
-}
 
 /// Whether an upstream tool (every `browser_*` tool and anything else an upstream
 /// serves) is visible/callable under `profile`. The browser uses this node's persistent
@@ -301,9 +161,9 @@ pub(crate) fn resolve_stored_profile(
     })
 }
 
-pub(crate) static UPSTREAMS: Mutex<Vec<Arc<Upstream>>> = Mutex::new(Vec::new());
+pub(crate) static UPSTREAMS: Mutex<Vec<Arc<dyn Upstream>>> = Mutex::new(Vec::new());
 
-pub(crate) fn upstreams() -> Vec<Arc<Upstream>> {
+pub(crate) fn upstreams() -> Vec<Arc<dyn Upstream>> {
     UPSTREAMS.lock().map(|g| g.clone()).unwrap_or_default()
 }
 
@@ -311,8 +171,13 @@ pub(crate) fn upstreams() -> Vec<Arc<Upstream>> {
 pub(crate) fn upstream_tools_for_with(
     profile: &str,
     local_names: &[&str],
-    ups: &[Arc<Upstream>],
-) -> Vec<(Arc<Upstream>, Value)> {
+    ups: &[Arc<dyn Upstream>],
+) -> Vec<(Arc<dyn Upstream>, Value)> {
+    // A profile that sees no upstream tool must not make an upstream do work (the managed backend
+    // would start its child to list tools nobody may see).
+    if !upstream_tool_allowed("", profile) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for up in ups {
         for t in up.tools() {
@@ -331,18 +196,12 @@ pub(crate) fn upstream_tools_for_with(
 pub(crate) fn upstream_owning_with(
     name: &str,
     profile: &str,
-    ups: &[Arc<Upstream>],
-) -> Option<Arc<Upstream>> {
+    ups: &[Arc<dyn Upstream>],
+) -> Option<Arc<dyn Upstream>> {
     if !upstream_tool_allowed(name, profile) {
         return None;
     }
-    ups.iter()
-        .find(|up| {
-            up.tools()
-                .iter()
-                .any(|t| t.get("name").and_then(|n| n.as_str()) == Some(name))
-        })
-        .cloned()
+    ups.iter().find(|up| up.owns(name)).cloned()
 }
 
 // ---------------------------------------------------------------------------
@@ -568,7 +427,7 @@ pub(crate) fn tool_list(profile: &str) -> Value {
 }
 
 /// `tool_list` over an explicit upstream set (tests pass a fake).
-pub(crate) fn tool_list_with(profile: &str, ups: &[Arc<Upstream>]) -> Value {
+pub(crate) fn tool_list_with(profile: &str, ups: &[Arc<dyn Upstream>]) -> Value {
     let sys_info = json!({
         "name": "sys_info",
         "description": "Report OS, CPU, memory, architecture and hostname of this node.",
@@ -682,7 +541,7 @@ pub(crate) fn handle_tool_call_with(
     params: &Value,
     profile: &str,
     cancel: Option<&AtomicBool>,
-    ups: &[Arc<Upstream>],
+    ups: &[Arc<dyn Upstream>],
 ) -> Result<Value, (i64, String)> {
     let name = params.get("name").and_then(|n| n.as_str()).ok_or_else(|| {
         (
@@ -710,12 +569,7 @@ pub(crate) fn handle_tool_call_with(
         // Not tied to `cancel`: a job outlives the attach that started it.
         n if JOB_TOOL_NAMES.contains(&n) => crate::jobs::tools::call(n, &arguments),
         other => match upstream_owning_with(other, profile, ups) {
-            Some(up) => up
-                .rpc(
-                    "tools/call",
-                    Some(json!({"name": other, "arguments": arguments})),
-                )
-                .map_err(|e| (-32000, e)),
+            Some(up) => up.call(other, arguments).map_err(|e| (-32000, e)),
             None => Err((
                 INVALID_PARAMS,
                 format!("Invalid params: unknown tool: {other}"),
