@@ -4,7 +4,7 @@ Copy this file to `docs/release-records/linux-VERSION.md` (VERSION without the l
 in against the release candidate, and commit it to `main` **before** the tag. The `record` job of
 `.github/workflows/linux-release-smoke.yml` runs `scripts/check-release-record.sh VERSION` and
 fails a release when the file is missing, when any table row still holds the placeholder
-`PENDING`, or when the `V2` or `D7` row still says `open, owner decision pending`.
+`PENDING`, or when the `V2` or `D7` row is missing or says `open, owner decision pending`.
 
 Rules for the person filling it in:
 
@@ -12,9 +12,9 @@ Rules for the person filling it in:
   delete a row.
 - Record what you ran and saw. No host names, tailnet names, addresses, logins or tokens: name a host
   by class ("amd64 desktop", "arm64 desktop", "headless-seat host").
-- Do not touch the `V2` and `D7` rows until the owner's decision is written into
-  [the ADR](../adr/linux-browser-tier.md). Never remove those rows. Never fill them in on the
-  owner's behalf.
+- The `V2` and `D7` rows record decisions the owner made ([the ADR](../adr/linux-browser-tier.md)).
+  Never remove those rows, and never change them to say the decision is open again without the owner.
+  The `V2` result still needs the measurement: quote the `GATE V2 pass` line of each architecture.
 - This record is the manual half of "Tested" (ADR D16, requirement R7.4). The automated half is the
   smoke run linked below.
 
@@ -51,7 +51,7 @@ Rules for the person filling it in:
 | M6 `browser update` with a deliberately broken pin (debug build) keeps the old version | PENDING | PENDING | PENDING | PENDING |
 | M7 `browser remove` with an unrelated directory inside the data root: it stays and is reported | PENDING | PENDING | PENDING | PENDING |
 | M8 Cutover rehearsal on a spare account for each host class, then rollback | PENDING | PENDING | PENDING | PENDING |
-| M9 No TCP or UDP listener (and, once V2 closes, no Unix listener): `ss -ltnup` and `ss -lxp` during a browser call | PENDING | PENDING | PENDING | PENDING |
+| M9 No TCP or UDP listener, and any Unix listener inside the private per-run `TMPDIR` (V2): `ss -ltnup` and `ss -lxp` during a browser call | PENDING | PENDING | PENDING | PENDING |
 | M10 The hosts' real network: the downloads work through each host's actual egress | PENDING | PENDING | PENDING | PENDING |
 
 The wording of each check is in section 3.4 of
@@ -59,12 +59,12 @@ The wording of each check is in section 3.4 of
 
 ## Release gates (section 3.5, V1 to V13)
 
-"Blocking" is what section 3.5 says, not a choice made here. V2 and D7 are the two owner decisions.
+"Blocking" is what section 3.5 says, not a choice made here. V2 and D7 are the two owner decisions, both decided.
 
 | Gate | Result | Evidence | Blocking |
 | --- | --- | --- | --- |
 | V1 each platform has a pinned-version Chromium source | PENDING | PENDING | yes |
-| V2 no TCP, UDP or Unix listener on both architectures | open, owner decision pending | the smoke's `GATE V2` line stays red until the owner decides | yes |
+| V2 no TCP or UDP listener, Unix listeners only inside the private `TMPDIR`, on both architectures | PENDING | the smoke's `GATE V2 pass` line for amd64 and for arm64 | yes |
 | V3 stdin EOF and Chromium exit timing after daemon `SIGKILL` | PENDING | the smoke's `GATE V3` line | no (informational) |
 | V4 `systemd-run --user --pipe`, `BindsTo`, `NoNewPrivileges` with AppArmor | PENDING | the smoke's `GATE V4` line | no (the tier is unavailable if `BindsTo` does not fire; the smoke cell still fails) |
 | V5 `minGlibc` below the oldest supported OS | PENDING | PENDING | no (narrow the matrix) |
@@ -76,7 +76,7 @@ The wording of each check is in section 3.4 of
 | V11 `ProtectHome=read-only` in a user manager | PENDING | the smoke's `GATE V11` line | no (drop the namespace tier) |
 | V12 `/proc/net/tcp` owner uid | PENDING | PENDING | no (fail closed) |
 | V13 `wayvnc` options | PENDING | PENDING | no |
-| D7 AppArmor profile: a single path-scoped glob profile, "as built, to be confirmed by the owner" | open, owner decision pending | no run can resolve it; the owner decides | yes |
+| D7 AppArmor profile: the single path-scoped glob profile is kept (decided; residual risk in the ADR) | decided, glob kept | M3 above is the evidence | no |
 
 ## Support table rows to update (ADR D16)
 

@@ -188,7 +188,7 @@ the flag.
 | --- | --- | --- |
 | Linger | `sudo loginctl enable-linger $USER` | The daemon and the browser keep running after you log out and start again at boot. Printed only when linger is off. |
 | Publish | `sudo tailscale serve --bg --https=8444 http://127.0.0.1:8795` | Exposes the daemon on your tailnet over HTTPS (tailnet only). |
-| AppArmor | `printf ... \| sudo tee /etc/apparmor.d/oab-computer-chromium-<id>` then `sudo apparmor_parser -r ...` | Only where `kernel.apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 24.04): Chromium cannot make its sandbox without it. The profile names your own data path, not `/home/*`, and covers every version directory, so it serves later updates. `oab-computer browser preflight` prints the exact text. |
+| AppArmor | `printf ... \| sudo tee /etc/apparmor.d/oab-computer-chromium-<id>` then `sudo apparmor_parser -r ...` | Only where `kernel.apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 24.04): Chromium cannot make its sandbox without it. The profile names your own data path, not `/home/*`, and covers every version directory, so it serves later updates. The single glob is the decided design (ADR D7): its path lies in your own data directory, so code running as you could place a file named `chrome` there and run it with `userns` allowed; it needs code execution as you first and gives back only the unprivileged user namespace. `oab-computer browser preflight` prints the exact text. |
 | Libraries | `sudo apt-get install ...` | Libraries the preflight found missing, with the package names. |
 | Fonts | `sudo apt-get install -y fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji` | A server has none and pages render as boxes. Printed only when no font is found, and only in a run that does the browser step (not with `--browser none`). |
 
@@ -324,8 +324,8 @@ needed, unless you install from files (see [Offline install](#offline-install)).
   There is no quarantine step on Linux.
 - The Chromium it installs is a browser: the connections it makes while running are Chromium's,
   not the installer's. In the project's own measurement of the pinned build the managed tree held no
-  TCP or UDP socket and two private Unix sockets (see [Ports](#ports)); that is still an open
-  release gate (V2 in the [ADR](adr/linux-browser-tier.md)), and whether the browser exits when its
+  TCP or UDP socket and two private Unix sockets (see [Ports](#ports)); the rule for those (V2, decided in
+  the [ADR](adr/linux-browser-tier.md)) is checked by every release smoke, and whether the browser exits when its
   stdin closes (V3) has not been measured. The daemon stops the child's whole process tree itself
   when it stops it.
 - The install adds no unit and no network port. An update is only ever offered, never applied silently.
@@ -349,11 +349,16 @@ the profile and output folders stay. `remove` refuses while a managed browser is
 ### Ports
 
 The managed browser has no TCP or UDP port and does not use `8794`. The daemon listens on
-`127.0.0.1:8795`; `tailscale serve` uses `--https=8444`. Chromium holds two Unix listening sockets in the child's own `0700` temporary directory. They
-are not TCP or UDP ports, but they are listeners: another process of the same user can connect to
-them, so the claim "no socket of any kind" is not made. (The ADR and requirement R1.1 state "no Unix
-listener" as a target that is unmet today; V2 is not closed until the release smoke measures it on
-both architectures.) Port `8794` is bound only by
+`127.0.0.1:8795`; `tailscale serve` uses `--https=8444`. Chromium and Playwright hold two Unix listening sockets in the child's own `0700` temporary
+directory. They are not TCP or UDP ports, but they are listeners: another process of the same user
+can connect to them and drive the managed browser, so the claim "no socket of any kind" is not made.
+The rule (V2, decided in the ADR and requirement R1.1): no TCP or UDP listener, and every Unix listener
+inside that private directory, which must be a real directory of the daemon's uid with mode exactly
+`0700`. `browser status` shows `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass`
+while the browser runs, and `result=fail` for anything else (run it in the daemon's user session, so
+`XDG_RUNTIME_DIR` matches the daemon's). Another local user is refused by the directory and the socket
+mode, and a web page cannot reach a Unix socket path. The release smoke measures the rule on amd64
+and arm64 for every release. Port `8794` is bound only by
 an old browser unit (unauthenticated, loopback) or by whatever you start yourself for
 `MCP_BROWSER_BACKEND=external`.
 
@@ -829,8 +834,8 @@ The installer never stops, disables, edits or deletes an old browser unit, a dro
 directory, an old profile or an old AppArmor profile, and never copies cookies. The managed browser
 starts with a fresh profile, so a migrated host signs in again (`browser signin`); the old profile
 stays where it is and holds the old cookies until you delete it. The cutover itself is a procedure
-for a person
-([requirements, section 2](requirements/linux-browser-tier.md#2-cutover-runbook)). What the
+for a person: [the cutover guide](linux-cutover.md) has the commands, the checks and the rollback of each step
+([requirements, section 2](requirements/linux-browser-tier.md#2-cutover-runbook) is the design). What the
 installer does on each kind of host:
 
 | Host | What the installer does | What you do at cutover |

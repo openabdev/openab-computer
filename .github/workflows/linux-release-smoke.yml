@@ -15,8 +15,9 @@ name: Linux release smoke
 #   record    the per-release manual record (docs/release-records/linux-VERSION.md); a missing or
 #             unfinished record fails the release, V2 and D7 included
 #
-# V2 (no listener of any kind) and D7 (the AppArmor profile) are open owner decisions. The V2 gate has
-# no allow-list, so the smoke cells are red until the owner decides; do not weaken it here.
+# V2 is decided: no TCP or UDP listener, and any Unix listener inside the child's private per-run 0700
+# TMPDIR owned by the daemon's uid (scripts/release-smoke-linux.sh gate_v2). D7 (the AppArmor profile)
+# is decided: the single glob stays. Do not weaken either here.
 
 on:
   workflow_call:
@@ -215,8 +216,8 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
       - name: docs/release-records/linux-VERSION.md exists, has no PENDING, and V2 and D7 are decided
         # Release (strict): a missing or unfinished record fails. Dispatch: it reports and passes, because
-        # a dispatch is not a release. V2 and D7 rows stay "open, owner decision pending" until the owner
-        # decides; this step never fills or skips them.
+        # a dispatch is not a release. A V2 or D7 row that says "open, owner decision pending" blocks the
+        # release; this step never fills or skips them.
         env:
           STRICT: ${{ inputs.strict && 'true' || 'false' }}
           REF: ${{ inputs.ref }}

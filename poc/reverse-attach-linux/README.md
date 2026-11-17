@@ -293,11 +293,24 @@ is outside this control.
 `unverified`, `not_applicable`), `display` (`headed`, `headless`, `not_applicable`) and
 `external_upstream_ignored`. It carries no URL, path, token or page data.
 
-Known limit (V2): with the pinned Playwright and Chromium the managed tree opens no TCP or UDP
-socket, but it does hold two listening Unix sockets inside its private `0700` `TMPDIR`
-(Playwright's browser socket and Chromium's `SingletonSocket`). `browser status` reports them as
-`listeners: tcp=0 udp=0 unix=2`. The target "no Unix listener" is therefore unmet (the ADR and R1.1 say so
-and the docs claim only "no TCP or UDP port").
+V2 (decided): the managed tree opens no TCP or UDP socket, and holds two listening Unix sockets inside its
+private `0700` `TMPDIR` (Playwright's browser socket and Chromium's `SingletonSocket`). The rule: any Unix
+listener must be inside that directory, which must be a real directory of the daemon's uid with mode
+exactly `0700`. `browser status` reports `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok
+result=pass`, or `result=fail` for a TCP or UDP listener, a Unix listener outside the directory or a
+directory that is not `0700` or not the daemon's (`tmpdir=mode|owner|missing|not_dir|unreadable`). The
+release smoke recomputes it on both architectures.
+
+### Release gates, provenance and cutover (L5)
+
+From the first release that contains L5: a release is gated by `.github/workflows/linux-release-smoke.yml`
+(Ubuntu 22.04 and 24.04 on amd64 and arm64, plus a Debian 12 container job on both architectures;
+[Releasing](../../docs/releasing.md#linux-release-gates)), by the per-release manual record
+(`docs/release-records/linux-VERSION.md`), and by the Playwright pins check for all four platforms. The
+Linux tarballs carry a build-provenance attestation; `gh attestation verify "oab-computer-$V-linux-$A.tar.gz"
+--repo openabdev/openab-computer` checks it, and does not make the download safe. `pw-mcp.sh` is
+deprecated, and `status` lists what the old external setup left behind. Moving a host over, and back, is
+in [the cutover guide](../../docs/linux-cutover.md).
 
 The tests: the pure parts run anywhere; process, `/proc` and `systemd` tests are Linux-only. The
 tests that need a user manager are `#[ignore]`d and run with `OAB_L2_SYSTEMD=1 cargo test --release

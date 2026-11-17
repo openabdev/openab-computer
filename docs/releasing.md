@@ -218,7 +218,7 @@ flowchart TB
     um{"systemctl --user is-system-running is running or degraded"}
     cell["install, headless health check, harness as main process of a transient unit"]
     v4{"V4: containment is systemd or systemd+mount"}
-    v2{"V2: listeners is none"}
+    v2{"V2: no TCP or UDP, Unix only in the private TMPDIR"}
     kill["kill -9 the harness, wait for the tree to go"]
     surv{"survivors under the install directory"}
     ok["cell green"]
@@ -232,7 +232,7 @@ flowchart TB
     um -- yes --> cell --> v4
     v4 -- no --> red
     v4 -- yes --> v2
-    v2 -- "no (today: unix=2)" --> red
+    v2 -- no --> red
     v2 -- yes --> kill --> surv
     surv -- yes --> red
     surv -- no --> ok
@@ -277,7 +277,7 @@ prints how long the tree took to go after `kill -9`, and no job fails on it.
 | Gate | Where it is checked | Blocks a release |
 | --- | --- | --- |
 | V1 a pinned Chromium source for each platform | `pins` job, and `GATE V1` in each cell | yes |
-| V2 no TCP, UDP or Unix listener, both architectures | `GATE V2` in each cell, no allow-list | **yes, open: owner decision pending** |
+| V2 no TCP or UDP listener, Unix listeners only inside the private TMPDIR, both architectures | `GATE V2` in each cell | **yes** (decided) |
 | V3 Chromium exit timing after `kill -9` | `GATE V3`, informational | no |
 | V4 `BindsTo` fires, containment verified | `GATE V4` in each cell | yes, through the cell |
 | V5 `minGlibc` below the oldest supported OS | `verify --online` and the Ubuntu 22.04 and Debian 12 jobs | narrows the matrix |
@@ -290,25 +290,25 @@ prints how long the tree took to go after `kill -9`, and no job fails on it.
 | V12 `/proc/net/tcp` owner uid | code fails closed; the record | no |
 | V13 `wayvnc` options | manual record | no |
 
-### Open owner decisions: V2 and D7
+### Owner decisions: V2 and D7 (decided)
 
-Two items are **open, owner decision pending**. They block a release and neither is decided in these
-docs or in the workflow.
+Both are decided. Neither was decided by this workflow, and neither gate is weakened by the decision.
 
-- **V2: listeners.** Requirement R1.1 says the managed tree holds no listener. As built, the tree
-  holds two listening Unix sockets inside its private `0700` `TMPDIR` (Playwright's browser socket
-  and Chromium's `SingletonSocket`), with no TCP or UDP socket, so `browser status` reports
-  `listeners: tcp=0 udp=0 unix=2`. The owner must either have them removed or accept them under a
-  narrowed rule. Until then the `V2` gate fails on any listener, no allow-list exists, and every smoke
-  cell is red on purpose.
-- **D7: the AppArmor profile.** The profile that `browser preflight` prints is a single path-scoped
-  profile, marked "as built, to be confirmed by the owner" in the ADR. The owner must confirm it or ask
-  for a stricter per-binary profile. No run can resolve this. Do not confuse it with the ADR's
-  decided D7 rule that the installer never runs root actions on its own.
+- **V2: listeners.** Requirement R1.1 now reads: no TCP or UDP listener, and any Unix listener in the
+  managed tree inside the child's private per-run `0700` `TMPDIR`, owned by the daemon's uid. The tree
+  holds two such sockets (Playwright's browser socket and Chromium's `SingletonSocket`). `GATE V2` fails
+  on any TCP or UDP listener, on any Unix listener outside that directory, on a `TMPDIR` that is not
+  mode `0700` or not the daemon's uid, and on a listener table that cannot be read, and it has no
+  other allow-list. The gate is blocking and is measured by every release on both architectures; it is
+  closed for a release only when both cells print `GATE V2 pass`.
+- **D7: the AppArmor profile.** The single path-scoped glob profile that `browser preflight` prints is
+  kept as built; the residual risk (code running as the same user can place a file named `chrome` under
+  the data path and run it with `userns` allowed) is written in the ADR and in `linux-setup.md`.
+  M3 stays in the record as the evidence. Do not confuse this with the ADR's other D7 rule, that the
+  installer never runs root actions on its own.
 
-Both have a row in the release record, `open, owner decision pending`, and
-`scripts/check-release-record.sh` fails a record that still says so, or that drops the row. The row
-changes only after the owner's decision is written into the ADR. **Do not tag while either is open.**
+`scripts/check-release-record.sh` still fails a record whose `V2` or `D7` row is missing or says
+`open, owner decision pending`: a row that reopens the decision blocks the release.
 
 ### The per-release manual record
 
@@ -330,14 +330,13 @@ Before tagging a release that contains the managed Linux tier:
 1. `python3 scripts/playwright-pins.py verify --offline` and `scripts/test-release-smoke-linux.sh`
    pass locally or in CI.
 2. Dispatch `linux-release-smoke.yml` on the release candidate and read every `GATE` line. All of
-   `pins`, the four cells and the two Debian 12 jobs are green. Today the V2 gate is red; that is the
-   expected state until the owner decides.
+   `pins`, the four cells and the two Debian 12 jobs are green, including `GATE V2 pass` on amd64 and
+   arm64.
 3. Copy `docs/release-records/TEMPLATE.md` to `docs/release-records/linux-VERSION.md`, run the manual
    rows, fill every `PENDING`, and commit it to `main`.
-4. V2 is decided by the owner and recorded in the ADR and in the `V2` row. **Open: owner decision
-   pending.**
-5. D7 is confirmed by the owner and recorded in the ADR and in the `D7` row. **Open: owner decision
-   pending.**
+4. The `V2` row of the record quotes the two `GATE V2 pass` lines (amd64 and arm64). The decision
+   itself is in the ADR.
+5. The `D7` row of the record says the single glob profile is kept, with the M3 result beside it.
 6. Update the supported-systems table in [`linux-setup.md`](linux-setup.md#supported-systems) from the
    record.
 7. Tag. After the run starts, check that `smoke` is green before approving the `release` environment.

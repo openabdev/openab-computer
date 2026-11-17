@@ -81,17 +81,23 @@ cp "$here/../docs/release-records/TEMPLATE.md" "$R/linux-9.9.9.md"
 fill="$T/filled.md"
 sed 's/PENDING/done/g' "$R/linux-9.9.9.md" >"$fill"
 cp "$fill" "$R/linux-9.9.9.md"
-out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V2 and D7 open still blocks after every PENDING is filled" 1 $?
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: all rows filled, V2 and D7 decided, passes" 0 $?
+# A row that reopens a decision blocks the release, and the gate names it.
+sed 's/^| \(V2 .*\) | done | /| \1 | open, owner decision pending | /;s/^| \(D7 .*\) | decided, glob kept | /| \1 | open, owner decision pending | /' "$fill" >"$R/linux-9.9.9.md"
+out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V2 and D7 reopened blocks" 1 $?
 case $out in *"V2 is open"*"D7 is open"*) ok "record: both open rows are named" ;; *) bad "record: open rows not named: $out" ;; esac
-case $out in *PENDING*) bad "record: PENDING reported after fill" ;; *) ok "record: no PENDING left after fill" ;; esac
-sed 's/open, owner decision pending/decided in the ADR/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: all rows resolved passes" 0 $?
-grep -v '^| D7 ' "$fill" | sed 's/open, owner decision pending/decided in the ADR/' >"$R/linux-9.9.9.md"
+sed 's/^| \(D7 .*\) | decided, glob kept | /| \1 | open, owner decision pending | /' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: D7 reopened alone blocks" 1 $?
+grep -v '^| D7 ' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a removed D7 row fails" 1 $?
-sed 's/open, owner decision pending/decided in the ADR/;s/^| M3 \(.*\) | done | done | done | done |$/| M3 \1 | PENDING | done | done | done |/' "$fill" >"$R/linux-9.9.9.md"
+grep -v '^| V2 ' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a removed V2 row fails" 1 $?
+sed 's/^| M3 \(.*\) | done | done | done | done |$/| M3 \1 | PENDING | done | done | done |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: one PENDING cell fails" 1 $?
+sed 's/^| \(V2 .*\) | done | /| \1 | PENDING | /' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a V2 row without its measurement (PENDING) fails" 1 $?
 # The instruction text outside the tables may quote the words without tripping the gate.
-sed 's/open, owner decision pending/decided in the ADR/' "$fill" >"$R/linux-9.9.9.md"
+cp "$fill" "$R/linux-9.9.9.md"
 printf '\nThe words open, owner decision pending and PENDING in prose are not a table row.\n' >>"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: prose outside the tables is ignored" 0 $?
 
