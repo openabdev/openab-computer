@@ -106,7 +106,7 @@ pub fn launch_spec(
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RpcError {
     Timeout,
     Exited,
@@ -199,11 +199,8 @@ pub(crate) fn identity_ok(init: &Value) -> bool {
         .is_some_and(|n| n.to_lowercase().contains("playwright"))
 }
 
-fn tools_ok(list: &Value) -> bool {
-    let Some(arr) = list.get("tools").and_then(Value::as_array) else {
-        return false;
-    };
-    let names: Vec<&str> = arr
+fn tools_ok(list: &[Value]) -> bool {
+    let names: Vec<&str> = list
         .iter()
         .filter_map(|t| t.get("name").and_then(Value::as_str))
         .collect();
@@ -265,7 +262,15 @@ fn steps(rpc: &mut Rpc<'_>, t: &Timeouts) -> Result<(), RpcError> {
     if !identity_ok(&init) {
         return Err(RpcError::Protocol);
     }
-    let list = rpc.call("tools/list", json!({}), t.call)?;
+    // Every page: a required tool may be listed after the first one. The walk shares the one
+    // deadline of the list step and ends on the same bounds as the runtime client.
+    let list = crate::stdio_client::list_tools_paged(
+        t.call,
+        t.call,
+        |p, d| rpc.call("tools/list", p, d),
+        RpcError::Protocol,
+        RpcError::Timeout,
+    )?;
     if !tools_ok(&list) {
         return Err(RpcError::Protocol);
     }

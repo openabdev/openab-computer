@@ -197,18 +197,21 @@ impl External {
     }
 
     /// One POST on a fresh connection. Every error is a fixed class.
-    fn post(&self, msg: &Value) -> Result<Reply, String> {
-        let end = Instant::now() + self.deadline;
+    /// The request ends by `limit` at the latest, and by the client's own deadline in any case.
+    fn post(&self, msg: &Value, limit: Duration) -> Result<Reply, String> {
+        let end = Instant::now() + self.deadline.min(limit);
+        let connect = Duration::from_secs(10)
+            .min(limit)
+            .max(Duration::from_millis(1));
         let sid = self.session_id.lock().ok().and_then(|g| g.clone());
         let body = msg.to_string();
-        let mut stream = TcpStream::connect_timeout(&self.target.addr, Duration::from_secs(10))
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::TimedOut {
-                    "upstream_timeout".to_string()
-                } else {
-                    "upstream_unreachable".to_string()
-                }
-            })?;
+        let mut stream = TcpStream::connect_timeout(&self.target.addr, connect).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                "upstream_timeout".to_string()
+            } else {
+                "upstream_unreachable".to_string()
+            }
+        })?;
         let local = stream
             .local_addr()
             .map_err(|_| "upstream_unreachable".to_string())?;
@@ -239,23 +242,31 @@ impl External {
         read_reply(&mut stream, end)
     }
 
-    fn initialize(&self) -> Result<(), String> {
+    fn initialize(&self, limit: Duration) -> Result<(), String> {
+        let start = Instant::now();
         // Never send a stale id on initialize: the upstream answers 404 to it.
         if let Ok(mut g) = self.session_id.lock() {
             *g = None;
         }
-        let r = self.post(&json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "oab-computer-rpi", "version": AGENT_VERSION}}
-        }))?;
+        let r = self.post(
+            &json!({
+                "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                           "clientInfo": {"name": "oab-computer-rpi", "version": AGENT_VERSION}}
+            }),
+            limit,
+        )?;
+        let limit = limit.saturating_sub(start.elapsed());
         if !(200..300).contains(&r.status) {
             return Err(status_class(r.status));
         }
         if let Ok(mut g) = self.session_id.lock() {
             *g = r.session.filter(|s| header_value_ok(s));
         }
-        let _ = self.post(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        let _ = self.post(
+            &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            limit,
+        );
         if let Ok(mut c) = self.cache.lock() {
             *c = None;
         }
@@ -263,7 +274,17 @@ impl External {
     }
 
     pub fn rpc(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
-        let r = self.rpc_inner(method, params);
+        self.rpc_within(method, params, self.deadline)
+    }
+
+    /// [`External::rpc`] whose every request, a re-initialisation included, ends within `limit`.
+    fn rpc_within(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        limit: Duration,
+    ) -> Result<Value, String> {
+        let r = self.rpc_inner(method, params, limit);
         match &r {
             Ok(_) => self.note("ok"),
             Err(e) => self.note(e),
@@ -271,19 +292,26 @@ impl External {
         r
     }
 
-    fn rpc_inner(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
+    fn rpc_inner(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        limit: Duration,
+    ) -> Result<Value, String> {
+        let start = Instant::now();
+        let left = || limit.saturating_sub(start.elapsed());
         if self.session_id.lock().ok().is_none_or(|g| g.is_none()) {
-            self.initialize()?;
+            self.initialize(left())?;
         }
         let mut msg = json!({"jsonrpc": "2.0", "id": 1, "method": method});
         if let Some(p) = &params {
             msg["params"] = p.clone();
         }
-        let mut r = self.post(&msg)?;
+        let mut r = self.post(&msg, left())?;
         if r.status == 404 || r.status == 400 {
             // The upstream lost our session (restart). One re-init, one retry.
-            self.initialize()?;
-            r = self.post(&msg)?;
+            self.initialize(left())?;
+            r = self.post(&msg, left())?;
         }
         if !(200..300).contains(&r.status) {
             return Err(status_class(r.status));
@@ -303,13 +331,26 @@ impl External {
                 }
             }
         }
-        let list = match self.rpc("tools/list", None) {
-            Ok(r) => r
-                .get("tools")
-                .and_then(|t| t.as_array())
-                .cloned()
-                .unwrap_or_default(),
-            Err(_) => {
+        // Every page, with the rules of the managed backend (`stdio_client::list_tools_paged`): the
+        // walk shares one deadline, and a failing or misbehaving page drops the whole listing.
+        let list = match crate::stdio_client::list_tools_paged(
+            self.deadline,
+            self.deadline,
+            |p, t| {
+                self.rpc_within("tools/list", Some(p), t)
+                    .map_err(|_| ListFail::Rpc)
+            },
+            ListFail::Bad,
+            ListFail::Timeout,
+        ) {
+            Ok(list) => list,
+            Err(fail) => {
+                // `rpc_within` has noted its own class; the two walk failures are noted here.
+                match fail {
+                    ListFail::Rpc => {}
+                    ListFail::Bad => self.note("upstream_bad_body"),
+                    ListFail::Timeout => self.note("upstream_timeout"),
+                }
                 // Do not cache a failure: the next tools/list retries immediately.
                 if let Ok(mut c) = self.cache.lock() {
                     *c = None;
@@ -322,6 +363,14 @@ impl External {
         }
         list
     }
+}
+
+/// Why a paged listing failed: a request failed (already noted), or the pages were not acceptable.
+#[derive(Clone, Copy)]
+enum ListFail {
+    Rpc,
+    Bad,
+    Timeout,
 }
 
 fn header_value_ok(s: &str) -> bool {
