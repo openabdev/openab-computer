@@ -84,8 +84,8 @@ A tool Playwright adds later is filtered out until the catalog, `profile_vectors
 tests are updated together (R1.5). The Linux managed backend filters the same way (D15); the Linux external path still passes every upstream tool through. Other
 `--upstream name=URL` upstreams keep the old rule: `owner` gets every tool they offer. The browser runs with the computer's **persistent profile**, including
 cookies for sites it is logged in to, and it reaches whatever network the computer reaches,
-localhost and the tailnet included. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary
-JavaScript in that profile. In the managed Playwright the user signs in to sites once in its own
+localhost and the tailnet included. `browser_evaluate` runs arbitrary
+JavaScript in the page, and `browser_run_code_unsafe` runs arbitrary Node code with access to that profile. In the managed Playwright the user signs in to sites once in its own
 window, and an agent acts as the user on those sites; some sites may refuse an automated browser.
 Profile and cookies live in `~/Library/Application Support/oab-computer/playwright/profile/`
 and are deleted with the install.
