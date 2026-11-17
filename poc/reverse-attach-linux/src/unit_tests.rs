@@ -156,3 +156,108 @@ fn requests_systemd_would_reinterpret_are_refused() {
         assert_eq!(run_args(&r), Err(INVALID), "case {i}");
     }
 }
+
+#[test]
+fn the_whole_argv_of_a_managed_unit_with_the_mount_tier_is_pinned() {
+    let mut r = managed();
+    r.mount_rw = vec![PathBuf::from("/data/oab-computer/playwright")];
+    let want: Vec<String> = [
+        "--user",
+        "--quiet",
+        "--collect",
+        "--pipe",
+        "--unit=oab-browser-0a1b2c3d",
+        "-p",
+        "KillMode=control-group",
+        "-p",
+        "SendSIGKILL=yes",
+        "-p",
+        "TimeoutStopSec=10",
+        "-p",
+        "NoNewPrivileges=yes",
+        "-p",
+        "RestrictSUIDSGID=yes",
+        "-p",
+        "LockPersonality=yes",
+        "-p",
+        "RestrictRealtime=yes",
+        "-p",
+        "ProtectKernelTunables=yes",
+        "-p",
+        "ProtectKernelModules=yes",
+        "-p",
+        "ProtectControlGroups=yes",
+        "-p",
+        "UMask=0077",
+        "-p",
+        "MemoryMax=2147483648",
+        "-p",
+        "TasksMax=4096",
+        "-p",
+        "BindsTo=oab-computer.service",
+        "-p",
+        "After=oab-computer.service",
+        "-p",
+        "PrivateTmp=yes",
+        "-p",
+        "ProtectHome=read-only",
+        "-p",
+        "ProtectSystem=full",
+        "-p",
+        "ReadWritePaths=/data/oab-computer/playwright",
+        "--",
+        "/usr/bin/env",
+        "-i",
+        "-C",
+        "/data/oab-computer/playwright/pw-1",
+        "HOME=/data/oab-computer/playwright/home",
+        "LANG=C.UTF-8",
+        "PATH=/data/pw-1/node/bin:/usr/bin:/bin",
+        "/data/pw-1/node/bin/node",
+        "/data/pw-1/cli.js",
+        "--sandbox",
+    ]
+    .map(String::from)
+    .into();
+    assert_eq!(run_args(&r).unwrap(), want);
+}
+
+#[test]
+fn props_is_the_single_source_of_the_property_list() {
+    // The `-p` values of `run_args` are exactly `props`, in order, for both kinds.
+    for r in [
+        managed(),
+        req(Kind::Cli {
+            runtime_max: Duration::from_secs(300),
+        }),
+    ] {
+        let a = run_args(&r).unwrap();
+        let from_argv: Vec<String> = props_of(&a);
+        assert_eq!(from_argv, super::props(&r));
+    }
+    // A CLI request has no `BindsTo`; the mount list is present exactly when asked for.
+    let cli = super::props(&req(Kind::Cli {
+        runtime_max: Duration::from_secs(5),
+    }));
+    assert!(!cli.iter().any(|p| p.starts_with("BindsTo")));
+    assert!(!cli.iter().any(|p| p.starts_with("PrivateTmp")));
+    let mut m = managed();
+    m.mount_rw = vec![PathBuf::from("/data/x")];
+    let with = super::props(&m);
+    assert!(with.iter().any(|p| p == "PrivateTmp=yes"));
+    assert!(with.iter().any(|p| p == "ReadWritePaths=/data/x"));
+    // The helpers the probes use are the same lists.
+    let base = base_props(2 << 30, 4096);
+    assert!(super::props(&managed()).starts_with(&base));
+    assert_eq!(&with[with.len() - 4..], mount_props(&m.mount_rw).as_slice());
+    for never in NEVER {
+        assert!(!with.iter().any(|p| p.contains(never)), "{never}");
+    }
+}
+
+fn props_of(a: &[String]) -> Vec<String> {
+    a.windows(2)
+        .filter(|w| w[0] == "-p")
+        .map(|w| w[1].clone())
+        .collect()
+}

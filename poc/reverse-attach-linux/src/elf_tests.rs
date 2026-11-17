@@ -368,7 +368,7 @@ fn a_dynamic_section_over_the_entry_cap_or_off_the_end_of_the_file_is_refused() 
     );
     // A size near 2^64 must not wrap.
     let mut huge = base;
-    huge[filesz_at..filesz_at + 8].copy_from_slice(&(u64::MAX & !15).to_le_bytes());
+    huge[filesz_at..filesz_at + 8].copy_from_slice(&(!15u64).to_le_bytes());
     assert_eq!(
         read_elf(&d.file("dyn-huge", &huge)),
         Err(ElfError::Malformed)

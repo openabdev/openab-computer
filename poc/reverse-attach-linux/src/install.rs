@@ -913,6 +913,19 @@ impl Status {
         );
         m.insert("listeners".into(), self.extras.listeners.clone().into());
         m.insert("refusal".into(), self.extras.refusal.clone().into());
+        m.insert(
+            "hardening_base".into(),
+            self.extras.hardening_base.clone().into(),
+        );
+        m.insert(
+            "hardening_mount".into(),
+            self.extras.hardening_mount.clone().into(),
+        );
+        m.insert(
+            "hardening_unverified".into(),
+            self.extras.hardening_unverified.clone().into(),
+        );
+        m.insert("run_records".into(), self.extras.run_records.clone().into());
         Value::Object(m).to_string()
     }
 
@@ -934,6 +947,10 @@ impl Status {
             format!("external_configured: {}", self.extras.external_configured),
             format!("listeners: {}", self.extras.listeners),
             format!("refusal: {}", self.extras.refusal),
+            format!("hardening_base: {}", self.extras.hardening_base),
+            format!("hardening_mount: {}", self.extras.hardening_mount),
+            format!("hardening_unverified: {}", self.extras.hardening_unverified),
+            format!("run_records: {}", self.extras.run_records),
         ]
     }
 }

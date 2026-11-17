@@ -11,13 +11,25 @@
 //!   or staging directory of the root, the sweep's own rule) holds. `not_running`, `none`,
 //!   `tcp=N udp=N unix=N` or `unknown` when a table cannot be read.
 //! - `refusal`: `none`, `launch_refused` or `sandbox_unavailable`.
+//!
+//! L4 adds four more, appended after those so existing readers keep their order:
+//!
+//! - `hardening_base`: `not_checked` (no `--retry`), `verified`, `partial` or `unverified` (the
+//!   self-test or the base probe failed). `verified` means every base probe token read `1`.
+//! - `hardening_mount`: `not_checked`, `verified`, `partial` (applied, some token not `1`),
+//!   `dropped` (the tier does not apply on this host) or `not_applicable` (no install root yet).
+//! - `hardening_unverified`: `not_checked`, `none`, or a comma list of the probe tokens that did
+//!   not read `1` in an applied tier (`hardening.rs` holds the fixed vocabulary).
+//! - `run_records`: `ok`, `full` (a managed start would refuse with `run_records_full`) or
+//!   `unavailable` (`run/` missing, unmarked or unreadable).
 
 use std::path::Path;
 
 use crate::backend::{parse_upstream_line, BROWSER};
 use crate::containment::Mode;
+use crate::hardening::Tiers;
 use crate::procnet::{self, Source};
-use crate::run_record;
+use crate::run_record::{self, RunRecords};
 use crate::state::Root;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,6 +38,10 @@ pub struct Extras {
     pub external_configured: &'static str,
     pub listeners: String,
     pub refusal: String,
+    pub hardening_base: String,
+    pub hardening_mount: String,
+    pub hardening_unverified: String,
+    pub run_records: String,
 }
 
 impl Extras {
@@ -35,6 +51,11 @@ impl Extras {
             external_configured: "no",
             listeners: "not_running".into(),
             refusal: "none".into(),
+            hardening_base: Tiers::NONE.base_state().into(),
+            hardening_mount: Tiers::NONE.mount_state().into(),
+            hardening_unverified: Tiers::NONE.unverified_text(),
+            // Without an install root there is no `run/`.
+            run_records: RunRecords::Unavailable.word().into(),
         }
     }
 }
@@ -75,6 +96,7 @@ pub fn gather(
             run_record::latch_clear(&root);
         }
         x.refusal = run_record::refusal_get(&root).unwrap_or_else(|| "none".into());
+        x.run_records = run_record::state(&root).word().into();
         let pids = tree_pids(root.abs_path());
         if !pids.is_empty() {
             x.listeners = match procnet::listeners_of_tree(src, &pids) {
@@ -85,10 +107,18 @@ pub fn gather(
         }
     }
     if retry {
-        x.containment = match verify() {
-            Ok(m) => m.name.to_string(),
-            Err(_) => "unverified".to_string(),
-        };
+        match verify() {
+            Ok(m) => {
+                x.containment = m.name.to_string();
+                x.hardening_base = m.tiers.base_state().into();
+                x.hardening_mount = m.tiers.mount_state().into();
+                x.hardening_unverified = m.tiers.unverified_text();
+            }
+            Err(_) => {
+                x.containment = "unverified".to_string();
+                x.hardening_base = "unverified".to_string();
+            }
+        }
     }
     x
 }

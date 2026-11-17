@@ -318,19 +318,26 @@ pub fn run(args: &[String]) -> i32 {
     // The health check of an install runs in a transient unit with a runtime bound when the
     // mechanism verifies (L2), and on the process-tree layers alone when it does not.
     let signing_in = matches!(cmd, Cmd::Signin { .. });
-    let launcher = sigstop::Supervised::new(std::sync::Arc::new(Systemd::new(None, false)))
-        .with_runtime_max(if signing_in {
-            crate::signin::MAX_OPEN
-        } else {
-            sigstop::CLI_RUNTIME_MAX
-        });
+    // The data root, so that `status --retry` probes the mount tier too (it was `None`, which could
+    // never report it). `None` while nothing is installed: `not_applicable`.
+    let data_root = Root::open(&base, false)
+        .ok()
+        .flatten()
+        .map(|r| r.abs_path().to_path_buf());
+    let launcher =
+        sigstop::Supervised::new(std::sync::Arc::new(Systemd::new(data_root.clone(), false)))
+            .with_runtime_max(if signing_in {
+                crate::signin::MAX_OPEN
+            } else {
+                sigstop::CLI_RUNTIME_MAX
+            });
     let extras = |base: &Path, retry: bool| {
         crate::probe::gather(
             base,
             retry,
             std::env::var("MCP_UPSTREAM").ok().as_deref(),
             &crate::procnet::Proc,
-            &|| Systemd::new(None, false).verify(),
+            &|| Systemd::new(data_root.clone(), false).verify(),
         )
     };
     let o = Opts {

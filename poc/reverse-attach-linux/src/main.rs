@@ -28,6 +28,7 @@ mod e2e_tests;
 mod elf;
 mod external;
 mod extract;
+mod hardening;
 mod health;
 mod http;
 #[cfg(test)]

@@ -332,7 +332,7 @@ pub fn memory_max_for(mem_total_kib: Option<u64>) -> u64 {
     }
 }
 
-fn host_memory_kib() -> Option<u64> {
+pub(crate) fn host_memory_kib() -> Option<u64> {
     let t = std::fs::read_to_string("/proc/meminfo").ok()?;
     t.lines()
         .find_map(|l| l.strip_prefix("MemTotal:"))?

@@ -619,12 +619,49 @@ fn a_full_install_commits_records_and_leaves_no_trace_of_the_build() {
         "external_configured",
         "listeners",
         "refusal",
+        // L4, R6.4.
+        "hardening_base",
+        "hardening_mount",
+        "hardening_unverified",
+        "run_records",
     ];
     want.sort_unstable();
     let mut got = keys.clone();
     got.sort_unstable();
     assert_eq!(got, want);
     assert!(!s.to_json().contains("http"));
+    // The human lines keep the existing order and end with the four L4 fields.
+    let names: Vec<String> = s
+        .lines()
+        .iter()
+        .map(|l| l.split(": ").next().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names[names.len() - 8..],
+        [
+            "containment",
+            "external_configured",
+            "listeners",
+            "refusal",
+            "hardening_base",
+            "hardening_mount",
+            "hardening_unverified",
+            "run_records",
+        ]
+    );
+    // Every value of the new fields is a fixed token: no path, URL or text.
+    for v in [
+        &s.extras.hardening_base,
+        &s.extras.hardening_mount,
+        &s.extras.hardening_unverified,
+        &s.extras.run_records,
+    ] {
+        assert!(
+            v.bytes()
+                .all(|b| b.is_ascii_lowercase() || b == b'_' || b == b','),
+            "{v}"
+        );
+    }
 }
 
 #[test]

@@ -15,8 +15,8 @@ const HELPER: &str = "sigstop::tests::helper_cli";
 
 fn test_systemd() -> crate::containment::Systemd {
     let mut sd = crate::containment::Systemd::new(None, false);
-    sd.selftest_prefix = "oab-l2-test-selftest".into();
-    sd.browser_prefix = "oab-l2-test-browser".into();
+    sd.selftest_prefix = format!("{}-selftest", crate::test_exec::TEST_UNIT_PREFIX);
+    sd.browser_prefix = format!("{}-browser", crate::test_exec::TEST_UNIT_PREFIX);
     sd
 }
 
@@ -60,7 +60,7 @@ fn helper_cli() {
     };
     let launcher: Box<dyn Launcher> = match mode.as_str() {
         "supervised" => Box::new(Supervised::new(Arc::new(Direct::new(Ok(SYSTEMD))))),
-        // A real transient unit (`oab-l2-test-*`), on a host with a user manager.
+        // A real transient unit (`oab-l4-test-*`), on a host with a user manager.
         "systemd" => Box::new(Supervised::new(Arc::new(test_systemd()))),
         _ => Box::new(Plain),
     };
@@ -292,7 +292,7 @@ fn sigkill_of_the_cli_leaves_the_grandchild_and_the_next_start_sweeps_it() {
 fn units_left() -> usize {
     test_systemd()
         .sys
-        .list_prefixed("oab-l2-test")
+        .list_prefixed(crate::test_exec::TEST_UNIT_PREFIX)
         .map_or(usize::MAX, |v| v.len())
 }
 
@@ -310,7 +310,13 @@ fn a_cli_child_in_a_real_unit_is_stopped_by_hup_term_and_int() {
         let live = run_record::live(&root);
         assert_eq!(live.len(), 1, "the run record");
         let unit = live[0].unit.clone().expect("the record names the unit");
-        assert!(unit.starts_with("oab-l2-test-browser-cli-"), "{unit}");
+        assert!(
+            unit.starts_with(&format!(
+                "{}-browser-cli-",
+                crate::test_exec::TEST_UNIT_PREFIX
+            )),
+            "{unit}"
+        );
         assert!(h.child_alive() && h.grand_alive());
         h.signal(sig);
         h.wait_exit();

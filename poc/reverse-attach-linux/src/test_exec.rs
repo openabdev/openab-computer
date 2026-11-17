@@ -18,6 +18,10 @@ use std::time::{Duration, Instant};
 /// `ETXTBSY` ("text file busy") on Linux.
 const ETXTBSY: i32 = 26;
 
+/// The prefix of every transient unit a test may create, so one `list-units 'oab-l4-test-*'`
+/// covers them all (self-test, probe and browser units share it).
+pub(crate) const TEST_UNIT_PREFIX: &str = "oab-l4-test";
+
 /// Writes `bytes` to a new file with mode 0755, syncs and closes it, and returns only once no
 /// process holds it open for writing.
 pub(crate) fn write_exec(path: &Path, bytes: &[u8]) {

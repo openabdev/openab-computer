@@ -1,5 +1,6 @@
 use super::*;
 use crate::containment::{SYSTEMD, UNVERIFIED};
+use crate::hardening::{MountTier, Val};
 use crate::state::tests::TempDir;
 use std::collections::HashMap;
 
@@ -27,6 +28,11 @@ fn by_default_nothing_runs_and_the_vocabulary_is_fixed() {
     assert_eq!(x.external_configured, "no");
     assert_eq!(x.listeners, "not_running");
     assert_eq!(x.refusal, "none");
+    // L4: nothing was probed, and there is no install root yet.
+    assert_eq!(x.hardening_base, "not_checked");
+    assert_eq!(x.hardening_mount, "not_checked");
+    assert_eq!(x.hardening_unverified, "not_checked");
+    assert_eq!(x.run_records, "unavailable");
 }
 
 #[test]
@@ -87,4 +93,80 @@ fn a_tree_that_listens_is_reported_by_kind_and_a_silent_one_as_none() {
     assert_eq!(x.listeners, "unknown");
     c.kill().unwrap();
     c.wait().unwrap();
+}
+
+fn tiers_all(v: Val) -> Tiers {
+    Tiers {
+        base: Some([v; 8]),
+        mount: MountTier::Applied([v; 4]),
+    }
+}
+
+fn mode_with(tiers: Tiers) -> Mode {
+    Mode {
+        name: "systemd+mount",
+        mount_tier: true,
+        tiers,
+    }
+}
+
+#[test]
+fn a_retry_fills_the_hardening_fields_from_what_the_probes_found() {
+    let t = TempDir::new();
+    let _root = crate::run_record::tests::root_with_run(&t);
+    let none = Tables(HashMap::new());
+    let x = gather(&t.base(), true, None, &none, &|| {
+        Ok(mode_with(tiers_all(Val::One)))
+    });
+    assert_eq!(
+        (
+            x.hardening_base.as_str(),
+            x.hardening_mount.as_str(),
+            x.hardening_unverified.as_str(),
+            x.run_records.as_str()
+        ),
+        ("verified", "verified", "none", "ok")
+    );
+    // One token not shown: partial, and the token is named from the fixed vocabulary.
+    let mut tiers = tiers_all(Val::One);
+    if let Some(b) = tiers.base.as_mut() {
+        b[3] = Val::Na;
+    }
+    tiers.mount = MountTier::Dropped;
+    let x = gather(&t.base(), true, None, &none, &|| Ok(mode_with(tiers)));
+    assert_eq!(x.hardening_base, "partial");
+    assert_eq!(x.hardening_mount, "dropped");
+    assert_eq!(x.hardening_unverified, "memory_max");
+    // A failed self-test or base probe: unverified, and nothing else is claimed.
+    let x = gather(&t.base(), true, None, &none, &|| Err(UNVERIFIED));
+    assert_eq!(x.hardening_base, "unverified");
+    assert_eq!(x.hardening_mount, "not_checked");
+    assert_eq!(x.hardening_unverified, "not_checked");
+    // Without --retry the CLI never reports a tier it did not probe.
+    let x = gather(&t.base(), false, None, &none, &nothing);
+    assert_eq!(x.hardening_base, "not_checked");
+}
+
+#[test]
+fn a_full_run_directory_is_named_in_the_status() {
+    let t = TempDir::new();
+    let root = crate::run_record::tests::root_with_run(&t);
+    let none = Tables(HashMap::new());
+    assert_eq!(
+        gather(&t.base(), false, None, &none, &nothing).run_records,
+        "ok"
+    );
+    let me = std::process::id();
+    let start = crate::state::proc_start_time(me).unwrap();
+    for i in 0..crate::run_record::MAX_RECORDS {
+        std::fs::write(
+            root.abs_path().join(format!("run/cli-{}.json", 1000 + i)),
+            format!("{{\"pid\":{me},\"start\":{start},\"kind\":\"cli\"}}"),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        gather(&t.base(), false, None, &none, &nothing).run_records,
+        "full"
+    );
 }

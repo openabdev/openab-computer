@@ -104,6 +104,54 @@ fn unit_path_ok(p: &Path) -> bool {
     })
 }
 
+/// The properties of the base tier: everything the ADR sets on every unit, whatever the host.
+/// The hardening probes build their units from this same list (a diagnostic uses the rule of the
+/// shipping code).
+pub fn base_props(memory_max: u64, tasks_max: u32) -> Vec<String> {
+    let mut v: Vec<String> = COMMON_PROPS.iter().map(|p| p.to_string()).collect();
+    v.push("UMask=0077".into());
+    v.push(format!("MemoryMax={memory_max}"));
+    v.push(format!("TasksMax={tasks_max}"));
+    v
+}
+
+/// The properties of the mount tier, with `rw` as `ReadWritePaths`. Callers pass paths that
+/// `unit_path_ok` accepted.
+pub fn mount_props(rw: &[PathBuf]) -> Vec<String> {
+    let list: Vec<String> = rw.iter().map(|p| p.display().to_string()).collect();
+    vec![
+        "PrivateTmp=yes".into(),
+        "ProtectHome=read-only".into(),
+        "ProtectSystem=full".into(),
+        format!("ReadWritePaths={}", list.join(" ")),
+    ]
+}
+
+/// A path that is one word to systemd, for a caller that builds its own unit (the probes).
+pub fn path_ok(p: &Path) -> bool {
+    unit_path_ok(p)
+}
+
+/// The `-p` values of a request, in command-line order: the base tier, the kind (`BindsTo` and
+/// `After` the daemon, or a runtime bound), then the mount tier when `mount_rw` is non-empty. The
+/// request must already have passed `run_args`'s checks.
+pub fn props(r: &Req) -> Vec<String> {
+    let mut v = base_props(r.memory_max, r.tasks_max);
+    match &r.kind {
+        Kind::Managed { daemon_unit } => {
+            v.push(format!("BindsTo={daemon_unit}"));
+            v.push(format!("After={daemon_unit}"));
+        }
+        Kind::Cli { runtime_max } => {
+            v.push(format!("RuntimeMaxSec={}", runtime_max.as_secs().max(1)));
+        }
+    }
+    if !r.mount_rw.is_empty() {
+        v.extend(mount_props(&r.mount_rw));
+    }
+    v
+}
+
 /// The argv that follows the `systemd-run` program name. Fails closed on anything unusual.
 pub fn run_args(r: &Req) -> Result<Vec<String>, &'static str> {
     if !is_unit_name(&format!("{}.service", r.name))
@@ -119,6 +167,14 @@ pub fn run_args(r: &Req) -> Result<Vec<String>, &'static str> {
     {
         return Err(INVALID);
     }
+    if let Kind::Managed { daemon_unit } = &r.kind {
+        if !is_unit_name(daemon_unit) {
+            return Err(INVALID);
+        }
+    }
+    if r.mount_rw.iter().any(|p| !unit_path_ok(p)) {
+        return Err(INVALID);
+    }
     let mut a: Vec<String> = vec![
         "--user".into(),
         "--quiet".into(),
@@ -126,37 +182,9 @@ pub fn run_args(r: &Req) -> Result<Vec<String>, &'static str> {
         "--pipe".into(),
         format!("--unit={}", r.name),
     ];
-    let mut prop = |p: String| {
+    for p in props(r) {
         a.push("-p".into());
         a.push(p);
-    };
-    for p in COMMON_PROPS {
-        prop(p.to_string());
-    }
-    prop("UMask=0077".into());
-    prop(format!("MemoryMax={}", r.memory_max));
-    prop(format!("TasksMax={}", r.tasks_max));
-    match &r.kind {
-        Kind::Managed { daemon_unit } => {
-            if !is_unit_name(daemon_unit) {
-                return Err(INVALID);
-            }
-            prop(format!("BindsTo={daemon_unit}"));
-            prop(format!("After={daemon_unit}"));
-        }
-        Kind::Cli { runtime_max } => {
-            prop(format!("RuntimeMaxSec={}", runtime_max.as_secs().max(1)));
-        }
-    }
-    if !r.mount_rw.is_empty() {
-        if r.mount_rw.iter().any(|p| !unit_path_ok(p)) {
-            return Err(INVALID);
-        }
-        let list: Vec<String> = r.mount_rw.iter().map(|p| p.display().to_string()).collect();
-        prop("PrivateTmp=yes".into());
-        prop("ProtectHome=read-only".into());
-        prop("ProtectSystem=full".into());
-        prop(format!("ReadWritePaths={}", list.join(" ")));
     }
     a.push("--".into());
     a.push(ENV_BIN.into());
