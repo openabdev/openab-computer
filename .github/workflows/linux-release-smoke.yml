@@ -1,0 +1,234 @@
+name: Linux release smoke
+
+# The release-time Linux smoke (docs/requirements/linux-browser-tier.md, section 3.3, and
+# docs/releasing.md "Linux release gates"). It runs on `workflow_dispatch` and as the first stage of
+# release.yml, never per PR: it downloads hundreds of MB per cell. It builds and tests only. It
+# publishes nothing, creates no tag and no release, and holds no secret or environment.
+#
+# Jobs:
+#   pins      the Playwright pins match upstream for all four platforms (V1, R7.2)
+#   smoke     Ubuntu 22.04 and 24.04, amd64 and arm64: a real `browser install`, the headless health
+#             check, the listener self-check on the live tree (V2), `kill -9` of the harness and a
+#             survivor check. The cell FAILS without a systemd user manager.
+#   debian12  Debian 12 container, amd64 and arm64: install, preflight and the health check, up to
+#             the containment check (no user manager in a container)
+#   record    the per-release manual record (docs/release-records/linux-VERSION.md); a missing or
+#             unfinished record fails the release, V2 and D7 included
+#
+# V2 (no listener of any kind) and D7 (the AppArmor profile) are open owner decisions. The V2 gate has
+# no allow-list, so the smoke cells are red until the owner decides; do not weaken it here.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build and smoke (the release tag)"
+        required: false
+        type: string
+        default: ""
+      strict:
+        description: "Fail when the release record is missing or unfinished (release.yml sets true)"
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    # Dispatch it on the branch or commit to check: `gh workflow run linux-release-smoke.yml --ref BRANCH`.
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    name: Pins cover and match upstream (all four platforms)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Offline check, then every pinned artifact re-downloaded
+        # The same two commands as the macOS release job, not a weaker form (R7.2).
+        run: |
+          set -euo pipefail
+          python3 scripts/playwright-pins.py verify --offline
+          python3 scripts/playwright-pins.py verify --online
+      - name: Each platform has a pinned Node.js and a pinned Chromium source (V1)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          pins = json.load(open("release/playwright-pins/pins.json"))
+          want = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]
+          for label in ("node", "chromium"):
+              got = sorted(pins[label]["artifacts"])
+              assert got == want, "%s artifacts cover %s, need %s" % (label, got, want)
+          for plat in want:
+              print("%-12s node ok, chromium source %s" % (plat, pins["chromium"]["artifacts"][plat]["source"]))
+          PY
+
+  smoke:
+    name: Smoke ${{ matrix.os }} ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: amd64, runner: ubuntu-22.04 }
+          - { os: ubuntu-22.04, arch: arm64, runner: ubuntu-22.04-arm }
+          - { os: ubuntu-24.04, arch: amd64, runner: ubuntu-24.04 }
+          - { os: ubuntu-24.04, arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - name: Relax the unprivileged user-namespace restriction (this ephemeral runner only)
+        # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor, which stops
+        # Chromium's sandbox on a runner. This is a property of the throwaway runner, not advice for
+        # hosts: a host keeps the restriction and uses the path-scoped profile that
+        # `browser preflight` prints (ADR D7).
+        run: |
+          f=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$f" ] && [ "$(cat "$f")" != 0 ]; then
+            echo "::notice::kernel.apparmor_restrict_unprivileged_userns was $(cat "$f"); setting it to 0 on this ephemeral runner only"
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo "kernel.apparmor_restrict_unprivileged_userns: not present or already 0; nothing relaxed"
+          fi
+      - id: um
+        name: Provide a user manager (linger, the per-user service of the runner uid, XDG_RUNTIME_DIR)
+        run: |
+          set -u
+          uid=$(id -u)
+          rt="/run/user/$uid"
+          available=false
+          if [ -d /run/systemd/system ]; then
+            sudo loginctl enable-linger "$USER" || true
+            sudo systemctl start "user@${uid}.service" || true
+            for _ in $(seq 1 30); do
+              state=$(XDG_RUNTIME_DIR="$rt" systemctl --user is-system-running 2>/dev/null || true)
+              if [ -S "$rt/bus" ] && { [ "$state" = running ] || [ "$state" = degraded ]; }; then
+                available=true
+                break
+              fi
+              sleep 2
+            done
+          fi
+          if [ "$available" = true ]; then
+            {
+              echo "XDG_RUNTIME_DIR=$rt"
+              echo "DBUS_SESSION_BUS_ADDRESS=unix:path=$rt/bus"
+            } >> "$GITHUB_ENV"
+          fi
+          echo "available=$available" >> "$GITHUB_OUTPUT"
+      - name: A user manager is required (unlike the optional per-PR job, this one fails without it)
+        if: steps.um.outputs.available != 'true'
+        run: |
+          echo "::error::no systemd user manager on this runner; the release smoke cannot run, so the release is blocked (requirements 3.3)"
+          exit 1
+      - name: Build the binary and the end-to-end harness
+        working-directory: poc/reverse-attach-linux
+        run: |
+          set -euo pipefail
+          cargo build --release
+          cargo test --release --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' \
+            | tail -n 1 > "$RUNNER_TEMP/harness-path"
+          test -x "$(cat "$RUNNER_TEMP/harness-path")"
+      - name: Smoke (install, health check, listeners, kill -9, survivors)
+        env:
+          # `--retry` runs the containment self-test in the CLI process (V11). It uses the production
+          # unit names, which is fine on a throwaway runner.
+          OAB_SMOKE_STATUS_RETRY: "1"
+        run: |
+          set -o pipefail
+          bash scripts/release-smoke-linux.sh \
+            --bin "$PWD/poc/reverse-attach-linux/target/release/oab-computer" \
+            --harness "$(cat "$RUNNER_TEMP/harness-path")" 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+      - name: Gate summary
+        if: always()
+        run: grep -h '^GATE ' "$RUNNER_TEMP/smoke.log" || echo "no GATE lines were printed"
+      - name: Nothing left behind
+        if: always()
+        run: |
+          left=$(systemctl --user list-units 'oab-l[45]-test-*' --all --no-legend 2>/dev/null | wc -l)
+          echo "transient test units left: $left"
+          [ "$left" -eq 0 ]
+
+  debian12:
+    name: Debian 12 container ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      # debian:12-slim, the multi-architecture index digest, resolved 2026-11-17. Pinned by digest, not
+      # by tag. Refresh it deliberately (docs/releasing.md).
+      DEBIAN12_IMAGE: debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - name: Relax the unprivileged user-namespace restriction (this ephemeral runner only)
+        run: |
+          f=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$f" ] && [ "$(cat "$f")" != 0 ]; then
+            echo "::notice::kernel.apparmor_restrict_unprivileged_userns was $(cat "$f"); setting it to 0 on this ephemeral runner only"
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Build the binary (the runner is newer than Debian 12, so this also proves it runs on glibc 2.36)
+        working-directory: poc/reverse-attach-linux
+        run: cargo build --release
+      - name: Install, preflight and the health check inside the container
+        # Chromium's sandbox needs unprivileged user namespaces, which Docker's default seccomp and
+        # AppArmor profiles stop. Both are lifted for this one throwaway container, and the log says so.
+        run: |
+          set -o pipefail
+          echo "::notice::container runs with seccomp=unconfined and apparmor=unconfined so Chromium's sandbox can create a user namespace (throwaway container, runner only)"
+          docker run --rm \
+            --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
+            -v "$PWD/poc/reverse-attach-linux/target/release/oab-computer:/work/oab-computer:ro" \
+            -v "$PWD/scripts/release-smoke-linux.sh:/work/release-smoke-linux.sh:ro" \
+            "$DEBIAN12_IMAGE" \
+            bash /work/release-smoke-linux.sh --bin /work/oab-computer --in-container 2>&1 | tee "$RUNNER_TEMP/debian12.log"
+      - name: Gate summary
+        if: always()
+        run: grep -h '^GATE ' "$RUNNER_TEMP/debian12.log" || echo "no GATE lines were printed"
+
+  record:
+    name: Per-release manual record
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: docs/release-records/linux-VERSION.md exists, has no PENDING, and V2 and D7 are decided
+        # Release (strict): a missing or unfinished record fails. Dispatch: it reports and passes, because
+        # a dispatch is not a release. V2 and D7 rows stay "open, owner decision pending" until the owner
+        # decides; this step never fills or skips them.
+        env:
+          STRICT: ${{ inputs.strict && 'true' || 'false' }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          case "$REF" in
+            v[0-9]*) VERSION=$(scripts/release-version.sh "$REF") ;;
+            *) VERSION=$(scripts/release-version.sh) ;;
+          esac
+          echo "version: $VERSION (strict: $STRICT)"
+          if [ "$STRICT" = true ]; then
+            scripts/check-release-record.sh "$VERSION"
+          else
+            scripts/check-release-record.sh "$VERSION" --report-only
+          fi

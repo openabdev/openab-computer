@@ -14,16 +14,33 @@ on:
 
 # Release is the only workflow allowed to write repository contents. It never
 # runs PR-controlled code with secrets: push tags and manual dispatch only.
+# The default is read-only; each job below asks for exactly what it needs.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: oab-computer-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  smoke:
+    # The Linux release gates (docs/releasing.md "Linux release gates"): the pins for all four
+    # platforms, the four-cell smoke, the Debian 12 container job and the per-release record. A red
+    # gate stops both jobs below before anything is signed or published. No environment and no
+    # secret here, so it starts on the tag push and does not wait for the reviewer approval.
+    name: Linux release gates
+    uses: ./.github/workflows/linux-release-smoke.yml
+    permissions:
+      contents: read
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
+      strict: true
+
   release:
     name: Universal app + signed/notarized pkg
+    needs: smoke
+    permissions:
+      contents: write
     runs-on: macos-15
     environment: release
     env:
@@ -187,6 +204,11 @@ jobs:
 
   linux:
     name: Linux hands node tarball (${{ matrix.arch }})
+    needs: smoke
+    permissions:
+      contents: write # upload to the release
+      id-token: write # the OIDC token the attestation is signed with
+      attestations: write # store the attestation
     strategy:
       fail-fast: false
       matrix:
@@ -236,6 +258,13 @@ jobs:
           tar czf "$NAME.tar.gz" "$NAME"
           sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
           echo "ASSET=$NAME.tar.gz" >> "$GITHUB_ENV"
+      - name: Attest build provenance of the tarball
+        # Only the tarball is a subject, not its .sha256. Consumers verify with `gh attestation
+        # verify` (docs/releasing.md "Verifying a Linux tarball"). The attestation says this
+        # repository's workflow built the file from a stated commit; it does not make a download safe.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.ASSET }}
       - name: Upload to the release
         # The macOS job creates the release; wait for it rather than racing on
         # `gh release create` from two jobs.
