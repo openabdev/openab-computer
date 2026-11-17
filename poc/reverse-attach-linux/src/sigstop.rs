@@ -179,8 +179,17 @@ impl Supervised {
 impl Launcher for Supervised {
     fn launch(&self, root: &Root, spec: &Spec, scope: &Path) -> std::io::Result<Launched> {
         let mech = Arc::clone(self.avail.mechanism());
-        // Recovery from an earlier CLI that was killed. Skipped, not blocked, if another start runs.
-        let _ = crate::sweep::sweep_before_start(root, &|u| mech.stop_unit(u));
+        // Recovery from an earlier CLI that was killed. Waits (bounded) for another start's sweep
+        // and keeps the sweep lock until this child's record is written, so a second start cannot
+        // kill the new child while no record claims it. `.install.lock` is not taken here: `install`
+        // and `update` call this launcher while holding it exclusively, in this same process.
+        let sweep_guard = crate::sweep::sweep_holding(
+            root,
+            &|u| mech.stop_unit(u),
+            std::time::Duration::from_secs(10),
+        )
+        .ok()
+        .and_then(|(_, guard)| guard);
         let Ok(mode) = self.avail.get() else {
             eprintln!("browser: cli_child containment=none");
             return Plain.launch(root, spec, scope);
@@ -207,6 +216,7 @@ impl Launcher for Supervised {
         };
         // Best effort: a first install has no `run/` yet, and then there is nothing to protect.
         let rec = run_record::write(root, "cli", child.pid(), unit.as_deref()).ok();
+        drop(sweep_guard);
         child.set_others(crate::sweep::others_live(root, child.pid()));
         Ok(Launched {
             child,

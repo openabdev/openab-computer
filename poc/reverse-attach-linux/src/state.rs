@@ -579,6 +579,33 @@ impl Lock {
     }
 }
 
+/// A shared hold on `.install.lock`, for a process that starts a child while `install`, `update`
+/// and `remove` (which take the exclusive [`Lock`]) must not run. Any number may hold it at once.
+/// Dropping it releases it.
+pub struct SharedLock {
+    _fd: OwnedFd,
+}
+
+impl SharedLock {
+    /// Takes `.install.lock` shared, retrying a non-blocking `flock` every 100 ms for `wait`.
+    /// `lock_held` when an exclusive holder (or a cancel) outlasts it.
+    pub fn try_acquire(root: &Root, wait: Duration) -> R<SharedLock> {
+        let fd = open_lock_file(root)?;
+        let started = Instant::now();
+        loop {
+            match rustix::fs::flock(&fd, FlockOperation::NonBlockingLockShared) {
+                Ok(()) => return Ok(SharedLock { _fd: fd }),
+                Err(rustix::io::Errno::WOULDBLOCK) | Err(rustix::io::Errno::INTR) => {}
+                Err(_) => return Err(IO),
+            }
+            if started.elapsed() >= wait || crate::cancel::is_cancelled() {
+                return Err(Fail("lock_held"));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
 fn open_lock_file(root: &Root) -> R<OwnedFd> {
     open_named_lock(root, LOCK_NAME)
 }

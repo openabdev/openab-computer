@@ -250,13 +250,24 @@ fn urls_are_http_https_or_about_blank_and_bounded() {
         "about:blank",
         "http://127.0.0.1:3000/x",
         "https://example.com/a?b=c#d",
+        // One byte after the scheme is enough, for either scheme (#132).
+        "http://a",
+        "https://a",
     ] {
         assert!(valid_url(ok), "{ok}");
     }
     let long = format!("https://e.com/{}", "a".repeat(2048));
+    let at_cap = format!("http://{}", "a".repeat(MAX_URL - "http://".len()));
+    assert_eq!(at_cap.len(), MAX_URL);
+    assert!(valid_url(&at_cap), "exactly the cap is allowed");
+    let over = format!("{at_cap}a");
     for bad in [
         "",
         "https://",
+        "http://",
+        "http:/a",
+        "http:a",
+        over.as_str(),
         "ftp://example.com",
         "file:///etc/passwd",
         "javascript:alert(1)",
@@ -369,4 +380,27 @@ fn a_close_that_failed_is_not_reported_as_a_finished_sign_in() {
         assert_eq!(r.result, Err("close_failed"), "{close}");
         assert!(crate::run_record::live(&fx.root()).is_empty());
     }
+}
+
+#[test]
+fn a_sign_in_cannot_start_while_an_install_holds_the_lock_and_never_launches() {
+    let fx = Fx::new(&node(OK_NAV, ""));
+    let held = crate::state::Lock::acquire(&fx.root(), Duration::from_secs(1)).unwrap();
+    let r = go(&fx, true, seat(), "about:blank");
+    assert_eq!(r.result, Err("lock_held"));
+    assert_eq!(r.waits, 0);
+    assert!(
+        !version_dir(&fx).join("args.txt").exists(),
+        "the browser was started under an exclusive holder"
+    );
+    drop(held);
+    assert_eq!(go(&fx, true, seat(), "about:blank").result, Ok(()));
+}
+
+#[test]
+fn the_install_lock_is_released_once_the_browser_has_its_record() {
+    let fx = Fx::new(&node(OK_NAV, ""));
+    // After a whole sign-in, an exclusive holder (a `remove`) can take the lock at once.
+    assert_eq!(go(&fx, true, seat(), "about:blank").result, Ok(()));
+    assert!(crate::state::Lock::acquire(&fx.root(), Duration::from_secs(2)).is_ok());
 }

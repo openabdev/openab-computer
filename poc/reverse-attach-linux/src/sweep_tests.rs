@@ -344,3 +344,102 @@ fn a_detached_grandchild_of_a_recorded_leader_is_claimed_and_a_stray_is_not() {
     stray.kill().unwrap();
     stray.wait().unwrap();
 }
+
+// ---- a start keeps the sweep lock until its record exists (#132) -------------------------------
+
+#[test]
+fn a_second_sweep_waits_for_the_first_starts_guard_and_then_spares_the_recorded_child() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let bin = root.abs_path().join("pw-1/node/bin");
+    // Start A: sweeps (nothing there yet), keeps the guard, then spawns a child with no record.
+    let (outcome, guard) = sweep_holding(&root, &no_units, Duration::from_secs(1)).unwrap();
+    assert!(matches!(outcome, Outcome::Swept { killed: 0, .. }));
+    let guard = guard.expect("the lock is handed back");
+    let mut child = detached(&sleeper_at(&bin, "node"));
+    // Start B's sweep cannot proceed while A holds the guard.
+    let started = Instant::now();
+    let (outcome, none) = sweep_holding(&root, &no_units, Duration::from_millis(300)).unwrap();
+    assert_eq!(outcome, Outcome::Skipped);
+    assert!(none.is_none());
+    assert!(started.elapsed() >= Duration::from_millis(250));
+    assert!(alive(&mut child), "the recordless child was not touched");
+    // B waits in another thread; A records its child and lets go; B then sweeps and spares it.
+    let b = {
+        let root_path = t.base();
+        std::thread::spawn(move || {
+            let root = Root::open(&root_path, false).unwrap().unwrap();
+            sweep_holding(&root, &no_units, Duration::from_secs(10)).map(|(o, _)| o)
+        })
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    let _record = run_record::write(&root, "managed", child.id(), None).unwrap();
+    drop(guard);
+    let out = b.join().unwrap().unwrap();
+    assert!(matches!(out, Outcome::Swept { killed: 0, .. }), "{out:?}");
+    assert!(
+        alive(&mut child),
+        "a claimed child survives the second sweep"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
+/// A sweep that was not skipped. The lock of the sweep before may still be held for a moment by a
+/// copy of its descriptor in another test thread's fork, so a skip is retried (bounded).
+fn sweep_unskipped(root: &Root) -> Outcome {
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        match sweep_before_start(root, &no_units).unwrap() {
+            Outcome::Skipped if Instant::now() < end => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            o => return o,
+        }
+    }
+}
+
+#[test]
+fn without_the_guard_a_sweep_between_spawn_and_record_kills_the_new_child() {
+    // The negative control of the test above: the old behaviour (the lock dropped right after the
+    // sweep) is exactly the race.
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let bin = root.abs_path().join("pw-1/node/bin");
+    sweep_unskipped(&root);
+    let mut child = detached(&sleeper_at(&bin, "node"));
+    let out = sweep_unskipped(&root);
+    assert!(matches!(out, Outcome::Swept { killed: 1, .. }), "{out:?}");
+    assert!(dies(&mut child));
+}
+
+#[test]
+fn a_sweep_that_fails_releases_the_lock() {
+    let t = TempDir::new();
+    let root = root_with_run(&t);
+    let me = std::process::id();
+    let start = crate::state::proc_start_time(me).unwrap();
+    for i in 0..(run_record::MAX_RECORDS + 1) {
+        std::fs::write(
+            root.abs_path().join(format!("run/cli-{}.json", 1000 + i)),
+            serde_json::json!({"pid": me, "start": start, "kind": "cli", "unit": null}).to_string(),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        sweep_holding(&root, &no_units, Duration::from_secs(1)).err(),
+        Some(Fail("run_records_full"))
+    );
+    // Not left held: a non-blocking sweep gets as far as the same refusal instead of `Skipped`.
+    // A `flock` is released when the last copy of the descriptor closes, and another test thread's
+    // fork can hold a copy for a moment before its exec, so wait that out (bounded).
+    let end = Instant::now() + Duration::from_secs(5);
+    let got = loop {
+        let r = sweep_before_start(&root, &no_units);
+        if r != Ok(Outcome::Skipped) || Instant::now() >= end {
+            break r;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(got.err(), Some(Fail("run_records_full")));
+}

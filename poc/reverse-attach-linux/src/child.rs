@@ -35,9 +35,15 @@ use sha2::{Digest, Sha256};
 use crate::containment::{Availability, Launch, SpawnKind, Spawned};
 use crate::proc::{Child, StderrClass};
 use crate::run_record::{self, Handle};
-use crate::state::{self, InstallRecord, Root, State, MARKER_TEXT, OWNED_DATA};
+use crate::state::{self, Fail, InstallRecord, Root, State, MARKER_TEXT, OWNED_DATA};
 use crate::stdio_client::{Class, Client, MAX_LINE};
 use crate::sweep;
+
+/// How long a start waits for `.install.lock` (an `install`, `update` or `remove` holds it
+/// exclusive) before it answers `install_busy`.
+const INSTALL_LOCK_WAIT: Duration = Duration::from_secs(2);
+/// How long a start waits for the sweep lock that another start holds.
+const SWEEP_WAIT: Duration = Duration::from_secs(10);
 
 pub const PASSWORD_STORE: &str = "--password-store=basic";
 
@@ -527,6 +533,12 @@ impl Supervisor {
             }
         };
         let root = self.root()?;
+        // A start is not a moment: it reads the install, sweeps, spawns and only then records the
+        // child. Hold `.install.lock` shared across all of it, so `remove`, `update` and `install`
+        // (exclusive) cannot run in between and delete what the new child executes from (#132). Not
+        // a failure of the child, so it is not counted and not latched.
+        let install_lock =
+            state::SharedLock::try_acquire(&root, INSTALL_LOCK_WAIT).map_err(|_| "install_busy")?;
         let rec = match state::read_state(&root) {
             Ok(State::Installed(r)) => r,
             Ok(State::NotInstalled) => return Err("not_installed"),
@@ -534,7 +546,16 @@ impl Supervisor {
             Err(_) => return Err("state_unavailable"),
         };
         let mech = Arc::clone(self.avail.mechanism());
-        let _ = sweep::sweep_before_start(&root, &|u| mech.stop_unit(u));
+        // Wait for the sweep lock rather than skip it, and keep it until this child's record is
+        // written: a second start's sweep would otherwise kill this child while no record claims it.
+        // A run directory too full to list makes the sweep refuse; that is its own class, and no
+        // child is started that the next sweep could not tell from a stray. Any other sweep error
+        // (the lock file cannot be opened) leaves the start as it was: unswept.
+        let sweep_guard = match sweep::sweep_holding(&root, &|u| mech.stop_unit(u), SWEEP_WAIT) {
+            Ok((_, guard)) => guard,
+            Err(Fail("run_records_full")) => return Err("run_records_full"),
+            Err(_) => None,
+        };
         let tmp = RuntimeTmp::create(root.abs_path())?;
         let seat = (self.cfg.seat)();
         let v = launch_vector(&rec, root.abs_path(), &tmp.path, seat.as_ref());
@@ -570,6 +591,9 @@ impl Supervisor {
                 return Err("run_record_failed");
             }
         };
+        // The child has its record: a sweep or a `remove` now sees it and leaves it alone.
+        drop(sweep_guard);
+        drop(install_lock);
         child.set_others(sweep::others_live(&root, child.pid()));
         let (Some(stdin), Some(lines)) = (child.stdin.take(), child.lines.take()) else {
             child.stop();

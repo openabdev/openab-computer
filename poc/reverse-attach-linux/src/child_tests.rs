@@ -632,3 +632,138 @@ fn a_signin_runtime_dir_never_replaces_the_managed_one() {
     drop(signin);
     assert!(managed.path.is_dir());
 }
+
+// ---- a start is serialized with remove, update and other starts (#132) -------------------------
+
+/// A mechanism whose `spawn` waits at a gate, so a test can act while a start is between its
+/// sweep and its run record.
+struct Gate {
+    inner: Direct,
+    entered: Mutex<mpsc::Sender<()>>,
+    go: Mutex<mpsc::Receiver<()>>,
+}
+
+impl Mechanism for Gate {
+    fn verify(&self) -> Result<Mode, &'static str> {
+        self.inner.verify()
+    }
+    fn spawn(
+        &self,
+        mode: Mode,
+        kind: SpawnKind,
+        l: &Launch,
+    ) -> std::io::Result<crate::containment::Spawned> {
+        let _ = self.entered.lock().unwrap().send(());
+        let _ = self
+            .go
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(20));
+        self.inner.spawn(mode, kind, l)
+    }
+    fn stop_unit(&self, unit: &str) {
+        self.inner.stop_unit(unit)
+    }
+}
+
+fn gated_sup(fx: &Fx) -> (Arc<Supervisor>, mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (go_tx, go_rx) = mpsc::channel();
+    let gate = Arc::new(Gate {
+        inner: Direct::new(Ok(SYSTEMD)),
+        entered: Mutex::new(entered_tx),
+        go: Mutex::new(go_rx),
+    });
+    let mut cfg = Config::production(fx.t.base());
+    cfg.seat = Arc::new(|| None);
+    cfg.init_timeout = Duration::from_secs(5);
+    let m: Arc<dyn Mechanism> = gate;
+    (
+        Arc::new(Supervisor::new(cfg, Arc::new(Availability::new(m)))),
+        entered_rx,
+        go_tx,
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_start_answers_install_busy_while_an_install_holds_the_lock_and_recovers_after() {
+    let fx = Fx::new(GOOD);
+    let s = sup(&fx, Ok(SYSTEMD));
+    let held = state::Lock::acquire(&fx.root(), Duration::from_secs(1)).unwrap();
+    let started = Instant::now();
+    assert_eq!(s.sup.ensure().err(), Some("install_busy"));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(
+        spawned(&s),
+        0,
+        "nothing was started under an exclusive holder"
+    );
+    drop(held);
+    // Not a failure of the child: no backoff, no latch, and the next call starts it.
+    assert!(s.sup.ensure().is_ok());
+    assert_eq!(spawned(&s), 1);
+    assert!(!run_record::latch_is_set(&fx.root()));
+    s.sup.stop();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn remove_cannot_run_between_the_spawn_and_the_record_and_a_second_sweep_cannot_kill_the_child() {
+    let fx = Fx::new(GOOD);
+    let (sup, entered, go) = gated_sup(&fx);
+    let sup2 = Arc::clone(&sup);
+    let starter = std::thread::spawn(move || sup2.ensure().is_ok());
+    // The start is now inside `spawn`: it has swept, has no record yet, and must hold both locks.
+    entered
+        .recv_timeout(Duration::from_secs(10))
+        .expect("start reached spawn");
+    // A `remove` (exclusive `.install.lock`) cannot get in.
+    assert_eq!(
+        state::Lock::acquire(&fx.root(), Duration::from_millis(300)).err(),
+        Some(Fail("lock_held"))
+    );
+    // A second start's sweep waits for the first one's, instead of sweeping a child that has no
+    // record: after its bounded wait it reports `Skipped` and kills nothing.
+    let t = Instant::now();
+    let (outcome, guard) =
+        sweep::sweep_holding(&fx.root(), &|_: &str| {}, Duration::from_millis(300)).unwrap();
+    assert_eq!(outcome, sweep::Outcome::Skipped);
+    assert!(guard.is_none());
+    assert!(t.elapsed() >= Duration::from_millis(250), "it did not wait");
+    go.send(()).unwrap();
+    assert!(starter.join().unwrap(), "the gated start succeeds");
+    // Now the record exists: the locks are free, a sweep sees the record and spares the child, and
+    // a `remove` is allowed to take its lock again (its own live-record guard then refuses it).
+    assert_eq!(run_record::live(&fx.root()).len(), 1);
+    let (outcome, _g) =
+        sweep::sweep_holding(&fx.root(), &|_: &str| {}, Duration::from_secs(5)).unwrap();
+    assert!(
+        matches!(outcome, sweep::Outcome::Swept { killed: 0, .. }),
+        "{outcome:?}"
+    );
+    assert!(sup.is_running());
+    drop(_g);
+    assert!(state::Lock::acquire(&fx.root(), Duration::from_secs(2)).is_ok());
+    sup.stop();
+}
+
+#[test]
+fn a_run_directory_too_full_to_sweep_is_its_own_class_and_starts_nothing() {
+    let fx = Fx::new(GOOD);
+    let s = sup(&fx, Ok(SYSTEMD));
+    let me = std::process::id();
+    let start = state::proc_start_time(me).unwrap();
+    let run = fx.root().abs_path().join("run");
+    for i in 0..(run_record::MAX_RECORDS + 1) {
+        std::fs::write(
+            run.join(format!("cli-{}.json", 1000 + i)),
+            json!({"pid": me, "start": start, "kind": "cli", "unit": null}).to_string(),
+        )
+        .unwrap();
+    }
+    assert_eq!(s.sup.ensure().err(), Some("run_records_full"));
+    assert_eq!(spawned(&s), 0);
+    // It is not a failure of the child: nothing is latched.
+    assert!(!run_record::latch_is_set(&fx.root()));
+}
