@@ -53,6 +53,8 @@ mod tools;
 mod unit;
 #[cfg(test)]
 mod wire_conformance;
+#[cfg(test)]
+mod tool_schema_shape_tests;
 
 /// Install rustls's ring provider as the process default, once. tungstenite builds
 /// its rustls `ClientConfig` from the process default; with no provider a wss://
