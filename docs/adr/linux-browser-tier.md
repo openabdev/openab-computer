@@ -1,6 +1,6 @@
 # ADR: Linux managed Playwright tier
 
-- **Status:** Accepted. Implemented through L4 (shared pins, download and install, the managed child and router, the installer, `browser signin` and the docs, hardening tiers with effect probes); release work (L5) and the PID-namespace supervisor (L6) are pending. The 0.12.0 release does not contain it: 0.12.0 and earlier run an external unit on `127.0.0.1:8794`. Operator guide: [`docs/linux-setup.md`](../linux-setup.md).
+- **Status:** Accepted. Implemented through L5 (shared pins, download and install, the managed child and router, the installer, `browser signin`, the docs, hardening tiers with effect probes, the release gates and the cutover guide); the PID-namespace supervisor (L6) is pending. Nothing is released or cut over yet. The 0.12.0 release does not contain it: 0.12.0 and earlier run an external unit on `127.0.0.1:8794`. Operator guide: [`docs/linux-setup.md`](../linux-setup.md).
 - **Issues:** [#119](https://github.com/openabdev/openab-computer/issues/119) (this work), [#118](https://github.com/openabdev/openab-computer/issues/118) (macOS tiers)
 - **Requirement:** [`docs/requirements/linux-browser-tier.md`](../requirements/linux-browser-tier.md) (requirements, cutover runbook, test plan, PR split)
 - **Related:** [`browser-tiers.md`](browser-tiers.md) (the macOS ADR; its questions are cited here as "macOS Q*n*"), [`reverse-attach.md`](reverse-attach.md), [`docs/linux-setup.md`](../linux-setup.md), [`docs/tool-profiles.md`](../tool-profiles.md)

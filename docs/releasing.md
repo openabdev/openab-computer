@@ -150,7 +150,7 @@ flowchart TB
    drifted pin stops the release before anything is built.
    Go through the [Linux release checklist](#linux-release-checklist) before tagging: the smoke
    dispatch is green, `docs/release-records/linux-VERSION.md` is committed and finished, and the two
-   open owner decisions are closed.
+   owner decisions are closed.
 3. Tag the exact main commit and push:
 
    ```sh
@@ -312,7 +312,7 @@ Both are decided. Neither was decided by this workflow, and neither gate is weak
 
 `scripts/check-release-record.sh` still fails a record whose `V2` or `D7` row is missing or says
 `open, owner decision pending`: a row that reopens the decision blocks the release. It also fails a
-record in which a blocking gate row (V1, V2, V7) is not `pass` or `n/a` with a reason.
+record in which a blocking gate row (V1, V2, V7) is not `pass`. These three accept no `n/a`; put a reason in the Evidence cell.
 
 ### The per-release manual record
 

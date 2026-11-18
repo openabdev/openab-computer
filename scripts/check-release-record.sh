@@ -8,8 +8,8 @@
 #   - the file exists;
 #   - no table row still holds the placeholder PENDING;
 #   - the V2 and D7 rows exist and neither still says "open, owner decision pending";
-#   - every V row whose Blocking cell starts with "yes" has a Result of "pass", or of "n/a" followed by
-#     a reason ("n/a, reason"). A "fail", an empty cell or any other text blocks the release.
+#   - every V row whose Blocking cell starts with "yes" has a Result of "pass"; for any other blocking
+#     row an "n/a" followed by a reason ("n/a, reason") also passes. V1, V2 and V7 take only "pass". A "fail", an empty cell or any other text blocks the release.
 # The script never writes, never fills a cell and never treats V2 or D7 as resolved: those two rows
 # stay red until a person records the owner's decision in the row (and in the ADR). Only lines that
 # start with `|` (table rows) are read, so the instructions around the tables may quote the words.
@@ -56,11 +56,13 @@ else
     function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
     $2 ~ /^ *V[0-9]+ / && NF == 6 && trim($5) ~ /^yes/ {
       r = trim($3)
-      if (r !~ /^pass$/ && r !~ /^n\/a[ ]*[,:;-][ ]*[^ ]/) print trim($2) " (result: " r ")"
+      id = trim($2); sub(/ .*/, "", id)
+      strict = (id == "V1" || id == "V2" || id == "V7")
+      if (r !~ /^pass$/ && (strict || r !~ /^n\/a[ ]*[,:;-][ ]*[^ ]/)) print trim($2) " (result: " r ")"
     }')
   if [ -n "$bad" ]; then
     while IFS= read -r line; do
-      say "blocking gate not passed: $line; a blocking row needs pass, or n/a with a reason"
+      say "blocking gate not passed: $line; V1, V2 and V7 need pass; another blocking row needs pass, or n/a with a reason"
     done <<EOF
 $bad
 EOF

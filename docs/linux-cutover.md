@@ -392,7 +392,8 @@ restarted daemon answers.
 ```sh
 # start a browser first (check 2 of step 6), then:
 D="${XDG_DATA_HOME:-$HOME/.local/share}/oab-computer"
-kill -9 "$(systemctl --user show -p MainPID --value oab-computer.service)"
+pid=$(systemctl --user show -p MainPID --value oab-computer.service)
+case "$pid" in ''|*[!0-9]*|0|1) echo "no daemon main PID ($pid); stop and investigate" ;; *) kill -9 "$pid" ;; esac
 sleep 10
 for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null) || continue
   case "$e" in "$D"/playwright/*) echo "SURVIVOR ${p#/proc/} $e" ;; esac; done
@@ -453,6 +454,9 @@ flowchart TB
    ```sh
    ~/.local/oab-computer/oab-computer browser remove
    ```
+
+   If step 5.3 had not run yet, that path is still the 0.12.0 binary, which has no `browser`
+   command: use `~/.local/oab-computer/oab-computer.new` instead, or skip this step.
 
 3. Restore the daemon unit, the drop-in and the binary from the backup, then reload:
 

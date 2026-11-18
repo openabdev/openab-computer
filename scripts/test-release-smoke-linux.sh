@@ -96,14 +96,16 @@ sed 's/^| M3 \(.*\) | done | done | done | done |$/| M3 \1 | PENDING | done | do
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: one PENDING cell fails" 1 $?
 sed 's/^| \(V2 .*\) | pass | /| \1 | PENDING | /' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a V2 row without its measurement (PENDING) fails" 1 $?
-# A blocking gate (V1, V2, V7) needs pass, or n/a with a reason; fail, n/a alone or free text blocks.
+# A blocking gate (V1, V2, V7) needs exactly pass; n/a (with or without a reason), fail or free text blocks.
 for bad_result in fail 'n/a' 'done' 'pass?' ''; do
   sed "s#^| \\(V7 [^|]*\\)| pass |#| \\1| $bad_result |#" "$fill" >"$R/linux-9.9.9.md"
   out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V7 result '$bad_result' blocks" 1 $?
   case $out in *"blocking gate not passed: V7"*) ok "record: V7 '$bad_result' is named" ;; *) bad "record: V7 '$bad_result' not named: $out" ;; esac
 done
 sed 's/^| \(V7 [^|]*\)| pass |/| \1| n\/a, no sign-in on this release |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 n/a with a reason passes" 0 $?
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 n/a with a reason blocks" 1 $?
+sed 's/^| \(V1 [^|]*\)| pass |/| \1| n\/a, no source yet |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V1 n/a with a reason blocks" 1 $?
 sed 's/^| \(V1 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V1 fail blocks" 1 $?
 # A non-blocking row may be anything but PENDING.

@@ -131,7 +131,7 @@ person, not a PR. Hosts fall into two classes:
 Facts such as which unit is enabled, which profile is in use and how large the old directories are
 are collected in step 0, not assumed.
 
-The order of the steps in section 2.2 is below. The managed tier is built through L4 and not released, so this is the
+The order of the steps in section 2.2 is below. The managed tier is built through L5 and not released, so this is the
 procedure for when it ships. A failed check at any point leads to the rollback in section 2.4.
 
 ```mermaid
