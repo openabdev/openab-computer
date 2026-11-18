@@ -126,7 +126,7 @@ Same pattern as the Mac: `@playwright/mcp` runs beside the daemon on loopback an
 re-serves its tools under its own `tools/list`, filtered by the connection's profile.
 
 - **Deprecated (D14, R7.1).** `pw-mcp.sh` ships for one more minor release and is then removed; it
-  prints a deprecation notice to stderr when it starts. Cutover and rollback:
+  prints a deprecation notice to stderr when it starts (the tarball copy only). Cutover and rollback:
   [`docs/linux-cutover.md`](../../docs/linux-cutover.md).
 - `pw-mcp.sh` + systemd user unit `oab-computer-pw-mcp.service`: `@playwright/mcp@0.0.82` pinned (same
   as `poc/pw-mcp`), **headed** Chromium launched into the labwc seat (`WAYLAND_DISPLAY`,

@@ -73,7 +73,7 @@ effort. Alpine and other musl systems are refused with a clear message.
 | System | glibc | amd64 and arm64 | Automated check | Manual run per release |
 | --- | --- | --- | --- | --- |
 | Debian 12 | 2.36 | supported | Debian 12 container job (install, preflight, health check), from the first release that contains L5 | full run on a Debian 12 host, recorded per release |
-| Raspberry Pi OS (Debian 12 or 13 based) | 2.36 (Debian 12), 2.41 (Debian 13) | supported (arm64) | none of its own (the Debian 12 container job covers the same glibc on arm64) | full run on Raspberry Pi OS hardware, recorded per release |
+| Raspberry Pi OS (Debian 12 or 13 based) | 2.36 (Debian 12), 2.41 (Debian 13) | supported (arm64) | none of its own (the Debian 12 based container job covers the Debian 12 glibc on arm64; Debian 13 is not claimed as tested) | full run on Raspberry Pi OS hardware, recorded per release |
 | Ubuntu 22.04 | 2.35 | supported | release smoke, amd64 and arm64, from the first release that contains L5 | covered by the smoke |
 | Ubuntu 24.04 | 2.39 | supported | release smoke, amd64 and arm64, from the first release that contains L5 | covered by the smoke |
 | Debian 13 and newer, newer Ubuntu | 2.41 and newer | supported by the rule above only; no automated or manual run is listed, so it is not claimed as tested | none | none |
@@ -878,7 +878,7 @@ below is marked if it needs root.
    Disable each old unit that exists and delete the old unit files. Then, for each file the `grep`
    printed, run `cat` on it. If it holds nothing but `[Service]`, that one `Environment=MCP_UPSTREAM=`
    line, comments and blank lines, it is the dedicated drop-in and `rm -f` removes it. If it holds
-   any other setting, delete only that line (`sed -i '/^Environment=MCP_UPSTREAM=/d' FILE`, or an
+   any other setting, delete only that line (`sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp$/d' FILE`, or an
    editor if the line also sets other variables) and keep the file. A file the `grep` did not list
    is not touched: it may belong to something else. Reload last. No root:
 

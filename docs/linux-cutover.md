@@ -527,9 +527,11 @@ the same list, in order:
      if systemctl --user cat "$u" >/dev/null 2>&1; then systemctl --user disable --now "$u"; fi
    done
    rm -f ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
-   rm -f <each dedicated drop-in file the grep printed>
    systemctl --user daemon-reload
    ```
+
+   For each dedicated drop-in the `grep` printed, run `rm -f FILE` (FILE is that path) before the
+   `daemon-reload`.
 
 2. Delete the old directories, after looking inside: the old profile holds cookies. No root. Check
    each path against `browser status` first; `rm -rf` cannot be undone:

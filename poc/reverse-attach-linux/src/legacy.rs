@@ -73,8 +73,8 @@ impl Legacy {
     }
 }
 
-/// The three fields. `home` is the user's home directory (`None`: unknown, so every field is
-/// `unknown`). `src` is the `/proc/net` reader that `listeners` uses.
+/// The three fields. `home` is the user's home directory (`None`: unknown, so `units` and `paths` are
+/// `unknown`; the listener is still probed). `src` is the `/proc/net` reader that `listeners` uses.
 pub fn gather(home: Option<&Path>, src: &dyn Source) -> Legacy {
     let Some(home) = home.filter(|h| !h.as_os_str().is_empty()) else {
         return Legacy {
@@ -186,7 +186,7 @@ fn sets_upstream(line: &str) -> bool {
     while let Some(i) = value[from..].find("MCP_UPSTREAM=") {
         let at = from + i;
         match value[..at].chars().next_back() {
-            None | Some('"') | Some('\'') => return true,
+            None | Some('"') => return true,
             Some(c) if c.is_whitespace() => return true,
             _ => {}
         }
