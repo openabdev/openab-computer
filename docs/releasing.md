@@ -251,7 +251,7 @@ The release is blocked when any of these is red.
 | `smoke` Ubuntu 22.04 arm64 | `ubuntu-22.04-arm` | the same |
 | `smoke` Ubuntu 24.04 amd64 | `ubuntu-24.04` | the same, with the AppArmor user-namespace restriction relaxed on the runner |
 | `smoke` Ubuntu 24.04 arm64 | `ubuntu-24.04-arm` | the same |
-| `debian12` amd64 | `ubuntu-24.04`, Debian 12 container pinned by digest | install, preflight and the health check, as a non-root user, up to the containment check (a container has no user manager) |
+| `debian12` amd64 | `ubuntu-24.04`, Debian 12 container pinned by digest | install, preflight and the health check, as a non-root user (the preflight root actions run as root inside the throwaway container), up to the containment check (a container has no user manager) |
 | `debian12` arm64 | `ubuntu-24.04-arm`, the same image | the same |
 | `record` | `ubuntu-latest` | `scripts/check-release-record.sh VERSION` (fails a release, reports on a dispatch) |
 

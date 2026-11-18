@@ -518,9 +518,10 @@ release containing L5) or from your step 0 inventory. The installer never delete
 [Removing the old browser setup after the soak](linux-setup.md#removing-the-old-browser-setup-after-the-soak);
 the same list, in order:
 
-1. Disable and delete the old unit files and the drop-in, then reload. No root. Delete only the
-   drop-in file the `grep` of step 5.2 listed, and only when `cat` showed it is the dedicated file
-   (otherwise step 5.2 already removed just the line):
+1. Disable and delete the old unit files, then reload. No root. Step 5.2 owns the drop-in: it already
+   removed the dedicated drop-in file, or only the `MCP_UPSTREAM` line from a shared one, and the
+   backup from step 1 keeps the original for the rollback. Remove a dedicated drop-in here only if you
+   skipped that part of step 5.2, with `rm -f FILE` before the `daemon-reload` below:
 
    ```sh
    for u in oab-pw-mcp.service oab-computer-pw-mcp.service; do
@@ -529,9 +530,6 @@ the same list, in order:
    rm -f ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
    systemctl --user daemon-reload
    ```
-
-   For each dedicated drop-in the `grep` printed, run `rm -f FILE` (FILE is that path) before the
-   `daemon-reload`.
 
 2. Delete the old directories, after looking inside: the old profile holds cookies. No root. Check
    each path against `browser status` first; `rm -rf` cannot be undone:
@@ -564,7 +562,7 @@ is yours to remove, or to keep:
 
 | What | Why it stays |
 | --- | --- |
-| The old units `oab-pw-mcp.service` and `oab-computer-pw-mcp.service`, and the drop-in with `MCP_UPSTREAM` | The rollback needs them until you decide to remove them. |
+| The old units `oab-pw-mcp.service` and `oab-computer-pw-mcp.service`, and the backup copy of the drop-in from step 1 | The rollback needs them until you decide to remove them. |
 | `~/.local/oab-computer/pw-mcp`, `pw-output`, `pw-config.json`, `pw-mcp.sh` and `~/.local/oab-instance-mcp/pw-mcp` | The old browser's files. |
 | `~/.local/oab-computer/pw-profile` | It holds cookies; look first. |
 | `~/.cache/ms-playwright` | Playwright's own cache; another tool of yours may use it. |
