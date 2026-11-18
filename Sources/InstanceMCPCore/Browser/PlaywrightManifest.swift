@@ -244,6 +244,15 @@ public struct PlaywrightManifest: Codable, Equatable, Sendable {
         (nodeArtifact(arch)?.size ?? 0) + (chromiumArtifact(arch)?.size ?? 0) + mcp.npmDownloadBytes
     }
 
+    /// The same without the Chromium archive: what an install that drives the user's installed Chrome fetches.
+    public func downloadBytesWithoutChromium(_ arch: Arch) -> Int64 {
+        (nodeArtifact(arch)?.size ?? 0) + mcp.npmDownloadBytes
+    }
+
+    public func diskBytesWithoutChromium(_ arch: Arch) -> Int64 {
+        downloadBytesWithoutChromium(arch) + (nodeArtifact(arch)?.expandedBytes ?? 0) + mcp.npmInstalledBytes
+    }
+
     /// Disk the install may need while it runs: downloads plus the expanded trees plus npm.
     public func diskBytes(_ arch: Arch) -> Int64 {
         downloadBytes(arch) + (nodeArtifact(arch)?.expandedBytes ?? 0) + (chromiumArtifact(arch)?.expandedBytes ?? 0)
@@ -255,6 +264,10 @@ public struct PlaywrightManifest: Codable, Equatable, Sendable {
 public struct PlaywrightInstallPlan: Equatable, Sendable {
     public let downloadBytes: Int64
     public let diskBytes: Int64
+    /// The figures for an install that drives the user's installed Chrome and downloads no Chromium.
+    public let chromeDownloadBytes: Int64
+    public let chromeDiskBytes: Int64
+    public let chromeHosts: [String]
     public let hosts: [String]
     public let installPath: String
     public let nodeVersion: String
@@ -266,6 +279,9 @@ public struct PlaywrightInstallPlan: Equatable, Sendable {
         downloadBytes = m.downloadBytes(arch)
         // The free space install() requires (same formula), not just what the install uses.
         diskBytes = max(Int64(m.freeDiskFactor) * m.downloadBytes(arch), m.diskBytes(arch))
+        chromeDownloadBytes = m.downloadBytesWithoutChromium(arch)
+        chromeDiskBytes = max(Int64(m.freeDiskFactor) * m.downloadBytesWithoutChromium(arch), m.diskBytesWithoutChromium(arch))
+        chromeHosts = ["nodejs.org", "registry.npmjs.org"]
         hosts = ["nodejs.org", "registry.npmjs.org", m.chromium.host]
         installPath = root.path
         nodeVersion = m.node.version

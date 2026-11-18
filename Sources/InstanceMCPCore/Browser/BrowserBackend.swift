@@ -38,6 +38,8 @@ public protocol BrowserBackend: Sendable {
     var mode: String? { get async }
     /// Process name and uid of an external listener, names only.
     var ownerSummary: String? { get async }
+    /// Set only when the managed backend drives the user's installed Chrome instead of the downloaded Chromium.
+    var engineSummary: BrowserEngineSummary? { get async }
     /// Descriptors of the tools this backend serves right now.
     func tools() async -> [JSONValue]
     /// A `tools/call` result, relayed as the backend produced it.
@@ -48,6 +50,17 @@ extension BrowserBackend {
     public func peekStatus() async -> BrowserBackendStatus? { nil }
     public var mode: String? { get async { nil } }
     public var ownerSummary: String? { get async { nil } }
+    public var engineSummary: BrowserEngineSummary? { get async { nil } }
+}
+
+/// `chrome: system` and the version read from the Chrome bundle. The version is what the bundle says now; the app
+/// does not pin it and checks no digest of it.
+public struct BrowserEngineSummary: Equatable, Sendable {
+    public let name: String
+    public let version: String?
+    public init(name: String, version: String?) { self.name = name; self.version = version }
+    public static func systemChrome(version: String?) -> BrowserEngineSummary { .init(name: "chrome: system", version: version) }
+    public var text: String { version.map { "\(name) \($0)" } ?? name }
 }
 
 public enum BrowserPreference: String, Sendable, CaseIterable {
