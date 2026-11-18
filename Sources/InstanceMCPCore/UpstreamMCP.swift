@@ -155,8 +155,27 @@ struct UpstreamTool: Tool {
 
     var name: String { descriptorValue["name"]?.stringValue ?? "?" }
     var description: String { descriptorValue["description"]?.stringValue ?? "" }
-    var inputSchema: JSONValue { descriptorValue["inputSchema"] ?? ["type": "object"] }
+    var inputSchema: JSONValue { Self.forwardedSchema(name: name, descriptorValue["inputSchema"] ?? ["type": "object"]) }
     var descriptor: JSONValue { descriptorValue }
+
+    /// browser_emulate_media's five overrides are `anyOf: [enum string, null]`, a union that strict
+    /// MCP clients drop (#145). Only that branch is kept: each property becomes its plain enum
+    /// string. Owner decision on PR #146 (option B): clients can no longer send null to clear
+    /// these overrides. Every other upstream schema is forwarded unchanged.
+    static func forwardedSchema(name: String, _ schema: JSONValue) -> JSONValue {
+        guard name == "browser_emulate_media", var root = schema.objectValue,
+              var props = root["properties"]?.objectValue else { return schema }
+        for (key, prop) in props {
+            guard var p = prop.objectValue, let branches = p["anyOf"]?.arrayValue,
+                  let string = branches.first(where: { $0["type"]?.stringValue == "string" })?.objectValue
+            else { continue }
+            p.removeValue(forKey: "anyOf")
+            for (k, v) in string { p[k] = v }
+            props[key] = .object(p)
+        }
+        root["properties"] = .object(props)
+        return .object(root)
+    }
 
     func call(arguments: JSONValue) async throws -> ToolResult {
         let r = try await upstream.call(name, arguments: arguments)

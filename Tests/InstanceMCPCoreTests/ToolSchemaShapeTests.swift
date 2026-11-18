@@ -67,9 +67,9 @@ final class ToolSchemaShapeTests: XCTestCase {
         }
     }
 
-    // Upstream (Playwright) descriptors. UpstreamTool forwards each inputSchema unchanged, so the
-    // same guard must hold for them. These fixtures are written in the shape the Playwright MCP
-    // server publishes; the live tools/list was not queried.
+    // Upstream (Playwright) descriptors. UpstreamTool forwards each inputSchema, so the same guard
+    // must hold for them. These hand-written fixtures are in the shape the Playwright MCP server
+    // publishes. The recorded list below is the real one.
 
     private static func plain(_ type: String) -> JSONValue { ["type": .string(type)] }
 
@@ -145,6 +145,52 @@ final class ToolSchemaShapeTests: XCTestCase {
         let d = Self.descriptor("browser_bad", ["x": ["type": "string", "anyOf": [["type": "string"], ["type": "null"]]]], required: [])
         let t = UpstreamTool(descriptorValue: d, upstream: upstream)
         XCTAssertEqual(Self.problems(t.inputSchema, root: t.name), ["browser_bad.properties.x.anyOf"])
+    }
+
+    // The recorded tools/list of the pinned @playwright/mcp 0.0.82 (Tests/Fixtures). It was taken from
+    // a fresh stdio process with the app's flags; the running service on the browser port was not queried.
+    static func recordedUpstreamTools() throws -> [JSONValue] {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/playwright-mcp-0.0.82-tools-list.json")
+        let root = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: url))
+        return root["result"]?["tools"]?.arrayValue ?? []
+    }
+
+    func testRecordedPlaywrightToolsAreAllPlainAfterForwarding() throws {
+        let upstream = UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:9/mcp")!)
+        let tools = try Self.recordedUpstreamTools()
+        XCTAssertEqual(tools.count, 32)
+        for d in tools {
+            let t = UpstreamTool(descriptorValue: d, upstream: upstream)
+            XCTAssertEqual(Self.problems(t.inputSchema, root: t.name), [], "\(t.name) uses a construct some MCP clients reject")
+        }
+    }
+
+    func testEmulateMediaOverridesAreForwardedAsPlainEnums() throws {
+        let upstream = UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:9/mcp")!)
+        let d = try XCTUnwrap(Self.recordedUpstreamTools().first { $0["name"]?.stringValue == "browser_emulate_media" })
+        let props = UpstreamTool(descriptorValue: d, upstream: upstream).inputSchema["properties"]
+        let expected = [
+            "colorScheme": ["light", "dark"],
+            "reducedMotion": ["reduce", "no-preference"],
+            "forcedColors": ["active", "none"],
+            "contrast": ["more", "no-preference"],
+            "media": ["screen", "print"],
+        ]
+        for (key, values) in expected {
+            XCTAssertNil(props?[key]?["anyOf"], "\(key) still carries anyOf")
+            XCTAssertEqual(props?[key]?["type"]?.stringValue, "string", key)
+            XCTAssertEqual(props?[key]?["enum"]?.arrayValue?.compactMap(\.stringValue), values, key)
+            XCTAssertNotNil(props?[key]?["description"], "\(key) lost its description")
+        }
+    }
+
+    func testOtherRecordedPlaywrightToolsAreForwardedUnchanged() throws {
+        let upstream = UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:9/mcp")!)
+        for d in try Self.recordedUpstreamTools() where d["name"]?.stringValue != "browser_emulate_media" {
+            let t = UpstreamTool(descriptorValue: d, upstream: upstream)
+            XCTAssertEqual(t.inputSchema, d["inputSchema"] ?? ["type": "object"], t.name)
+        }
     }
 
     // One test per banned keyword, so deleting an entry from `banned` fails its own test.
