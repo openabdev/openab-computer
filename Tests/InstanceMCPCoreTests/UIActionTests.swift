@@ -330,6 +330,54 @@ final class UIActionToolTests: XCTestCase {
         assertNothingDone(f)
     }
 
+    func testStringRefusedByNumericControlIsRetriedAsNumber() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.refusesStrings = true
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "3"])
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(f.textArea.sets.map(\.1), [.number(3)])
+        XCTAssertEqual(r.structured?["success"], true)
+    }
+
+    func testStringRefusedByNumericControlIsRetriedAsBool() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.refusesStrings = true
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "true"])
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(f.textArea.sets.map(\.1), [.bool(true)])
+    }
+
+    func testValueTypeRefusalIsNotReportedAsUnsupported() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.refusesStrings = true
+        // "hello" has no native form, so there is nothing to retry: the refusal is named as a type
+        // mismatch, not as an unsupported action, and the supported list is not shown.
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "hello"])
+        XCTAssertTrue(r.isToolError)
+        XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: false))
+        XCTAssertFalse(r.text.contains("does not support"), r.text)
+        XCTAssertFalse(r.text.contains("Supported on it"), r.text)
+        assertNothingDone(f)
+    }
+
+    func testValueTypeRefusedInBothFormsSaysSo() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.setError = .other(UIAXError.illegalArgumentCode)
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "3"])
+        XCTAssertTrue(r.isToolError)
+        XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: true))
+        XCTAssertFalse(r.text.contains("3"), "the value is never echoed: \(r.text)")
+        assertNothingDone(f)
+    }
+
     func testNoSupportedActionPointsToMouse() async {
         let f = Fixture()
         let id = await f.snapshot()

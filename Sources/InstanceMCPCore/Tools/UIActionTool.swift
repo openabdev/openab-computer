@@ -27,7 +27,7 @@ public struct UIActionTool: Tool {
             "ref": ["type": "string", "pattern": .string(UIActionTool.refPattern), "description": "A node ref from that snapshot (e1, e2, …)."],
             "action": ["type": "string", "enum": .array(UIActionKind.allCases.map { .string($0.rawValue) })],
             "value": ["type": "string", "maxLength": .number(Double(UIActionTool.maxValueLength)),
-                      "description": "The new value, passed as a string (for example '3' or 'true'); set_value only. Never logged or echoed. A string is set as is. Existing callers that send a native JSON number or boolean are still accepted and set as that number or boolean."],
+                      "description": "The new value as a string, for example '3' or 'true'. set_value only. It replaces the whole value and is never logged or echoed."],
             "activate": ["type": "boolean", "default": false,
                          "description": "Bring the app to the front first (and raise the ref's window). Default false: no focus stealing."],
             "timeout_ms": ["type": "integer", "description": "Total time budget for the call; the action itself gets what is left after the checks.",
@@ -71,6 +71,14 @@ public struct UIActionTool: Tool {
             "\(ref) (\(role)) does not support \(action). " +
                 (supported.isEmpty ? "No ui_action action is supported on it; use screenshot + mouse"
                                    : "Supported on it: \(supported.joined(separator: ", "))")
+        }
+        /// AX refused the value's type (kAXErrorIllegalArgument) on `set_value`. Not an
+        /// unsupported action, so the supported list is not shown.
+        public static func valueTypeRejected(ref: String, role: String, retried: Bool) -> String {
+            if retried {
+                return "\(ref) (\(role)) rejected the value as text and as a number or boolean (AX error -25201). Take a new ui_snapshot to check the control's current value type"
+            }
+            return "\(ref) (\(role)) rejected the value's type (AX error -25201). A numeric or boolean control takes a native JSON number or boolean (for example 3 or true), not a string; a text control takes a string"
         }
         public static func unconfirmed(action: String, ref: String, app: String) -> String {
             "ui_action \(action) [\(ref)]: \(app) did not confirm in time. The action may have happened (a press that opens a dialog or menu often answers late); take a new ui_snapshot to check, and do not repeat it blindly"
@@ -150,6 +158,10 @@ public struct UIActionTool: Tool {
         r.action = kind
         if let v = a["value"], !v.isNull {
             guard kind == .setValue else { throw JSONRPCError.invalidParams("value is only accepted with set_value") }
+            // The schema advertises only a string. A native JSON number or boolean is still
+            // parsed for existing callers (#145, which replaced the anyOf schema). This
+            // asymmetry is intentional: do not narrow this switch to the schema without
+            // checking those callers.
             switch v {
             case .string(let s):
                 guard s.count <= maxValueLength else {

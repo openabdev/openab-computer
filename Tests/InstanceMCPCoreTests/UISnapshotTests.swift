@@ -37,6 +37,8 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
     var settableError: UIAXError?
     var performError: UIAXError?
     var setError: UIAXError?
+    /// A numeric or boolean control: a string value is refused with kAXErrorIllegalArgument.
+    var refusesStrings = false
     /// Actions performed and attributes set, in order.
     var performed: [String] = []
     var sets: [(String, UIAttrValue)] = []
@@ -140,6 +142,7 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
         calls.append(("set " + name, timeouts.last))
         if spend() { return .failure(.timeout) }
         if let setError { return .failure(setError) }
+        if refusesStrings, case .string = value { return .failure(.other(UIAXError.illegalArgumentCode)) }
         sets.append((name, value))
         attrs[name] = value
         onPerform?()
@@ -879,7 +882,7 @@ final class UISnapshotToolTests: XCTestCase {
         let cases: [(JSONValue, String)] = [(["app": "TextEdit", "pid": 20], "pass app or pid, not both"),
                             (["window": "x", "all_windows": true], "pass window or all_windows, not both"),
                             (["max_nodes": 1.5], "max_nodes must be an integer"),
-                            (["window": -1], "window must be a non-empty title or a window index ≥ 0"),
+                            (["window": -1], "window must be a non-empty title, or use window_index for an index ≥ 0"),
                             (["app": ""], "app must be a non-empty string")]
         for (args, why) in cases {
             let r = await call(args)
