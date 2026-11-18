@@ -9,7 +9,8 @@
 //! - `external_configured`: `yes` when this process's `MCP_UPSTREAM` has a `browser=` entry.
 //! - `listeners`: what the managed tree (every same-uid process whose executable is below a version
 //!   or staging directory of the root, the sweep's own rule) holds. `not_running`, `none`,
-//!   `tcp=N udp=N unix=N` or `unknown` when a table cannot be read.
+//!   `tcp=N udp=N unix=N unix_outside=N tmpdir=S result=pass|fail` (see `listeners_word`) or
+//!   `unknown` when a table cannot be read.
 //! - `refusal`: `none`, `launch_refused` or `sandbox_unavailable`.
 //!
 //! L4 adds four more, appended after those so existing readers keep their order:
@@ -23,6 +24,10 @@
 //!   not read `1` in an applied tier (`hardening.rs` holds the fixed vocabulary).
 //! - `run_records`: `ok`, `full` (a managed start would refuse with `run_records_full`) or
 //!   `unavailable` (`run/` missing, unmarked or unreadable).
+//!
+//! L5 appends three more, the legacy listing of `legacy.rs`: `legacy_units`, `legacy` and
+//! `legacy_listener`. They are filled by `Extras::set_legacy`, outside `gather`, because they look at
+//! the home directory and not at the data root.
 
 use std::path::Path;
 
@@ -43,6 +48,9 @@ pub struct Extras {
     pub hardening_mount: String,
     pub hardening_unverified: String,
     pub run_records: String,
+    pub legacy_units: String,
+    pub legacy: String,
+    pub legacy_listener: String,
 }
 
 impl Extras {
@@ -57,7 +65,27 @@ impl Extras {
             hardening_unverified: Tiers::NONE.unverified_text(),
             // Without an install root there is no `run/`.
             run_records: RunRecords::Unavailable.word().into(),
+            legacy_units: "none".into(),
+            legacy: "none".into(),
+            legacy_listener: "none".into(),
         }
+    }
+
+    /// Fills the three legacy fields (L5).
+    pub fn set_legacy(&mut self, l: crate::legacy::Legacy) {
+        self.legacy_units = l.units;
+        self.legacy = l.paths;
+        self.legacy_listener = l.listener;
+    }
+
+    /// Something of the old external setup was found (`unknown` is not a finding).
+    pub fn legacy_present(&self) -> bool {
+        crate::legacy::Legacy {
+            units: self.legacy_units.clone(),
+            paths: self.legacy.clone(),
+            listener: self.legacy_listener.clone(),
+        }
+        .present()
     }
 }
 
@@ -73,6 +101,28 @@ fn tree_pids(root_abs: &Path) -> Vec<u32> {
                     .is_ok_and(|e| crate::sweep::in_install_dirs(&e, root_abs))
         })
         .collect()
+}
+
+/// The `listeners` field. `none`, `unknown`, or the counts with the V2 verdict:
+/// `tcp=N udp=N unix=N unix_outside=N tmpdir=<state> result=pass|fail` (R1.1 as decided: only
+/// Unix listeners inside the child's verified private `TMPDIR` pass).
+pub(crate) fn listeners_word(
+    l: Result<procnet::Listeners, &'static str>,
+    tmp: procnet::TmpState,
+) -> String {
+    match l {
+        Ok(l) if l.total() == 0 => "none".into(),
+        Ok(l) => format!(
+            "tcp={} udp={} unix={} unix_outside={} tmpdir={} result={}",
+            l.tcp,
+            l.udp,
+            l.unix,
+            l.unix_outside,
+            tmp.word(),
+            if l.passes_v2() { "pass" } else { "fail" }
+        ),
+        Err(_) => "unknown".into(),
+    }
 }
 
 /// `verify` runs the containment self-test (only called with `retry`).
@@ -100,11 +150,15 @@ pub fn gather(
         x.run_records = run_record::state(&root).word().into();
         let pids = tree_pids(root.abs_path());
         if !pids.is_empty() {
-            x.listeners = match procnet::listeners_of_tree(src, &pids) {
-                Ok(l) if l.total() == 0 => "none".into(),
-                Ok(l) => format!("tcp={} udp={} unix={}", l.tcp, l.udp, l.unix),
-                Err(_) => "unknown".into(),
-            };
+            let tmp = crate::child::RuntimeTmp::expected_path(root.abs_path());
+            let tmp_state = procnet::tmp_state(&tmp, rustix::process::geteuid().as_raw());
+            let private = (tmp_state == procnet::TmpState::Ok)
+                .then(|| tmp.to_str().map(str::to_owned))
+                .flatten();
+            x.listeners = listeners_word(
+                procnet::listeners_of_tree_in(src, &pids, private.as_deref()),
+                tmp_state,
+            );
         }
     }
     if retry {

@@ -331,14 +331,21 @@ pub fn run(args: &[String]) -> i32 {
             } else {
                 sigstop::CLI_RUNTIME_MAX
             });
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     let extras = |base: &Path, retry: bool| {
-        crate::probe::gather(
+        let mut x = crate::probe::gather(
             base,
             retry,
             std::env::var("MCP_UPSTREAM").ok().as_deref(),
             &crate::procnet::Proc,
             &|| Systemd::new(data_root.clone(), false).verify(),
-        )
+        );
+        // L5: what the old external setup left behind. Read-only (D10).
+        x.set_legacy(crate::legacy::gather(
+            home.as_deref(),
+            &crate::procnet::Proc,
+        ));
+        x
     };
     let o = Opts {
         manifest,
@@ -356,7 +363,7 @@ pub fn run(args: &[String]) -> i32 {
         npm_timeout: Duration::from_secs(600),
         lock_wait: Duration::from_secs(30),
         base,
-        home: std::env::var_os("HOME").map(PathBuf::from),
+        home: home.clone(),
         platform,
         facts: &facts,
         launcher: &launcher,

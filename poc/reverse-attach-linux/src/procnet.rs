@@ -26,6 +26,12 @@ pub const UNKNOWN: &str = "listener_owner_unknown";
 pub trait Source {
     /// The text of `/proc/net/<table>` (`tcp`, `tcp6`, `udp`, `udp6`, `unix`).
     fn table(&self, name: &str) -> std::io::Result<String>;
+    /// Whether every directory between `private` and the socket's own name is a real directory (not
+    /// a link), so the node is physically inside `private`. A fixture with no filesystem keeps the
+    /// default.
+    fn parents_are_plain(&self, _path: &str, _private: &str) -> bool {
+        true
+    }
 }
 
 /// The real `/proc`.
@@ -42,6 +48,30 @@ impl Source for Proc {
         }
         Ok(s)
     }
+
+    fn parents_are_plain(&self, path: &str, private: &str) -> bool {
+        plain_parents(path, private)
+    }
+}
+
+/// `path` is below `private` by [`is_inside`]. Walk each directory between them with `lstat`: a link
+/// (or anything unreadable) fails closed, because the kernel prints the bind path as the program
+/// spelled it, so a link could place the node outside the verified directory.
+pub fn plain_parents(path: &str, private: &str) -> bool {
+    let Some(rest) = path.strip_prefix(private).and_then(|r| r.strip_prefix('/')) else {
+        return false;
+    };
+    let mut cur = std::path::PathBuf::from(private);
+    let mut segs: Vec<&str> = rest.split('/').collect();
+    segs.pop();
+    for seg in segs {
+        cur.push(seg);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_dir() => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +130,17 @@ pub fn parse_inet(text: &str, v6: bool) -> Vec<Row> {
 
 /// `Num RefCount Protocol Flags Type St Inode [Path]`: listening Unix sockets carry
 /// `__SO_ACCEPTCON` (0x10000) in the flags. Returns their inodes.
+#[cfg(test)]
 pub fn parse_unix_listeners(text: &str) -> Vec<u64> {
+    parse_unix_listener_paths(text)
+        .into_iter()
+        .map(|(inode, _)| inode)
+        .collect()
+}
+
+/// The same rows with the path the socket was bound to (`""` for an unnamed socket; an abstract
+/// name keeps its leading `@`). The kernel prints the path as the program passed it to `bind`.
+pub fn parse_unix_listener_paths(text: &str) -> Vec<(u64, String)> {
     text.lines()
         .skip(1)
         .filter_map(|l| {
@@ -109,9 +149,70 @@ pub fn parse_unix_listeners(text: &str) -> Vec<u64> {
             if flags & 0x10000 == 0 {
                 return None;
             }
-            f.get(6)?.parse().ok()
+            Some((f.get(6)?.parse().ok()?, f.get(7..)?.join(" ")))
         })
         .collect()
+}
+
+/// Whether `path`, as bound, is strictly below the private directory `private`: it starts with
+/// `private` and a `/`, and every segment after that is a plain name (no empty segment, `.` or
+/// `..`). An exact string rule, no pattern and no symlink resolution: a path that reaches the
+/// directory in another spelling counts as outside (fail closed).
+pub fn is_inside(path: &str, private: &str) -> bool {
+    let Some(rest) = path.strip_prefix(private).and_then(|r| r.strip_prefix('/')) else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest
+            .split('/')
+            .all(|s| !s.is_empty() && s != "." && s != "..")
+}
+
+/// What is wrong with the child's private `TMPDIR`, or `ok`. Read without following a link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TmpState {
+    Ok,
+    /// Nothing at the expected path.
+    Missing,
+    /// Not a directory (a link or a file in its place).
+    NotDir,
+    /// A directory whose mode is not exactly `0700`.
+    Mode,
+    /// A directory not owned by the daemon's uid.
+    Owner,
+    Unreadable,
+}
+
+impl TmpState {
+    pub fn word(self) -> &'static str {
+        match self {
+            TmpState::Ok => "ok",
+            TmpState::Missing => "missing",
+            TmpState::NotDir => "not_dir",
+            TmpState::Mode => "mode",
+            TmpState::Owner => "owner",
+            TmpState::Unreadable => "unreadable",
+        }
+    }
+}
+
+/// `ok` only for a real directory (not a link) owned by `uid` with mode exactly `0700`.
+pub fn tmp_state(path: &std::path::Path, uid: u32) -> TmpState {
+    use std::os::unix::fs::MetadataExt;
+    let m = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return TmpState::Missing,
+        Err(_) => return TmpState::Unreadable,
+    };
+    if !m.file_type().is_dir() {
+        TmpState::NotDir
+    } else if m.uid() != uid {
+        TmpState::Owner
+    } else if m.mode() & 0o7777 != 0o700 {
+        TmpState::Mode
+    } else {
+        TmpState::Ok
+    }
 }
 
 fn inet_rows(src: &dyn Source, v6: bool, proto: &str) -> std::io::Result<Vec<Row>> {
@@ -175,11 +276,20 @@ pub struct Listeners {
     pub tcp: usize,
     pub udp: usize,
     pub unix: usize,
+    /// Of `unix`, the listeners that are not inside the verified private `TMPDIR` (V2). With no
+    /// verified directory every Unix listener is outside.
+    pub unix_outside: usize,
 }
 
 impl Listeners {
     pub fn total(&self) -> usize {
         self.tcp + self.udp + self.unix
+    }
+
+    /// The V2 rule (R1.1 as decided): no TCP or UDP listener, and no Unix listener outside the
+    /// private per-run `TMPDIR`. A tree that listens on nothing passes.
+    pub fn passes_v2(&self) -> bool {
+        self.tcp == 0 && self.udp == 0 && self.unix_outside == 0
     }
 }
 
@@ -206,7 +316,18 @@ pub fn socket_inodes(pid: u32) -> HashSet<u64> {
 
 /// Listeners among `inodes`: TCP in state LISTEN (0A), UDP sockets bound and not connected (07),
 /// and Unix sockets that accept. An unreadable table is an error: "none" would be a claim.
+#[cfg(test)]
 pub fn listeners_among(src: &dyn Source, inodes: &HashSet<u64>) -> Result<Listeners, &'static str> {
+    listeners_among_in(src, inodes, None)
+}
+
+/// Like [`listeners_among`]. `private` is the child's private `TMPDIR`, passed only when it was
+/// verified (`TmpState::Ok`); a Unix listener is "outside" unless its path is below it.
+pub fn listeners_among_in(
+    src: &dyn Source,
+    inodes: &HashSet<u64>,
+    private: Option<&str>,
+) -> Result<Listeners, &'static str> {
     let mut out = Listeners::default();
     for v6 in [false, true] {
         for r in inet_rows(src, v6, "tcp").map_err(|_| UNKNOWN)? {
@@ -221,20 +342,35 @@ pub fn listeners_among(src: &dyn Source, inodes: &HashSet<u64>) -> Result<Listen
         }
     }
     let unix = src.table("unix").map_err(|_| UNKNOWN)?;
-    out.unix = parse_unix_listeners(&unix)
-        .into_iter()
-        .filter(|i| inodes.contains(i))
-        .count();
+    for (inode, path) in parse_unix_listener_paths(&unix) {
+        if !inodes.contains(&inode) {
+            continue;
+        }
+        out.unix += 1;
+        if !private.is_some_and(|p| is_inside(&path, p) && src.parents_are_plain(&path, p)) {
+            out.unix_outside += 1;
+        }
+    }
     Ok(out)
 }
 
 /// Listeners owned by any of `pids`.
+#[cfg(test)]
 pub fn listeners_of_tree(src: &dyn Source, pids: &[u32]) -> Result<Listeners, &'static str> {
+    listeners_of_tree_in(src, pids, None)
+}
+
+/// Like [`listeners_of_tree`], with the verified private `TMPDIR` (see [`listeners_among_in`]).
+pub fn listeners_of_tree_in(
+    src: &dyn Source,
+    pids: &[u32],
+    private: Option<&str>,
+) -> Result<Listeners, &'static str> {
     let mut inodes = HashSet::new();
     for p in pids {
         inodes.extend(socket_inodes(*p));
     }
-    listeners_among(src, &inodes)
+    listeners_among_in(src, &inodes, private)
 }
 
 #[cfg(test)]

@@ -624,20 +624,24 @@ fn a_full_install_commits_records_and_leaves_no_trace_of_the_build() {
         "hardening_mount",
         "hardening_unverified",
         "run_records",
+        // L5, R6.4: the legacy listing.
+        "legacy_units",
+        "legacy",
+        "legacy_listener",
     ];
     want.sort_unstable();
     let mut got = keys.clone();
     got.sort_unstable();
     assert_eq!(got, want);
     assert!(!s.to_json().contains("http"));
-    // The human lines keep the existing order and end with the four L4 fields.
+    // The human lines keep the existing order and end with the four L4 fields and the three L5 ones.
     let names: Vec<String> = s
         .lines()
         .iter()
         .map(|l| l.split(": ").next().unwrap().to_string())
         .collect();
     assert_eq!(
-        names[names.len() - 8..],
+        names[names.len() - 11..],
         [
             "containment",
             "external_configured",
@@ -647,6 +651,9 @@ fn a_full_install_commits_records_and_leaves_no_trace_of_the_build() {
             "hardening_mount",
             "hardening_unverified",
             "run_records",
+            "legacy_units",
+            "legacy",
+            "legacy_listener",
         ]
     );
     // Every value of the new fields is a fixed token: no path, URL or text.
@@ -661,6 +668,39 @@ fn a_full_install_commits_records_and_leaves_no_trace_of_the_build() {
                 .all(|b| b.is_ascii_lowercase() || b == b'_' || b == b','),
             "{v}"
         );
+    }
+}
+
+#[test]
+fn the_cutover_hint_is_printed_only_when_something_legacy_exists_and_never_in_json() {
+    let e = Env::new(Tw::default());
+    let m = e.manifest("test-id-1");
+    let mut s = e.status(&m);
+    let hint = |s: &Status| {
+        s.lines()
+            .into_iter()
+            .filter(|l| l.contains("docs/linux-cutover.md"))
+            .collect::<Vec<_>>()
+    };
+    // Nothing legacy, and `unknown` (could not look) is not a finding: no hint.
+    assert!(hint(&s).is_empty());
+    s.extras.legacy_units = "unknown".into();
+    s.extras.legacy = "unknown".into();
+    assert!(hint(&s).is_empty());
+    // Each of the three fields alone is enough.
+    for set in [
+        |x: &mut crate::probe::Extras| x.legacy_units = "oab-pw-mcp.service".into(),
+        |x: &mut crate::probe::Extras| x.legacy = "~/.cache/ms-playwright:1 MiB".into(),
+        |x: &mut crate::probe::Extras| x.legacy_listener = "8794".into(),
+    ] {
+        let mut s = e.status(&m);
+        set(&mut s.extras);
+        let h = hint(&s);
+        assert_eq!(h.len(), 1, "{h:?}");
+        assert!(h[0].starts_with("legacy: present, run docs/linux-cutover.md"));
+        // The hint is a human line only: JSON has the fixed fields and no hint text.
+        assert!(!s.to_json().contains("linux-cutover"));
+        assert!(!s.to_json().contains("present"));
     }
 }
 

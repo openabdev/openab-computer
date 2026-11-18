@@ -157,7 +157,7 @@ permissions wizard ([details](#download-and-install)). Then point a caller at it
 
 ```sh
 kiro-cli mcp add --name mac-mcp --url https://<host>.<tailnet>.ts.net:8444/mcp \
-  --header "Authorization: Bearer $(ssh <host> cat ~/.config/oab-computer/token)" \
+  --header "Authorization: Bearer $(ssh <host> 'cat ~/.config/oab-computer/token')" \
   --scope global --timeout 30000
 ```
 
@@ -454,7 +454,7 @@ permissions block.
 
 The Linux node (`poc/reverse-attach-linux/`) has one daemon listener (`127.0.0.1:8795` when installed
 by `install-linux.sh`). After 0.12.0 the browser is a managed child with no TCP or UDP port of its own (it holds
-two private Unix sockets in its own `0700` temporary directory, see
+two private Unix sockets in its own `0700` temporary directory, which the status self-check and the release smoke hold to the rule in
 [Linux setup](docs/linux-setup.md#ports)); 0.12.0 and earlier, and any host that still runs the old
 browser unit, also have a Playwright listener on `8794` with no authentication. The differences from
 macOS:
@@ -463,9 +463,24 @@ macOS:
   `scripts/install-linux.sh` sets `127.0.0.1:8795`.
 - `/attach` is always on. There is no `--no-attach`.
 - There is no switchboard and no menu bar.
+- The Linux node does use a Unix domain socket: it connects, as a client, to the Wayland socket for
+  display and pointer control. The daemon itself does not listen on one; the managed browser's process
+  tree holds two listening Unix sockets of its own in a private `0700` directory (see above).
+- The mint call is plain `http://` only. A `wss://` runtime with `admin_credential` is refused.
+
+0.12.0 and earlier, and any host that still runs the old browser unit:
+
 - 0.12.0 and earlier: `install-linux.sh` runs `sudo tailscale serve` when passwordless sudo exists, and installs
   `oab-computer-pw-mcp.service` on unauthenticated `127.0.0.1:8794` plus an `MCP_UPSTREAM` line when
   `node` and `npm` exist, unless `--no-browser` is given.
+- A host that still runs an old browser unit has an **unauthenticated** port 8794: any local user on
+  this node can call every browser tool there, including `browser_run_code_unsafe` (arbitrary Node
+  code). The installer warns with the exact `systemctl --user disable --now <unit>` command and does
+  not touch the unit; see [Upgrading a host that already has a browser unit](docs/linux-setup.md#upgrading-a-host-that-already-has-a-browser-unit)
+  and, for the procedure with its rollback, [the cutover guide](docs/linux-cutover.md).
+
+After 0.12.0 (`main`, the first release that contains these; 0.12.0 does not):
+
 - After 0.12.0, `install-linux.sh` never runs `sudo` on its own. It prints each root action (linger,
   `tailscale serve` for `:8444`, the AppArmor profile, missing libraries, fonts) with its exact
   command and reason, and runs them only with `--apply-system-changes`.
@@ -480,17 +495,9 @@ macOS:
 - `MCP_UPSTREAM` takes plain `http://` URLs only, and every `name=url` entry the daemon uses must be a literal loopback
   `http://127.0.0.1:<port>` or `http://[::1]:<port>` URL: any other host stops the daemon with exit 64. A `browser=` entry that a managed install ignores is not checked.
   A managed install wins over a `browser=` entry unless `MCP_BROWSER_BACKEND=external` is set.
-- A host that still runs an old browser unit has an **unauthenticated** port 8794: any local user on
-  this node can call every browser tool there, including `browser_run_code_unsafe` (arbitrary Node
-  code). The installer warns with the exact `systemctl --user disable --now <unit>` command and does
-  not touch the unit; see [Upgrading a host that already has a browser unit](docs/linux-setup.md#upgrading-a-host-that-already-has-a-browser-unit).
 - After 0.12.0, sign in once, for a login the browser keeps: `ssh -t <node> '~/.local/oab-computer/oab-computer browser signin'`
   ([Sign in](docs/linux-setup.md#sign-in)). The profile is obfuscated with `--password-store=basic`,
   not strongly encrypted.
-- The Linux node does use a Unix domain socket: it connects, as a client, to the Wayland socket for
-  display and pointer control. The daemon itself does not listen on one; the managed browser's process
-  tree holds two listening Unix sockets of its own in a private `0700` directory (see above).
-- The mint call is plain `http://` only. A `wss://` runtime with `admin_credential` is refused.
 
 ## Lending this Mac to a sandboxed agent (reverse attach)
 

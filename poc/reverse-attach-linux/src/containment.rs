@@ -746,11 +746,16 @@ impl Fixture<'_> {
     /// unit reads `inactive` or `failed` and none of the recorded processes exists any more.
     fn cleanup(&mut self) -> bool {
         let mut all = true;
-        for u in self.units.iter().rev() {
+        let units = std::mem::take(&mut self.units);
+        for u in units.iter().rev() {
+            // A parent with `Restart=always` has a new main process and a new straggler after a
+            // restart, which no earlier look recorded. Record what is in the unit now, before the
+            // kill, so that cleanup cannot pass while one of them lives (#132).
+            let now = self.inside(u);
+            self.recorded.extend(now);
             self.sys.kill_all(u);
             all &= self.sys.stop(u);
         }
-        self.units.clear();
         let recorded = std::mem::take(&mut self.recorded);
         // SIGKILL is asynchronous: give the kernel a moment to reap.
         let end = Instant::now() + Duration::from_secs(3);

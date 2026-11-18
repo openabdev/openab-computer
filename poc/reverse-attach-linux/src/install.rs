@@ -926,13 +926,22 @@ impl Status {
             self.extras.hardening_unverified.clone().into(),
         );
         m.insert("run_records".into(), self.extras.run_records.clone().into());
+        m.insert(
+            "legacy_units".into(),
+            self.extras.legacy_units.clone().into(),
+        );
+        m.insert("legacy".into(), self.extras.legacy.clone().into());
+        m.insert(
+            "legacy_listener".into(),
+            self.extras.legacy_listener.clone().into(),
+        );
         Value::Object(m).to_string()
     }
 
     pub fn lines(&self) -> Vec<String> {
         let opt = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".into());
         let ob = |v: Option<bool>| v.map(|b| b.to_string()).unwrap_or_else(|| "-".into());
-        vec![
+        let mut v = vec![
             format!("state: {}", self.state),
             format!("manifest_id: {}", self.manifest_id),
             format!("installed_id: {}", opt(&self.installed_id)),
@@ -951,7 +960,18 @@ impl Status {
             format!("hardening_mount: {}", self.extras.hardening_mount),
             format!("hardening_unverified: {}", self.extras.hardening_unverified),
             format!("run_records: {}", self.extras.run_records),
-        ]
+            format!("legacy_units: {}", self.extras.legacy_units),
+            format!("legacy: {}", self.extras.legacy),
+            format!("legacy_listener: {}", self.extras.legacy_listener),
+        ];
+        // The cutover hint is for people: `--json` has the fixed fields and nothing else.
+        if self.extras.legacy_present() {
+            v.push(
+                "legacy: present, run docs/linux-cutover.md (D10: nothing here is deleted by oab-computer)"
+                    .into(),
+            );
+        }
+        v
     }
 }
 

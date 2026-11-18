@@ -120,7 +120,8 @@ fn listeners_of_a_set_of_sockets_are_counted_by_kind() {
         Ok(Listeners {
             tcp: 2,
             udp: 1,
-            unix: 1
+            unix: 1,
+            unix_outside: 1
         })
     );
     let none: HashSet<u64> = [12346, 32].into();
@@ -296,4 +297,206 @@ fn an_ipv6_server_reads_tcp6_only_and_an_unreadable_own_table_fails_closed() {
         peer_owner_uid(&none, addr("[::1]:50000"), addr("[::1]:8081")),
         Err(UNKNOWN)
     );
+}
+
+const UNIX_HEAD: &str = "Num RefCount Protocol Flags Type St Inode Path\n";
+const PRIV: &str = "/run/user/1000/oab-pw-1a2b3c4d";
+
+fn unix_src(rows: &str) -> Fixture {
+    Fixture(
+        [
+            ("tcp", Ok(HEAD.to_string())),
+            ("tcp6", Ok(HEAD.to_string())),
+            ("udp", Ok(HEAD.to_string())),
+            ("udp6", Ok(HEAD.to_string())),
+            ("unix", Ok(format!("{UNIX_HEAD}{rows}"))),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+#[test]
+fn unix_listener_paths_keep_the_bound_name() {
+    let t = format!(
+        "{UNIX_HEAD}0: 2 0 00010000 0001 01 7 /a/b c\n1: 2 0 00010000 0001 01 8\n2: 2 0 00010000 0001 01 9 @abs\n3: 2 0 00000000 0001 01 10 /x\n"
+    );
+    assert_eq!(
+        parse_unix_listener_paths(&t),
+        [(7, "/a/b c".into()), (8, "".into()), (9, "@abs".into())]
+    );
+}
+
+#[test]
+fn only_a_plain_path_below_the_private_directory_is_inside() {
+    let ok = |p: &str| is_inside(p, PRIV);
+    assert!(ok(&format!(
+        "{PRIV}/org.chromium.Chromium.x/SingletonSocket"
+    )));
+    assert!(ok(&format!("{PRIV}/pw-ab/browser/browser-1.sock")));
+    assert!(!ok(PRIV), "the directory itself is not below it");
+    assert!(!ok(&format!("{PRIV}/")));
+    assert!(
+        !ok(&format!("{PRIV}x/s")),
+        "a sibling that shares the prefix"
+    );
+    assert!(!ok(&format!("{PRIV}/../s")));
+    assert!(!ok(&format!("{PRIV}/a/../../s")));
+    assert!(!ok(&format!("{PRIV}/./s")));
+    assert!(!ok(&format!("{PRIV}//s")));
+    assert!(!ok("@abstract"));
+    assert!(!ok(""));
+    assert!(!ok("/tmp/s"));
+    assert!(!ok("run/user/1000/oab-pw-1a2b3c4d/s"));
+}
+
+#[test]
+fn v2_unix_listeners_inside_the_private_directory_pass() {
+    let rows = format!(
+        "0: 2 0 00010000 0001 01 41 {PRIV}/pw-ab/browser/b.sock\n1: 2 0 00010000 0001 01 42 {PRIV}/org.chromium.Chromium.x/SingletonSocket\n"
+    );
+    let src = unix_src(&rows);
+    let all: HashSet<u64> = [41, 42].into();
+    let l = listeners_among_in(&src, &all, Some(PRIV)).unwrap();
+    assert_eq!((l.tcp, l.udp, l.unix, l.unix_outside), (0, 0, 2, 0));
+    assert!(l.passes_v2());
+}
+
+#[test]
+fn v2_a_unix_listener_outside_the_private_directory_fails() {
+    let rows = format!(
+        "0: 2 0 00010000 0001 01 41 {PRIV}/pw-ab/b.sock\n1: 2 0 00010000 0001 01 42 /tmp/elsewhere.sock\n2: 2 0 00010000 0001 01 43 @abstract\n3: 2 0 00010000 0001 01 44\n"
+    );
+    let src = unix_src(&rows);
+    let all: HashSet<u64> = [41, 42, 43, 44].into();
+    let l = listeners_among_in(&src, &all, Some(PRIV)).unwrap();
+    assert_eq!((l.unix, l.unix_outside), (4, 3));
+    assert!(!l.passes_v2());
+    // One that belongs to another process is not counted at all.
+    let only: HashSet<u64> = [41].into();
+    assert!(listeners_among_in(&src, &only, Some(PRIV))
+        .unwrap()
+        .passes_v2());
+}
+
+#[test]
+fn v2_without_a_verified_private_directory_every_unix_listener_is_outside() {
+    let rows = format!("0: 2 0 00010000 0001 01 41 {PRIV}/pw-ab/b.sock\n");
+    let src = unix_src(&rows);
+    let all: HashSet<u64> = [41].into();
+    let l = listeners_among_in(&src, &all, None).unwrap();
+    assert_eq!((l.unix, l.unix_outside), (1, 1));
+    assert!(!l.passes_v2());
+    assert!(!listeners_among(&src, &all).unwrap().passes_v2());
+}
+
+#[cfg(target_endian = "little")]
+#[test]
+fn v2_any_tcp_or_udp_listener_fails_even_with_the_private_directory() {
+    let src = Fixture(
+        [
+            ("tcp", Ok(tcp())),
+            ("tcp6", Ok(HEAD.to_string())),
+            ("udp", Ok(HEAD.to_string())),
+            ("udp6", Ok(HEAD.to_string())),
+            ("unix", Ok(UNIX_HEAD.to_string())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let all: HashSet<u64> = [12345].into();
+    let l = listeners_among_in(&src, &all, Some(PRIV)).unwrap();
+    assert_eq!(l.tcp, 1);
+    assert!(!l.passes_v2());
+}
+
+#[cfg(target_os = "linux")]
+mod tmp_dir {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn dir_with_mode(
+        t: &crate::state::tests::TempDir,
+        name: &str,
+        mode: u32,
+    ) -> std::path::PathBuf {
+        let d = t.path.join(name);
+        std::fs::create_dir(&d).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(mode)).unwrap();
+        d
+    }
+
+    fn me() -> u32 {
+        rustix::process::geteuid().as_raw()
+    }
+
+    #[test]
+    fn a_private_directory_of_ours_is_ok() {
+        let t = crate::state::tests::TempDir::new();
+        let d = dir_with_mode(&t, "ok", 0o700);
+        assert_eq!(tmp_state(&d, me()), TmpState::Ok);
+    }
+
+    #[test]
+    fn a_directory_that_is_not_exactly_0700_fails() {
+        let t = crate::state::tests::TempDir::new();
+        for (n, m) in [
+            ("a", 0o755),
+            ("b", 0o750),
+            ("c", 0o701),
+            ("d", 0o770),
+            ("e", 0o500),
+        ] {
+            let d = dir_with_mode(&t, n, m);
+            assert_eq!(tmp_state(&d, me()), TmpState::Mode, "mode {m:o}");
+        }
+    }
+
+    #[test]
+    fn a_directory_of_another_uid_fails() {
+        let t = crate::state::tests::TempDir::new();
+        let d = dir_with_mode(&t, "x", 0o700);
+        assert_eq!(tmp_state(&d, me().wrapping_add(1)), TmpState::Owner);
+    }
+
+    #[test]
+    fn a_missing_path_a_file_and_a_link_fail() {
+        let t = crate::state::tests::TempDir::new();
+        assert_eq!(tmp_state(&t.path.join("none"), me()), TmpState::Missing);
+        let f = t.path.join("f");
+        std::fs::write(&f, b"x").unwrap();
+        assert_eq!(tmp_state(&f, me()), TmpState::NotDir);
+        let real = dir_with_mode(&t, "real", 0o700);
+        let l = t.path.join("link");
+        std::os::unix::fs::symlink(&real, &l).unwrap();
+        assert_eq!(
+            tmp_state(&l, me()),
+            TmpState::NotDir,
+            "a link is never followed"
+        );
+    }
+}
+
+#[test]
+fn a_link_between_the_private_directory_and_the_socket_is_not_plain() {
+    use std::os::unix::fs::symlink;
+    let base = std::env::temp_dir().join(format!("oab-plain-{}", std::process::id()));
+    let private = base.join("priv");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(private.join("real")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, private.join("link")).unwrap();
+    let p = private.to_str().unwrap();
+    assert!(plain_parents(&format!("{p}/s"), p));
+    assert!(plain_parents(&format!("{p}/real/s"), p));
+    assert!(
+        !plain_parents(&format!("{p}/link/s"), p),
+        "symlinked parent"
+    );
+    assert!(
+        !plain_parents(&format!("{p}/missing/s"), p),
+        "unreadable parent"
+    );
+    assert!(!plain_parents("/elsewhere/s", p));
+    std::fs::remove_dir_all(&base).unwrap();
 }

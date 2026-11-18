@@ -72,19 +72,21 @@ effort. Alpine and other musl systems are refused with a clear message.
 
 | System | glibc | amd64 and arm64 | Automated check | Manual run per release |
 | --- | --- | --- | --- | --- |
-| Debian 12 | 2.36 | supported | not yet (arrives with the release work, L5) | not yet |
-| Raspberry Pi OS (Debian 12 or 13 based) | 2.36 (Debian 12), 2.41 (Debian 13) | supported (arm64) | not yet | not yet |
-| Ubuntu 22.04 | 2.35 | supported | not yet | not yet |
-| Ubuntu 24.04 | 2.39 | supported | not yet | not yet |
-| Debian 13 and newer, newer Ubuntu | 2.41 and newer | supported by the rule above, not listed as run | not yet | not yet |
+| Debian 12 | 2.36 | supported | Debian 12 container job (install, preflight, health check), from the first release that contains L5 | full run on a Debian 12 host, recorded per release |
+| Raspberry Pi OS (Debian 12 or 13 based) | 2.36 (Debian 12), 2.41 (Debian 13) | supported (arm64) | none of its own (the Debian 12 based container job covers the Debian 12 glibc on arm64; Debian 13 is not claimed as tested) | full run on Raspberry Pi OS hardware, recorded per release |
+| Ubuntu 22.04 | 2.35 | supported | release smoke, amd64 and arm64, from the first release that contains L5 | covered by the smoke |
+| Ubuntu 24.04 | 2.39 | supported | release smoke, amd64 and arm64, from the first release that contains L5 | covered by the smoke |
+| Debian 13 and newer, newer Ubuntu | 2.41 and newer | supported by the rule above only; no automated or manual run is listed, so it is not claimed as tested | none | none |
 | Other glibc distributions | 2.28 or newer | best effort | none | none |
 | Alpine, other musl systems | n/a | refused | none | none |
 
-"Tested" will mean an automated release smoke, a Debian 12 container job, and a manual full run per
-release (ADR D16). None of the three exists yet: until the release work lands, every row says "not
-yet", and the table is a statement of intent plus what the preflight checks, not a claim that a
-release was run there. `oab-computer browser preflight` checks libc, the glibc floor, user
-namespaces, disk and missing libraries on the host in front of you.
+"Tested" means an automated release smoke, a Debian 12 container job, and a manual full run per
+release (ADR D16). The smoke matrix, the container job and the per-release record are defined in
+`.github/workflows/linux-release-smoke.yml` and in [Releasing](releasing.md#linux-release-gates). No
+release that contains them has been published yet. Until one is, and until its record is filled in, the
+columns above describe what a release will be checked against, not a run that happened, and the table
+is a statement of intent plus what the preflight checks. `oab-computer browser preflight` checks libc,
+the glibc floor, user namespaces, disk and missing libraries on the host in front of you.
 
 ## Prerequisites
 
@@ -144,10 +146,18 @@ A=$(dpkg --print-architecture)          # arm64 or amd64
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz.sha256"
 sha256sum -c "oab-computer-$V-linux-$A.tar.gz.sha256"
+# Optional, from the first release that carries an attestation (0.12.x has none, so this fails there).
+# gh attestation verify "oab-computer-$V-linux-$A.tar.gz" --repo openabdev/openab-computer
 tar xzf "oab-computer-$V-linux-$A.tar.gz" && cd "oab-computer-$V-linux-$A"
 ./install-linux.sh                    # does steps 3 and 5 below, then asks about the browser (step 4)
 ./install-linux.sh --headless-seat    # same, on a box with no desktop (creates oab-seat.service)
 ```
+
+The attestation check is optional. It needs the GitHub CLI, and it shows that the tarball was built by
+this repository's release workflow from a stated commit. It does not make the download safe (ADR D12);
+the `.sha256` check stays the required one. Only a release built after the attestation step was added
+carries an attestation: the 0.12.x tarballs have none, and `gh attestation verify` finds nothing for
+them. See [Verifying a Linux tarball](releasing.md#verifying-a-linux-tarball).
 
 A unit file the installer did not write (no installer marker line) is never rewritten: the installer
 leaves it as it is and writes the unit it would have used next to it as `*.proposed`. That holds for
@@ -178,7 +188,7 @@ the flag.
 | --- | --- | --- |
 | Linger | `sudo loginctl enable-linger $USER` | The daemon and the browser keep running after you log out and start again at boot. Printed only when linger is off. |
 | Publish | `sudo tailscale serve --bg --https=8444 http://127.0.0.1:8795` | Exposes the daemon on your tailnet over HTTPS (tailnet only). |
-| AppArmor | `printf ... \| sudo tee /etc/apparmor.d/oab-computer-chromium-<id>` then `sudo apparmor_parser -r ...` | Only where `kernel.apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 24.04): Chromium cannot make its sandbox without it. The profile names your own data path, not `/home/*`, and covers every version directory, so it serves later updates. `oab-computer browser preflight` prints the exact text. |
+| AppArmor | `printf ... \| sudo tee /etc/apparmor.d/oab-computer-chromium-<id>` then `sudo apparmor_parser -r ...` | Only where `kernel.apparmor_restrict_unprivileged_userns` is 1 (Ubuntu 24.04): Chromium cannot make its sandbox without it. The profile names your own data path, not `/home/*`, and covers every version directory, so it serves later updates. The single glob is the decided design (ADR D7): its path lies in your own data directory, so code running as you could place a file named `chrome` there and run it with `userns` allowed; it needs code execution as you first and gives back only the unprivileged user namespace. `oab-computer browser preflight` prints the exact text. |
 | Libraries | `sudo apt-get install ...` | Libraries the preflight found missing, with the package names. |
 | Fonts | `sudo apt-get install -y fonts-dejavu-core fonts-liberation fonts-noto-cjk fonts-noto-color-emoji` | A server has none and pages render as boxes. Printed only when no font is found, and only in a run that does the browser step (not with `--browser none`). |
 
@@ -314,8 +324,8 @@ needed, unless you install from files (see [Offline install](#offline-install)).
   There is no quarantine step on Linux.
 - The Chromium it installs is a browser: the connections it makes while running are Chromium's,
   not the installer's. In the project's own measurement of the pinned build the managed tree held no
-  TCP or UDP socket and two private Unix sockets (see [Ports](#ports)); that is still an open
-  release gate (V2 in the [ADR](adr/linux-browser-tier.md)), and whether the browser exits when its
+  TCP or UDP socket and two private Unix sockets (see [Ports](#ports)); the rule for those (V2, decided in
+  the [ADR](adr/linux-browser-tier.md)) is checked by every release smoke, and whether the browser exits when its
   stdin closes (V3) has not been measured. The daemon stops the child's whole process tree itself
   when it stops it.
 - The install adds no unit and no network port. An update is only ever offered, never applied silently.
@@ -339,11 +349,18 @@ the profile and output folders stay. `remove` refuses while a managed browser is
 ### Ports
 
 The managed browser has no TCP or UDP port and does not use `8794`. The daemon listens on
-`127.0.0.1:8795`; `tailscale serve` uses `--https=8444`. Chromium holds two Unix listening sockets in the child's own `0700` temporary directory. They
-are not TCP or UDP ports, but they are listeners: another process of the same user can connect to
-them, so the claim "no socket of any kind" is not made. (The ADR and requirement R1.1 state "no Unix
-listener" as a target that is unmet today; V2 is not closed until the release smoke measures it on
-both architectures.) Port `8794` is bound only by
+`127.0.0.1:8795`; `tailscale serve` uses `--https=8444`. Chromium and Playwright hold two Unix listening sockets in the child's own `0700` temporary
+directory. They are not TCP or UDP ports, but they are listeners: another process of the same user
+can connect to them and drive the managed browser, so the claim "no socket of any kind" is not made.
+The rule (V2, decided in the ADR and requirement R1.1): no TCP or UDP listener, and every Unix listener
+inside that private directory, which must be a real directory of the daemon's uid with mode exactly
+`0700`. `browser status` shows `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass`
+while the browser runs, and `result=fail` for anything else (run it in the daemon's user session, so
+`XDG_RUNTIME_DIR` matches the daemon's). While `browser signin` holds the browser, `status` counts that tree's
+Unix sockets, which sit in another temporary directory, as `unix_outside>0 result=fail`. This is a false alarm that fails
+closed; close the sign-in window and run `status` again. Another local user is refused by the directory and the socket
+mode, and a web page cannot reach a Unix socket path. The release smoke measures the rule on amd64
+and arm64 for every release. Port `8794` is bound only by
 an old browser unit (unauthenticated, loopback) or by whatever you start yourself for
 `MCP_BROWSER_BACKEND=external`.
 
@@ -421,9 +438,24 @@ without that tier), `not_applicable` (nothing is installed yet) or `not_checked`
 mount tier still runs without the protection the probes did not confirm. The base tier is
 different: where the full base list cannot start at all (a user manager that refuses a property such
 as `ProtectKernelModules`, as on some Ubuntu 24.04 hosts with restricted user namespaces), the
-containment check reports `unverified` and the managed browser is unavailable until that is fixed. A listing of leftovers
-from an old setup (old units, old directories with sizes, the old profile that holds cookies) is
-not in `status` yet: use the checklist under
+containment check reports `unverified` and the managed browser is unavailable until that is fixed.
+
+Three more fields list what the old external setup left behind. They exist from the first release
+that contains L5, and they only read: `status` never stops, moves or deletes any of it (D10).
+`legacy_units` is `none` or a comma list of `oab-pw-mcp.service`, `oab-computer-pw-mcp.service`
+(unit files in `~/.config/systemd/user/`) and `drop-in:oab-computer.service.d` or
+`drop-in:oab-instance-mcp.service.d` (a drop-in directory with a `*.conf` with an active
+`Environment=MCP_UPSTREAM=` line; the file's content and the URL are never shown). `legacy` is `none` or a comma
+list of `<path>:<size>` for the old directories and files (`~/.local/oab-computer/pw-mcp`,
+`pw-profile`, `pw-output`, `pw-config.json`, `pw-mcp.sh`, `~/.local/oab-instance-mcp/pw-mcp`,
+`~/.cache/ms-playwright`); the old profile carries `:holds_cookies`, a link is `:symlink` and is not
+followed, and a size that could not be taken is `:size_unknown`. Sizes are apparent sizes in a
+fixed unit (`B`, `KiB`, `MiB`, `GiB`). `legacy_listener` is `8794` when a TCP socket listens on the
+old unit's port (any owner, since that port has no authentication), `none`, or `unknown` when the
+table cannot be read. `legacy_units` and `legacy` say `unknown` when `HOME` is not set; `legacy_listener` is still probed. When any of them shows
+something, the human output adds one line that points at
+[the cutover guide](linux-cutover.md); `--json` has the fixed fields only. Removing what they list
+is a person's job: use that guide and the checklist under
 [Removing the old browser setup after the soak](#removing-the-old-browser-setup-after-the-soak).
 
 ### Flags and environment variables
@@ -565,7 +597,7 @@ code). Turn that unit off after the cutover (see
 ## 6. Verify from another tailnet machine
 
 ```sh
-TOKEN=$(ssh <host> cat ~/.config/oab-computer/token)
+TOKEN=$(ssh <host> 'cat ~/.config/oab-computer/token')
 U=https://<host>.<tailnet>.ts.net:8444
 curl -s $U/healthz                                                  # ok
 curl -s -o /dev/null -w '%{http_code}\n' -X POST $U/mcp -H 'Authorization: Bearer nope' -d '{}'   # 401
@@ -804,8 +836,8 @@ The installer never stops, disables, edits or deletes an old browser unit, a dro
 directory, an old profile or an old AppArmor profile, and never copies cookies. The managed browser
 starts with a fresh profile, so a migrated host signs in again (`browser signin`); the old profile
 stays where it is and holds the old cookies until you delete it. The cutover itself is a procedure
-for a person
-([requirements, section 2](requirements/linux-browser-tier.md#2-cutover-runbook)). What the
+for a person: [the cutover guide](linux-cutover.md) has the commands, the checks and the rollback of each step
+([requirements, section 2](requirements/linux-browser-tier.md#2-cutover-runbook) is the design). What the
 installer does on each kind of host:
 
 | Host | What the installer does | What you do at cutover |
@@ -838,21 +870,25 @@ below is marked if it needs root.
 
    ```sh
    ls ~/.config/systemd/user/ | grep -E 'pw-mcp|oab-instance-mcp'
-   grep -l MCP_UPSTREAM ~/.config/systemd/user/oab-computer.service.d/*.conf \
-     ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null     # the drop-in file or files
+   grep -nE "^[[:space:]]*Environment=(['\"]|[^#;]*[[:space:]'\"])?MCP_UPSTREAM=" \
+     ~/.config/systemd/user/oab-computer.service.d/*.conf \
+     ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null     # file:line of each active assignment
    ```
 
-   Disable each old unit that exists, then delete exactly the files that listing printed (for
-   example `oab-pw-mcp.service`, or `oab-computer-pw-mcp.service`, and the drop-in file it named),
-   then reload. `rm -f` does not fail on a file the host never had. Do not delete a drop-in the
-   `grep` did not list: others may belong to something else. No root:
+   Disable each old unit that exists and delete the old unit files. Then, for each file the `grep`
+   printed, run `cat` on it. If it holds nothing but `[Service]`, that one `Environment=MCP_UPSTREAM=`
+   line, comments and blank lines, it is the dedicated drop-in and `rm -f` removes it. If it holds
+   any other setting, delete only that line (`sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp$/d' FILE`, or an
+   editor if the line also sets other variables) and keep the file. A file the `grep` did not list
+   is not touched: it may belong to something else. Reload last. No root:
 
    ```sh
    for u in oab-pw-mcp.service oab-computer-pw-mcp.service; do
      if systemctl --user cat "$u" >/dev/null 2>&1; then systemctl --user disable --now "$u"; fi
    done
    rm -f ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
-   rm -f <each drop-in file the grep printed>
+   cat FILE                                    # for each file the grep printed
+   rm -f FILE                                  # only a dedicated file, as described above
    systemctl --user daemon-reload
    ```
 
@@ -892,8 +928,12 @@ below is marked if it needs root.
 
 0.12.0 and earlier started Playwright as a separate unit, `oab-computer-pw-mcp.service`, on
 `127.0.0.1:8794`, with `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp` in the daemon unit, started
-by `poc/reverse-attach-linux/pw-mcp.sh` (kept in the tarball for one more release, to be marked
-deprecated by the release PR L5, so that a binary rollback has a script to restore). That path has no authentication on the listener
+by `poc/reverse-attach-linux/pw-mcp.sh` (kept in the tarball for one more release so that a binary
+rollback has a script to restore, and, from the first release that contains L5, marked deprecated: a
+header comment, and a notice on stderr each time it starts, in the tarball's copy only: the installer
+does not copy the script, so an old unit still runs the copy it already has and shows no notice; the
+launch itself is unchanged). The script is removed in the minor release after that (D14). Moving off
+it is described in [the cutover guide](linux-cutover.md). That path has no authentication on the listener
 and no pinned downloads; it is only for a host that has not moved, or for
 `MCP_BROWSER_BACKEND=external`. Its pieces: `PW_CHROMIUM` and `PW_NODE_BIN` (the script's own
 environment, default `/usr/bin/chromium`), a persistent profile under

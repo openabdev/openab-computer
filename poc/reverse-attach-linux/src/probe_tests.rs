@@ -33,6 +33,30 @@ fn by_default_nothing_runs_and_the_vocabulary_is_fixed() {
     assert_eq!(x.hardening_mount, "not_checked");
     assert_eq!(x.hardening_unverified, "not_checked");
     assert_eq!(x.run_records, "unavailable");
+    // L5: `gather` does not look at the home directory, so the legacy fields stay `none`.
+    assert_eq!(
+        (
+            x.legacy_units.as_str(),
+            x.legacy.as_str(),
+            x.legacy_listener.as_str()
+        ),
+        ("none", "none", "none")
+    );
+    assert!(!x.legacy_present());
+}
+
+#[test]
+fn the_legacy_fields_are_set_apart_from_the_probe() {
+    let mut x = Extras::none();
+    x.set_legacy(crate::legacy::Legacy {
+        units: "oab-pw-mcp.service".into(),
+        paths: "~/.cache/ms-playwright:1 MiB".into(),
+        listener: "8794".into(),
+    });
+    assert!(x.legacy_present());
+    assert_eq!(x.legacy_units, "oab-pw-mcp.service");
+    assert_eq!(x.legacy, "~/.cache/ms-playwright:1 MiB");
+    assert_eq!(x.legacy_listener, "8794");
 }
 
 #[test]
@@ -169,4 +193,40 @@ fn a_full_run_directory_is_named_in_the_status() {
         gather(&t.base(), false, None, &none, &nothing).run_records,
         "full"
     );
+}
+
+#[test]
+fn the_listeners_word_carries_the_v2_verdict() {
+    use crate::procnet::{Listeners, TmpState};
+    let w = |l: Listeners, t| listeners_word(Ok(l), t);
+    assert_eq!(w(Listeners::default(), TmpState::Missing), "none");
+    let two = Listeners {
+        unix: 2,
+        ..Default::default()
+    };
+    assert_eq!(
+        w(two, TmpState::Ok),
+        "tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass"
+    );
+    let out = Listeners {
+        unix: 2,
+        unix_outside: 1,
+        ..Default::default()
+    };
+    assert!(w(out, TmpState::Ok).ends_with("unix_outside=1 tmpdir=ok result=fail"));
+    let all_out = Listeners {
+        unix: 2,
+        unix_outside: 2,
+        ..Default::default()
+    };
+    assert_eq!(
+        w(all_out, TmpState::Mode),
+        "tcp=0 udp=0 unix=2 unix_outside=2 tmpdir=mode result=fail"
+    );
+    let tcp = Listeners {
+        tcp: 1,
+        ..Default::default()
+    };
+    assert!(w(tcp, TmpState::Ok).ends_with("result=fail"));
+    assert_eq!(listeners_word(Err("x"), TmpState::Ok), "unknown");
 }
