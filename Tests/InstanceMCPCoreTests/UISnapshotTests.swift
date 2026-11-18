@@ -882,7 +882,7 @@ final class UISnapshotToolTests: XCTestCase {
         let cases: [(JSONValue, String)] = [(["app": "TextEdit", "pid": 20], "pass app or pid, not both"),
                             (["window": "x", "all_windows": true], "pass window or all_windows, not both"),
                             (["max_nodes": 1.5], "max_nodes must be an integer"),
-                            (["window": -1], "window must be a non-empty title, or use window_index for an index ≥ 0"),
+                            (["window": -1], "window must be a non-empty title"),
                             (["app": ""], "app must be a non-empty string")]
         for (args, why) in cases {
             let r = await call(args)

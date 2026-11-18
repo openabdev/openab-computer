@@ -232,17 +232,12 @@ final class ToolSchemaShapeTests: XCTestCase {
         XCTAssertThrowsError(try UISnapshotTool.parse(["window": -1]))
     }
 
-    func testSnapshotWindowIndexIsAFlatInteger() throws {
+    func testSnapshotWindowSchemaIsTitleOnly() throws {
         let props = UISnapshotTool().inputSchema["properties"]
-        XCTAssertEqual(props?["window_index"]?["type"]?.stringValue, "integer")
         XCTAssertEqual(props?["window"]?["type"]?.stringValue, "string")
-        XCTAssertEqual(try UISnapshotTool.parse(["window_index": 1]).window, .index(1))
-        XCTAssertEqual(try UISnapshotTool.parse(["window_index": 0]).window, .index(0))
-        XCTAssertThrowsError(try UISnapshotTool.parse(["window_index": "1"]))
-        XCTAssertThrowsError(try UISnapshotTool.parse(["window_index": -1]))
-        XCTAssertThrowsError(try UISnapshotTool.parse(["window": "Untitled", "window_index": 0]))
-        XCTAssertThrowsError(try UISnapshotTool.parse(["window": 2, "window_index": 0]))
-        XCTAssertThrowsError(try UISnapshotTool.parse(["window_index": 0, "all_windows": true]))
+        XCTAssertNil(props?["window_index"], "index selection is not advertised: strict clients send a title")
+        XCTAssertEqual(try UISnapshotTool.parse(["window": 1]).window, .index(1), "a native integer still selects an index for existing callers")
+        XCTAssertEqual(try UISnapshotTool.parse(["window": "1"]).window, .title("1"))
     }
 
     func testActionValueAcceptsStringNumberAndBool() throws {
