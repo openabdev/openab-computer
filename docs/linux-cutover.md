@@ -30,11 +30,11 @@ Hosts are described by what they run, never by name. Facts are collected in step
 | --- | --- | --- | --- | --- |
 | **A** (new-style unit) | `oab-computer.service`, written by the 0.12.0 installer | In `oab-computer.service` itself | `oab-computer-pw-mcp.service` | `~/.local/oab-computer` |
 | **B, C, D** (old-style unit) | `oab-computer.service` | In a drop-in file under `oab-computer.service.d/` or `oab-instance-mcp.service.d/` | `oab-pw-mcp.service` | `~/.local/oab-instance-mcp/pw-mcp` |
-| **E** (a VM) | Treated exactly like B, C and D | Same | Same | Same |
 
 Requirement section 2 and D13 name two classes: one new-style host and the old-style hosts that "follow
-together". Hosts A to E map to them: A is the class N host, and B to E are class O hosts. The VM is one
-more class O host, not a separate procedure. A host still running `oab-instance-mcp.service` (0.11 or
+together". The four existing hosts map to them: A is the class N host, and B, C and D are the three class O
+hosts. A VM or any other host beyond these four is not covered by D13. It uses the class O procedure
+only after the owner says when, not as part of the second wave. A host still running `oab-instance-mcp.service` (0.11 or
 earlier) first needs [Upgrading from 0.11](linux-setup.md#upgrading-from-011); this guide starts after
 that.
 
@@ -45,7 +45,7 @@ flowchart TB
     pre["Before anything: a release with the managed tier is installed and verified on a throwaway account, M1 to M4 and the cutover rehearsal M8"]
     a["Host A: steps 0 to 7"]
     soak["Soak: one week of normal use on host A with no browser incident, old unit disabled and not deleted"]
-    rest["Hosts B, C, D and E together: steps 0 to 7 on each"]
+    rest["Hosts B, C and D together: steps 0 to 7 on each"]
     soak2["Soak: one week on each, old units disabled and not deleted"]
     clean["A person removes the leftovers, section Removing the leftovers"]
     rb["Rollback, section Rollback"]
@@ -94,7 +94,7 @@ flowchart TB
 
 Notation. Commands run on the host being moved, as the user that runs the daemon, in that user's
 login session (over `ssh`, so that `XDG_RUNTIME_DIR` and the user manager are set). `OLD` stands for the
-old browser unit on that host: `oab-computer-pw-mcp.service` on host A, `oab-pw-mcp.service` on B to E.
+old browser unit on that host: `oab-computer-pw-mcp.service` on host A, `oab-pw-mcp.service` on B to D.
 The binary is `~/.local/oab-computer/oab-computer` (not on `PATH`). Checks that call the daemon from
 outside use the commands of [Verify from another tailnet machine](linux-setup.md#6-verify-from-another-tailnet-machine).
 
@@ -125,7 +125,7 @@ less "$INV"
 ```
 
 **Verify.** The file names the old unit, says where the `MCP_UPSTREAM` line is (inside
-`oab-computer.service` on host A, in a drop-in file on B to E), shows whether port 8794 is held, and
+`oab-computer.service` on host A, in a drop-in file on B to D), shows whether port 8794 is held, and
 holds the architecture, glibc version and free disk. If `oab-computer.service` is missing and
 `oab-instance-mcp.service` is present, stop: that host is on 0.11 or earlier and first follows
 [Upgrading from 0.11](linux-setup.md#upgrading-from-011). The 0.12.0 binary has no `browser` command,
@@ -154,7 +154,7 @@ done
 ```
 
 **Verify.** The listing shows `oab-computer.prev`, `oab-computer.service`, the old unit file and, on
-B to E, the drop-in directory with the file that holds `MCP_UPSTREAM`. Write the `$BK` path down: the
+B to D, the drop-in directory with the file that holds `MCP_UPSTREAM`. Write the `$BK` path down: the
 rollback uses it (`BK=<that path>`).
 
 **Roll back to here.** Nothing to undo. The backup stays; the installer never deletes it.
@@ -241,7 +241,7 @@ was changed.
 
 ## Step 5. Cutover, in one short window
 
-From 5.1 to 5.3 the daemon has no browser. Do them together. Host A first; B to E only after the soak.
+From 5.1 to 5.3 the daemon has no browser. Do them together. Host A first; B to D only after the soak.
 
 ### 5.1 Disable and stop the old browser unit
 
@@ -261,7 +261,7 @@ ss -ltnH 'sport = :8794' | wc -l         # prints 0
 
 **Roll back to here.** `systemctl --user enable --now OLD`.
 
-### 5.2 Remove the `MCP_UPSTREAM` line (host A) or the drop-in file (hosts B to E)
+### 5.2 Remove the `MCP_UPSTREAM` line (host A) or the drop-in file (hosts B to D)
 
 The backup of step 1 must exist. Delete nothing else.
 
@@ -276,7 +276,7 @@ grep -c 'MCP_UPSTREAM' ~/.config/systemd/user/oab-computer.service
 If the last command does not print `0`, the line has another form (several upstreams, an edit of
 yours): remove it by hand with an editor, keeping every other line.
 
-Hosts B to E, the line sits in a drop-in file. List the file or files that set it, then delete exactly
+Hosts B to D, the line sits in a drop-in file. List the file or files that set it, then delete exactly
 those:
 
 ```sh
@@ -343,7 +343,7 @@ Run this after 5.4. The token and the URL are those of
 `curl` lines from another machine on your tailnet.
 
 ```sh
-TOKEN=$(ssh <host> cat ~/.config/oab-computer/token)
+TOKEN=$(ssh <host> 'cat ~/.config/oab-computer/token')
 U=https://<host>.<tailnet>.ts.net:8444
 H='Content-Type: application/json'
 # 1. the tool list: prints 32 (the browser_* names)
@@ -420,7 +420,7 @@ journalctl --user -u oab-computer --since '7 days ago' --no-pager | grep 'browse
 ```
 
 `refusal` should stay `none`, and the journal lines carry fixed classes only. After a week with no
-browser incident on host A, do steps 0 to 7 on hosts B to E together, then soak each for a week. A
+browser incident on host A, do steps 0 to 7 on hosts B to D together, then soak each for a week. A
 browser incident on any host sends that host to the [Rollback](#rollback) and pauses the others.
 
 **Roll back to here.** The [Rollback](#rollback) works for as long as the old units are not deleted.

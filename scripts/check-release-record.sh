@@ -7,7 +7,9 @@
 # docs/release-records/linux-VERSION.md, committed before the tag. It passes only when:
 #   - the file exists;
 #   - no table row still holds the placeholder PENDING;
-#   - the V2 and D7 rows exist and neither still says "open, owner decision pending".
+#   - the V2 and D7 rows exist and neither still says "open, owner decision pending";
+#   - every V row whose Blocking cell starts with "yes" has a Result of "pass", or of "n/a" followed by
+#     a reason ("n/a, reason"). A "fail", an empty cell or any other text blocks the release.
 # The script never writes, never fills a cell and never treats V2 or D7 as resolved: those two rows
 # stay red until a person records the owner's decision in the row (and in the ADR). Only lines that
 # start with `|` (table rows) are read, so the instructions around the tables may quote the words.
@@ -49,6 +51,20 @@ else
       say "$id is open, owner decision pending: a release stays blocked"
     fi
   done
+  # Blocking rows of the release gates table: | Gate | Result | Evidence | Blocking |
+  bad=$(printf '%s\n' "$rows" | awk -F'|' '
+    function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
+    $2 ~ /^ *V[0-9]+ / && NF == 6 && trim($5) ~ /^yes/ {
+      r = trim($3)
+      if (r !~ /^pass$/ && r !~ /^n\/a[ ]*[,:;-][ ]*[^ ]/) print trim($2) " (result: " r ")"
+    }')
+  if [ -n "$bad" ]; then
+    while IFS= read -r line; do
+      say "blocking gate not passed: $line; a blocking row needs pass, or n/a with a reason"
+    done <<EOF
+$bad
+EOF
+  fi
 fi
 
 if [ "$problems" -eq 0 ]; then

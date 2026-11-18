@@ -56,10 +56,10 @@ mkdir -p "$T/install" "$T/other"
 if [ ! -e /proc/self/exe ]; then
   echo "SKIP survivor check (no /proc: Linux only; CI runs it)"
 else
-cp "$(command -v sleep)" "$T/install/sleeper"
-cp "$(command -v sleep)" "$T/other/sleeper"
-"$T/install/sleeper" 30 & inside=$!
-"$T/other/sleeper" 30 & outside=$!
+cp "$(command -v sleep)" "$T/install/sleep"
+cp "$(command -v sleep)" "$T/other/sleep"
+"$T/install/sleep" 30 & inside=$!
+"$T/other/sleep" 30 & outside=$!
 sleep 0.3
 found=$(survivors_under "$T/install" | tr '\n' ' ')
 case " $found" in *" $inside "*) ok "survivor below the directory is found" ;; *) bad "survivor not found: '$found'" ;; esac
@@ -79,11 +79,11 @@ C="$here/check-release-record.sh"
 cp "$here/../docs/release-records/TEMPLATE.md" "$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: the untouched template fails" 1 $?
 fill="$T/filled.md"
-sed 's/PENDING/done/g' "$R/linux-9.9.9.md" >"$fill"
+sed 's/PENDING/done/g;s/^\(| V[0-9]* [^|]*\)| done |\(.*| yes[^|]*|\)$/\1| pass |\2/' "$R/linux-9.9.9.md" >"$fill"
 cp "$fill" "$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: all rows filled, V2 and D7 decided, passes" 0 $?
 # A row that reopens a decision blocks the release, and the gate names it.
-sed 's/^| \(V2 .*\) | done | /| \1 | open, owner decision pending | /;s/^| \(D7 .*\) | decided, glob kept | /| \1 | open, owner decision pending | /' "$fill" >"$R/linux-9.9.9.md"
+sed 's/^| \(V2 .*\) | pass | /| \1 | open, owner decision pending | /;s/^| \(D7 .*\) | decided, glob kept | /| \1 | open, owner decision pending | /' "$fill" >"$R/linux-9.9.9.md"
 out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V2 and D7 reopened blocks" 1 $?
 case $out in *"V2 is open"*"D7 is open"*) ok "record: both open rows are named" ;; *) bad "record: open rows not named: $out" ;; esac
 sed 's/^| \(D7 .*\) | decided, glob kept | /| \1 | open, owner decision pending | /' "$fill" >"$R/linux-9.9.9.md"
@@ -94,8 +94,21 @@ grep -v '^| V2 ' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a removed V2 row fails" 1 $?
 sed 's/^| M3 \(.*\) | done | done | done | done |$/| M3 \1 | PENDING | done | done | done |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: one PENDING cell fails" 1 $?
-sed 's/^| \(V2 .*\) | done | /| \1 | PENDING | /' "$fill" >"$R/linux-9.9.9.md"
+sed 's/^| \(V2 .*\) | pass | /| \1 | PENDING | /' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a V2 row without its measurement (PENDING) fails" 1 $?
+# A blocking gate (V1, V2, V7) needs pass, or n/a with a reason; fail, n/a alone or free text blocks.
+for bad_result in fail 'n/a' 'done' 'pass?' ''; do
+  sed "s#^| \\(V7 [^|]*\\)| pass |#| \\1| $bad_result |#" "$fill" >"$R/linux-9.9.9.md"
+  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V7 result '$bad_result' blocks" 1 $?
+  case $out in *"blocking gate not passed: V7"*) ok "record: V7 '$bad_result' is named" ;; *) bad "record: V7 '$bad_result' not named: $out" ;; esac
+done
+sed 's/^| \(V7 [^|]*\)| pass |/| \1| n\/a, no sign-in on this release |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 n/a with a reason passes" 0 $?
+sed 's/^| \(V1 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V1 fail blocks" 1 $?
+# A non-blocking row may be anything but PENDING.
+sed 's/^| \(V3 [^|]*\)| done |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a non-blocking V3 fail does not block" 0 $?
 # The instruction text outside the tables may quote the words without tripping the gate.
 cp "$fill" "$R/linux-9.9.9.md"
 printf '\nThe words open, owner decision pending and PENDING in prose are not a table row.\n' >>"$R/linux-9.9.9.md"

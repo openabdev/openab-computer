@@ -146,8 +146,8 @@ A=$(dpkg --print-architecture)          # arm64 or amd64
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz"
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz.sha256"
 sha256sum -c "oab-computer-$V-linux-$A.tar.gz.sha256"
-# Optional, beside the checksum: proves this repository's release workflow built this file (see below).
-gh attestation verify "oab-computer-$V-linux-$A.tar.gz" --repo openabdev/openab-computer
+# Optional, from the first release that carries an attestation (0.12.x has none, so this fails there).
+# gh attestation verify "oab-computer-$V-linux-$A.tar.gz" --repo openabdev/openab-computer
 tar xzf "oab-computer-$V-linux-$A.tar.gz" && cd "oab-computer-$V-linux-$A"
 ./install-linux.sh                    # does steps 3 and 5 below, then asks about the browser (step 4)
 ./install-linux.sh --headless-seat    # same, on a box with no desktop (creates oab-seat.service)
@@ -356,7 +356,9 @@ The rule (V2, decided in the ADR and requirement R1.1): no TCP or UDP listener, 
 inside that private directory, which must be a real directory of the daemon's uid with mode exactly
 `0700`. `browser status` shows `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass`
 while the browser runs, and `result=fail` for anything else (run it in the daemon's user session, so
-`XDG_RUNTIME_DIR` matches the daemon's). Another local user is refused by the directory and the socket
+`XDG_RUNTIME_DIR` matches the daemon's). While `browser signin` holds the browser, `status` counts that tree's
+Unix sockets, which sit in another temporary directory, as `unix_outside>0 result=fail`. This is a false alarm that fails
+closed; close the sign-in window and run `status` again. Another local user is refused by the directory and the socket
 mode, and a web page cannot reach a Unix socket path. The release smoke measures the rule on amd64
 and arm64 for every release. Port `8794` is bound only by
 an old browser unit (unauthenticated, loopback) or by whatever you start yourself for
@@ -595,7 +597,7 @@ code). Turn that unit off after the cutover (see
 ## 6. Verify from another tailnet machine
 
 ```sh
-TOKEN=$(ssh <host> cat ~/.config/oab-computer/token)
+TOKEN=$(ssh <host> 'cat ~/.config/oab-computer/token')
 U=https://<host>.<tailnet>.ts.net:8444
 curl -s $U/healthz                                                  # ok
 curl -s -o /dev/null -w '%{http_code}\n' -X POST $U/mcp -H 'Authorization: Bearer nope' -d '{}'   # 401

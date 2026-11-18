@@ -288,7 +288,7 @@ runs them with `sudo`. Its only entry point is `scripts/install-linux.sh`; `oab-
 never runs a root action and refuses the flag. The AppArmor profile is scoped to the installing user's own data path, not
 `/home/*`, and `update` prints the profile for the new version directory before it commits, so the
 old version keeps serving until the new profile is loaded. *As built (L1b), confirmed by the owner
-(option 1, no pattern change):* the profile is one glob over every version directory under that data path, so the profile
+(the single path-scoped glob profile is kept, no pattern change):* the profile is one glob over every version directory under that data path, so the profile
 that `install` prints already covers the new version directory and `update` prints no further one;
 the decided order (profile loaded before the commit) holds because no new profile is needed. The
 profile file and name end in a hash of the install path, so two users on one host do not replace

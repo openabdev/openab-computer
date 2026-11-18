@@ -221,7 +221,7 @@ real_cell() {
   echo "== kill -9 the harness main process"
   local t0 t1 left=1
   t0=$(now_ms)
-  systemctl --user kill --kill-whom=main --signal=KILL "$UNIT.service" || true
+  systemctl --user kill --kill-who=main --signal=KILL "$UNIT.service" || true
   for _ in $(seq 1 300); do
     if [ -z "$(survivors_under "$INSTALL_DIR")" ]; then
       left=0

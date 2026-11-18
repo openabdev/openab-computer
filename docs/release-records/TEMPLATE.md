@@ -4,12 +4,15 @@ Copy this file to `docs/release-records/linux-VERSION.md` (VERSION without the l
 in against the release candidate, and commit it to `main` **before** the tag. The `record` job of
 `.github/workflows/linux-release-smoke.yml` runs `scripts/check-release-record.sh VERSION` and
 fails a release when the file is missing, when any table row still holds the placeholder
-`PENDING`, or when the `V2` or `D7` row is missing or says `open, owner decision pending`.
+`PENDING`, when the `V2` or `D7` row is missing or says `open, owner decision pending`, or when a
+blocking gate row is not `pass` (or `n/a` with a reason).
 
 Rules for the person filling it in:
 
 - Replace every `PENDING` with a result. Write `n/a` and the reason when a row does not apply; never
   delete a row.
+  A gate row whose Blocking cell says `yes` (V1, V2, V7) must read `pass`, or `n/a, reason`; `fail` or
+  anything else fails the record check.
 - Record what you ran and saw. No host names, tailnet names, addresses, logins or tokens: name a host
   by class ("amd64 desktop", "arm64 desktop", "headless-seat host").
 - The `V2` and `D7` rows record decisions the owner made ([the ADR](../adr/linux-browser-tier.md)).

@@ -199,7 +199,8 @@ happens to `desktop` requests, to stored `desktop` grants and to a `switchboard.
 The Linux managed browser tier ([requirements](requirements/linux-browser-tier.md), section 3.3 to
 3.5, and ADR D16) is released only when these pass. They live in
 `.github/workflows/linux-release-smoke.yml`, which `release.yml` calls as its first job (`smoke`) and
-which can be dispatched on its own. The dispatch builds and smokes only: it publishes nothing,
+which can be dispatched on its own. Every release, including a macOS-only hotfix, needs this smoke to be green
+and a complete Linux release record, because `smoke` is a prerequisite of both release jobs. The dispatch builds and smokes only: it publishes nothing,
 creates no tag and no release, and holds no secret.
 
 ```sh
@@ -262,7 +263,9 @@ check `systemctl --user is-system-running` before they start. Unlike the optiona
 ephemeral runner, not advice for hosts. The Debian 12 job also runs its container with
 `seccomp=unconfined` and `apparmor=unconfined`, for the same reason (Chromium's sandbox needs a user
 namespace), and its log says so. The binary under test is built on the runner and is the one that runs
-on Debian 12, so the job also shows that it runs on glibc 2.36.
+on Debian 12, so the job also shows that it runs on glibc 2.36. The release tarballs are built on
+`ubuntu-24.04` (amd64) and `ubuntu-24.04-arm` (arm64), the same images as the 24.04 smoke cells, so those
+cells test the same toolchain and glibc as the shipped binaries.
 
 Not automated, a person does them once per release and records them: Debian 12 hosts and Raspberry Pi
 OS hardware (a full run per architecture, M4), and M1 to M3 and M5 to M10 of
@@ -308,7 +311,8 @@ Both are decided. Neither was decided by this workflow, and neither gate is weak
   installer never runs root actions on its own.
 
 `scripts/check-release-record.sh` still fails a record whose `V2` or `D7` row is missing or says
-`open, owner decision pending`: a row that reopens the decision blocks the release.
+`open, owner decision pending`: a row that reopens the decision blocks the release. It also fails a
+record in which a blocking gate row (V1, V2, V7) is not `pass` or `n/a` with a reason.
 
 ### The per-release manual record
 

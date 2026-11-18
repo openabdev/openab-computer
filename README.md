@@ -155,7 +155,7 @@ permissions wizard ([details](#download-and-install)). Then point a caller at it
 
 ```sh
 kiro-cli mcp add --name mac-mcp --url https://<host>.<tailnet>.ts.net:8444/mcp \
-  --header "Authorization: Bearer $(ssh <host> cat ~/.config/oab-computer/token)" \
+  --header "Authorization: Bearer $(ssh <host> 'cat ~/.config/oab-computer/token')" \
   --scope global --timeout 30000
 ```
 
