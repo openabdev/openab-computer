@@ -78,7 +78,7 @@ public struct UIActionTool: Tool {
             if retried {
                 return "\(ref) (\(role)) rejected the value as text and as a number or boolean (AX error -25201). Take a new ui_snapshot to check the control's current value type"
             }
-            return "\(ref) (\(role)) rejected the value's type (AX error -25201). A numeric or boolean control takes a native JSON number or boolean (for example 3 or true), not a string; a text control takes a string"
+            return "\(ref) (\(role)) rejected the value's type (AX error -25201). The value has no number or boolean form, so it does not fit this control. Take a new ui_snapshot to check the control's value type, then send a value of that type"
         }
         public static func unconfirmed(action: String, ref: String, app: String) -> String {
             "ui_action \(action) [\(ref)]: \(app) did not confirm in time. The action may have happened (a press that opens a dialog or menu often answers late); take a new ui_snapshot to check, and do not repeat it blindly"

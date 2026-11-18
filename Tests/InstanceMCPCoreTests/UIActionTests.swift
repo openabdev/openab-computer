@@ -361,6 +361,8 @@ final class UIActionToolTests: XCTestCase {
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "hello"])
         XCTAssertTrue(r.isToolError)
         XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: false))
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the value's type (AX error -25201). The value has no number or boolean form, so it does not fit this control. Take a new ui_snapshot to check the control's value type, then send a value of that type")
+        XCTAssertFalse(r.text.contains("JSON"), r.text)
         XCTAssertFalse(r.text.contains("does not support"), r.text)
         XCTAssertFalse(r.text.contains("Supported on it"), r.text)
         assertNothingDone(f)
