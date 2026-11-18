@@ -231,6 +231,23 @@ fn the_listeners_word_carries_the_v2_verdict() {
     assert_eq!(listeners_word(Err("x"), TmpState::Ok), "unknown");
 }
 
+/// With no tree running, a stale TMPDIR that is not private fails V2 too (decided V2 rule). Before
+/// this fix `listeners` was `not_running` whatever the directory held, and `browser status` exited 0.
+#[test]
+fn a_stale_tmpdir_fails_v2_even_when_no_tree_runs() {
+    use crate::procnet::TmpState;
+    assert_eq!(idle_listeners_word(TmpState::Missing), "not_running");
+    assert_eq!(idle_listeners_word(TmpState::Ok), "not_running");
+    assert_eq!(
+        idle_listeners_word(TmpState::Mode),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=fail"
+    );
+    assert_eq!(
+        idle_listeners_word(TmpState::Owner),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=owner result=fail"
+    );
+}
+
 /// A running tree that listens on nothing still fails V2 when its TMPDIR is not the verified private
 /// directory (decided V2 rule: the status self-check fails on a TMPDIR that is not 0700 or not the
 /// daemon's uid). Before the fix this printed `none` and exited 0.

@@ -143,6 +143,17 @@ pub(crate) fn listeners_word(
     }
 }
 
+/// The `listeners` field when no tree runs: `not_running`, unless the expected TMPDIR is present and
+/// not clean. A stale directory with the wrong mode or owner fails V2 even with no tree (decided V2
+/// rule), so it prints the V2 word with zero counts.
+pub(crate) fn idle_listeners_word(tmp: procnet::TmpState) -> String {
+    if tmp_is_clean(tmp) {
+        "not_running".into()
+    } else {
+        listeners_word(Ok(procnet::Listeners::default()), tmp)
+    }
+}
+
 /// `verify` runs the containment self-test (only called with `retry`).
 pub fn gather(
     base: &Path,
@@ -167,9 +178,11 @@ pub fn gather(
         x.refusal = run_record::refusal_get(&root).unwrap_or_else(|| "none".into());
         x.run_records = run_record::state(&root).word().into();
         let pids = tree_pids(root.abs_path());
-        if !pids.is_empty() {
-            let tmp = crate::child::RuntimeTmp::expected_path(root.abs_path());
-            let tmp_state = procnet::tmp_state(&tmp, rustix::process::geteuid().as_raw());
+        let tmp = crate::child::RuntimeTmp::expected_path(root.abs_path());
+        let tmp_state = procnet::tmp_state(&tmp, rustix::process::geteuid().as_raw());
+        if pids.is_empty() {
+            x.listeners = idle_listeners_word(tmp_state);
+        } else {
             // The directory is resolved once here; a link in its path is followed (V2).
             let private = (tmp_state == procnet::TmpState::Ok)
                 .then(|| std::fs::canonicalize(&tmp).ok())
