@@ -93,25 +93,22 @@ flowchart TB
 ```
 
 Notation. Commands run on the host being moved, as the user that runs the daemon, in that user's
-login session (over `ssh`, so that `XDG_RUNTIME_DIR` and the user manager are set). `$OLD` is the
-old browser unit on that host. Set it once per shell, before any command that uses it (host A, then
-B to D), and check it names a real unit:
+login session (over `ssh`, so that `XDG_RUNTIME_DIR` and the user manager are set). The old browser
+unit has one name on host A and another on hosts B to D. A command that names it gives host A's name,
+then hosts B to D's name after the `#`. Before the first use on a host, check that the unit exists:
 
 Host A:
 
 ```sh
-OLD=oab-computer-pw-mcp.service
-systemctl --user cat "$OLD" >/dev/null && echo "OLD=$OLD"
+systemctl --user cat oab-computer-pw-mcp.service >/dev/null && echo "old unit: oab-computer-pw-mcp.service"
 ```
 
 Hosts B to D:
 
 ```sh
-OLD=oab-pw-mcp.service
-systemctl --user cat "$OLD" >/dev/null && echo "OLD=$OLD"
+systemctl --user cat oab-pw-mcp.service >/dev/null && echo "old unit: oab-pw-mcp.service"
 ```
 
-A new `ssh` session starts without it: set it again.
 The binary is `~/.local/oab-computer/oab-computer` (not on `PATH`). Checks that call the daemon from
 outside use the commands of [Verify from another tailnet machine](linux-setup.md#6-verify-from-another-tailnet-machine).
 
@@ -220,11 +217,11 @@ decided; see [the residual risk](#decisions-that-shape-this-guide)).
 **Verify.** `preflight` exits 0 after you ran what you accepted. Run it again to confirm.
 
 **Roll back to here.** Libraries and fonts you installed are harmless and stay. If you loaded the
-AppArmor profile and want it gone (needs root; `<id>` is the short hash in the file name that `preflight`
+AppArmor profile and want it gone (needs root; `ID` in the commands is the short hash in the file name that `preflight`
 printed):
 
 ```sh
-sudo apparmor_parser -R /etc/apparmor.d/oab-computer-chromium-<id> && sudo rm /etc/apparmor.d/oab-computer-chromium-<id>
+sudo apparmor_parser -R /etc/apparmor.d/oab-computer-chromium-ID && sudo rm /etc/apparmor.d/oab-computer-chromium-ID
 ```
 
 ## Step 4. Side-by-side install
@@ -233,15 +230,15 @@ sudo apparmor_parser -R /etc/apparmor.d/oab-computer-chromium-<id> && sudo rm /e
 ~/.local/oab-computer/oab-computer.new browser install
 ~/.local/oab-computer/oab-computer.new browser status
 ss -ltnH 'sport = :8794' | wc -l
-systemctl --user is-active "$OLD"
+systemctl --user is-active oab-computer-pw-mcp.service  # host A; hosts B to D: oab-pw-mcp.service
 ```
 
 `install` downloads the pinned set, checks every size and SHA-256, and runs the headless health check
 on a throwaway profile. It does not touch the seat, the old profile or the old unit.
 
 **Verify.** `install` exits 0 and ends with `installed <id>`. `status` shows `state: installed` and
-`pins_match: true`. The old listener is still there: `wc -l` prints `1` or more, and `$OLD` is
-`active`. From the first release containing L5, `status` also shows `legacy_listener: 8794` and a
+`pins_match: true`. The old listener is still there: `wc -l` prints `1` or more, and the old unit is
+`active` (host A `oab-computer-pw-mcp.service`, hosts B to D `oab-pw-mcp.service`). From the first release containing L5, `status` also shows `legacy_listener: 8794` and a
 `legacy:` line that lists the old directories with sizes; the profile reads `holds_cookies`. Do not
 continue unless the install succeeded. If it fails, nothing was cut over and the old setup is
 unchanged.
@@ -263,7 +260,7 @@ From 5.1 to 5.3 the daemon has no browser. Do them together. Host A first; B to 
 ### 5.1 Disable and stop the old browser unit
 
 ```sh
-systemctl --user disable --now "$OLD"
+systemctl --user disable --now oab-computer-pw-mcp.service  # host A; hosts B to D: oab-pw-mcp.service
 ```
 
 A plain `stop` is not enough: the unit comes back at the next login or boot with its unauthenticated
@@ -272,11 +269,11 @@ listener.
 **Verify.**
 
 ```sh
-systemctl --user is-enabled "$OLD"          # prints disabled (exit status 1 is normal for a disabled unit)
+systemctl --user is-enabled oab-computer-pw-mcp.service  # host A; hosts B to D: oab-pw-mcp.service. Prints disabled (exit status 1 is normal for a disabled unit)
 ss -ltnH 'sport = :8794' | wc -l         # prints 0
 ```
 
-**Roll back to here.** `systemctl --user enable --now "$OLD"`.
+**Roll back to here.** `systemctl --user enable --now oab-computer-pw-mcp.service` (host A; hosts B to D: `oab-pw-mcp.service`).
 
 ### 5.2 Remove the `MCP_UPSTREAM` line (host A) or the drop-in file (hosts B to D)
 
@@ -305,10 +302,32 @@ Comments, `UnsetEnvironment=` and other variables are not matched. For each file
 and decide:
 
 - It holds only `[Service]`, that one `Environment=MCP_UPSTREAM=` line, comments and blank lines: it is
-  the dedicated drop-in. `rm -f FILE`.
+  the dedicated drop-in. The block below removes it.
 - It holds any other setting: keep the file and delete only the line,
   `sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp$/d' FILE`. If the
   line has another form (several variables, another URL), edit it by hand and keep everything else.
+
+Run this block once, after the bullets above. It removes a drop-in only when the file has exactly the
+dedicated shape and is not a link. It keeps every other file and says why:
+
+```sh
+# Removes only the dedicated MCP_UPSTREAM drop-in (see step 5.2). Anything else is kept and reported.
+dropin_is_ours() {
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  awk '
+    /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+    /^\[Service\][[:space:]]*$/ { svc++; next }
+    /^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp[[:space:]]*$/ { line++; next }
+    { bad = 1 }
+    END { exit (bad || svc != 1 || line != 1) }
+  ' "$1"
+}
+for f in ~/.config/systemd/user/oab-computer.service.d/*.conf ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf; do
+  [ -e "$f" ] || continue
+  grep -q 'MCP_UPSTREAM=' "$f" || continue
+  if dropin_is_ours "$f"; then rm -f -- "$f"; echo "removed $f"; else echo "kept $f: not exactly the dedicated drop-in, edit it by hand"; fi
+done
+```
 
 A drop-in the `grep` did not list may belong to something else. Do not delete it, and do not delete the
 `.d/` directory.
@@ -359,7 +378,9 @@ It opens a window on the node's seat on the persistent profile and waits for Ent
 
 **Verify.** A later browser call is signed in to the site you logged in to.
 
-**Roll back to here.** `browser remove` deletes the new profile; the old one is untouched.
+**Roll back to here.** Follow the full [Rollback](#rollback) section, with `BK` set to the backup directory of
+step 1. `browser remove` alone is not a rollback: it deletes the new profile, and the old unit, the drop-in
+and the binary stay as they are until that section restores them.
 
 ## Step 6. Verify
 
@@ -406,7 +427,7 @@ ss -ltnH 'sport = :8794' | wc -l
   UDP listener, a Unix listener outside the child's private directory, or that directory not being
   `0700` or not yours. Run `status` in the daemon's own login session so `XDG_RUNTIME_DIR` matches.
   From the first release containing L5, `legacy_listener: none`.
-- End your login session and log in again, or reboot. Then `systemctl --user is-enabled "$OLD"` prints
+- End your login session and log in again, or reboot. Then `systemctl --user is-enabled oab-computer-pw-mcp.service` (host A; hosts B to D: `oab-pw-mcp.service`) prints
   `disabled` and the `ss` check still prints `0`. With linger on, the daemon survives the logout.
 
 If any check fails, the host is not cut over: use the [Rollback](#rollback).
@@ -439,7 +460,7 @@ daemon because it runs as a transient unit bound to it; the time Chromium takes 
 
 ## Step 8. Soak
 
-Leave `$OLD` disabled **but not deleted**, and the legacy directories in place, for one week of normal
+Leave the old unit disabled **but not deleted** (host A `oab-computer-pw-mcp.service`, hosts B to D `oab-pw-mcp.service`), and the legacy directories in place, for one week of normal
 use with no browser incident (D13). Check now and then:
 
 ```sh
@@ -489,7 +510,7 @@ flowchart TB
 3. Restore the daemon unit, the drop-in and the binary from the backup, then reload:
 
    ```sh
-   BK=<the backup directory of step 1>
+   BK="${XDG_DATA_HOME:-$HOME/.local/share}/oab-computer/backup-YYYYMMDD"  # the directory step 1 created
    cp -a "$BK/oab-computer.service" ~/.config/systemd/user/
    for d in oab-computer.service.d oab-instance-mcp.service.d; do
      if [ -d "$BK/$d" ]; then cp -a "$BK/$d" ~/.config/systemd/user/; fi
@@ -501,10 +522,10 @@ flowchart TB
    If step 5.3 had not run yet, the old binary is still in place; `install` over it is harmless.
    `pw-mcp.sh` was never touched, so the old unit still finds its script.
 
-4. Start the old unit and the daemon (set `OLD` first, as in the notation at the top, if this is a new shell):
+4. Start the old unit and the daemon (host A `oab-computer-pw-mcp.service`; hosts B to D `oab-pw-mcp.service`):
 
    ```sh
-   systemctl --user enable --now "$OLD"
+   systemctl --user enable --now oab-computer-pw-mcp.service  # host A; hosts B to D: oab-pw-mcp.service
    systemctl --user start oab-computer.service
    ```
 
@@ -540,8 +561,29 @@ the same list, in order:
 
 1. Disable and delete the old unit files, then reload. No root. Step 5.2 owns the drop-in: it already
    removed the dedicated drop-in file, or only the `MCP_UPSTREAM` line from a shared one, and the
-   backup from step 1 keeps the original for the rollback. Remove a dedicated drop-in here only if you
-   skipped that part of step 5.2, with `rm -f FILE` before the `daemon-reload` below:
+   backup from step 1 keeps the original for the rollback. If you skipped the drop-in part of step 5.2, run
+   the same block from step 5.2 first (indented here), then the `daemon-reload` below:
+
+   ```sh
+   # Removes only the dedicated MCP_UPSTREAM drop-in (see step 5.2). Anything else is kept and reported.
+   dropin_is_ours() {
+     [ -f "$1" ] && [ ! -L "$1" ] || return 1
+     awk '
+       /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+       /^\[Service\][[:space:]]*$/ { svc++; next }
+       /^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp[[:space:]]*$/ { line++; next }
+       { bad = 1 }
+       END { exit (bad || svc != 1 || line != 1) }
+     ' "$1"
+   }
+   for f in ~/.config/systemd/user/oab-computer.service.d/*.conf ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf; do
+     [ -e "$f" ] || continue
+     grep -q 'MCP_UPSTREAM=' "$f" || continue
+     if dropin_is_ours "$f"; then rm -f -- "$f"; echo "removed $f"; else echo "kept $f: not exactly the dedicated drop-in, edit it by hand"; fi
+   done
+   ```
+
+   Then unload and delete the old unit files:
 
    ```sh
    for u in oab-pw-mcp.service oab-computer-pw-mcp.service; do
