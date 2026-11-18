@@ -60,7 +60,7 @@ else
   # check). Every one of them must read "pass" (lower-cased): the Blocking cell does not relax it.
   bad=$(printf '%s\n' "$rows" | awk -F'|' '
     function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
-    $2 ~ /^ *V[0-9]+ / {
+    trim($2) ~ /^V[0-9]+( |$)/ {
       id = trim($2); sub(/ .*/, "", id)
       seen[id]++
       if (NF != 6) { print id " (malformed row: " NF - 2 " cells, need 4; no \"|\" inside a cell)"; next }
@@ -86,7 +86,7 @@ else
     }
     {
       id = trim($2)
-      if (id ~ /^M[0-9]+ /) {
+      if (id ~ /^M[0-9]+( |$)/) {
         sub(/ .*/, "", id); kind = "m"; need = 7
       } else if (id in want) {
         kind = "c"; need = 5

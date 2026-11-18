@@ -123,6 +123,17 @@ fn one_line(s: &str) -> String {
         .collect()
 }
 
+/// The line added to a failed `browser status` when this shell has no `XDG_RUNTIME_DIR`. `expected_path`
+/// then looks for the private directory under `/tmp`, while the daemon uses its own runtime dir, so a
+/// failure can be a false one.
+fn xdg_hint(xdg_set: bool) -> Option<&'static str> {
+    if xdg_set {
+        None
+    } else {
+        Some("XDG_RUNTIME_DIR is not set in this shell: the private TMPDIR was looked up under /tmp, so this may be a false fail. Run status with the daemon's XDG_RUNTIME_DIR (see docs/linux-cutover.md, step 6).")
+    }
+}
+
 fn hint(class: &str) -> Option<&'static str> {
     Some(match class {
         "use_update" => "a different version is installed; run `oab-computer browser update`",
@@ -277,6 +288,13 @@ pub fn execute(
                     for l in s.lines() {
                         io.say(&l);
                     }
+                }
+                if s.extras.listeners_blocks() {
+                    let _ = writeln!(io.err, "browser: status_failed class=listeners");
+                    if let Some(h) = xdg_hint(std::env::var_os("XDG_RUNTIME_DIR").is_some()) {
+                        let _ = writeln!(io.err, "{h}");
+                    }
+                    return 1;
                 }
                 0
             }

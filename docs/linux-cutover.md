@@ -302,7 +302,9 @@ Comments, `UnsetEnvironment=` and other variables are not matched. For each file
 and decide:
 
 - It holds only `[Service]`, that one `Environment=MCP_UPSTREAM=` line, comments and blank lines: it is
-  the dedicated drop-in. The block below removes it.
+  the dedicated drop-in. The block below removes it. The file is identified by its content, not by who
+  wrote it: no installer in this repository writes an `MCP_UPSTREAM` drop-in, so a hand-written file of
+  the same shape is removed too.
 - It holds any other setting: keep the file and delete only the line,
   `sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp$/d' FILE`. If the
   line has another form (several variables, another URL), edit it by hand and keep everything else.
@@ -425,7 +427,9 @@ ss -ltnH 'sport = :8794' | wc -l
 - `browser status` shows `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass` while the
   browser runs (`none` before its first start). Anything with `result=fail` is a failure (V2): a TCP or
   UDP listener, a Unix listener outside the child's private directory, or that directory not being
-  `0700` or not yours. Run `status` in the daemon's own login session so `XDG_RUNTIME_DIR` matches.
+  `0700` or not yours. `browser status` then exits `1`, so a script can test it. Run `status` in the
+  daemon's own login session so `XDG_RUNTIME_DIR` matches; without it a healthy host can report a false
+  `result=fail`, and `status` says so on stderr.
   From the first release containing L5, `legacy_listener: none`.
 - End your login session and log in again, or reboot. Then `systemctl --user is-enabled oab-computer-pw-mcp.service` (host A; hosts B to D: `oab-pw-mcp.service`) prints
   `disabled` and the `ss` check still prints `0`. With linger on, the daemon survives the logout.
@@ -561,7 +565,8 @@ the same list, in order:
 
 1. Disable and delete the old unit files, then reload. No root. Step 5.2 owns the drop-in: it already
    removed the dedicated drop-in file, or only the `MCP_UPSTREAM` line from a shared one, and the
-   backup from step 1 keeps the original for the rollback. If you skipped the drop-in part of step 5.2, run
+   backup from step 1 keeps the original for the rollback. As step 5.2 says, the block identifies a
+   drop-in by its content, so a hand-written file of the same shape is removed too. If you skipped the drop-in part of step 5.2, run
    the same block from step 5.2 first (indented here), then the `daemon-reload` below:
 
    ```sh

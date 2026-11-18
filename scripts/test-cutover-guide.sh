@@ -24,16 +24,16 @@ awk -v dir="$T" '
   /^ *```$/ && inb { inb = 0; close(f); next }
   inb { print > f }
 ' "$GUIDE"
-blocks=$(ls "$T"/block*.sh 2>/dev/null | wc -l)
-[ "$blocks" -gt 0 ] && ok "found $blocks sh blocks" || bad "no sh blocks found"
+blocks=$(find "$T" -maxdepth 1 -name 'block*.sh' | wc -l | tr -d ' ')
+if [ "$blocks" -gt 0 ]; then ok "found $blocks sh blocks"; else bad "no sh blocks found"; fi
 syntax_bad=0
 for f in "$T"/block*.sh; do
   if ! bash -n "$f" 2>"$T/err"; then syntax_bad=$((syntax_bad + 1)); echo "  syntax: $(basename "$f"): $(head -n 1 "$T/err")"; fi
 done
-[ "$syntax_bad" -eq 0 ] && ok "every sh block parses (bash -n)" || bad "$syntax_bad sh block(s) do not parse"
+if [ "$syntax_bad" -eq 0 ]; then ok "every sh block parses (bash -n)"; else bad "$syntax_bad sh block(s) do not parse"; fi
 
 # No `$OLD` notation, no `OLD=` assignment.
-if grep -nE '\$OLD|OLD=' "$GUIDE" >"$T/old.txt"; then bad "the guide still uses the OLD notation: $(head -n 1 "$T/old.txt")"; else ok "no \$OLD or OLD= notation"; fi
+if grep -nE '[$]OLD|OLD=' "$GUIDE" >"$T/old.txt"; then bad "the guide still uses the OLD notation: $(head -n 1 "$T/old.txt")"; else ok "no \$OLD or OLD= notation"; fi
 
 # Literal oab-* unit names on systemctl lines. Allowed: the old unit of each host class, the daemon
 # unit, the instance-mcp unit of 0.11, and the browser wildcard the guide names.
@@ -43,10 +43,11 @@ grep -h 'systemctl' "$GUIDE" | grep -oE "oab-[A-Za-z0-9*._-]+\.service" | sort -
 while IFS= read -r u; do
   case " $allowed " in *" $u "*) ;; *) unit_bad=$((unit_bad + 1)); echo "  unexpected unit name: $u" ;; esac
 done <"$T/units.txt"
-[ "$unit_bad" -eq 0 ] && ok "every literal unit name on a systemctl line is allowed ($(wc -l <"$T/units.txt" | tr -d ' ') distinct)" || bad "$unit_bad unexpected unit name(s)"
+if [ "$unit_bad" -eq 0 ]; then ok "every literal unit name on a systemctl line is allowed ($(wc -l <"$T/units.txt" | tr -d ' ') distinct)"; else bad "$unit_bad unexpected unit name(s)"; fi
 
 # Step 5.4 rollback: it links to the Rollback section, and no line gives `browser remove` alone.
-if grep -qE '^\*\*Roll back to here\.\*\* `browser remove`' "$GUIDE"; then bad "a rollback line says browser remove alone"; else ok "no rollback line says browser remove alone"; fi
+bt='`'
+if grep -qE "^[*][*]Roll back to here[.][*][*] ${bt}browser remove${bt}" "$GUIDE"; then bad "a rollback line says browser remove alone"; else ok "no rollback line says browser remove alone"; fi
 sec=$(sed -n '/^### 5\.4 /,/^## Step 6/p' "$GUIDE")
 case $sec in *"(#rollback)"*) ok "step 5.4 rollback links to the full Rollback section" ;; *) bad "step 5.4 does not link to #rollback" ;; esac
 
@@ -90,13 +91,18 @@ re=${re//\\\"/\"}
 if [ -z "$re" ]; then
   bad "the guide's grep -nE pattern is not found"
 else
-  match() { printf '%s\n' "$1" | grep -qE "$re"; }
-  match "Environment='MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp'" && ok "grep: single-quoted assignment matches" || bad "grep: single-quoted assignment does not match"
-  match 'Environment="MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"' && ok "grep: double-quoted assignment matches" || bad "grep: double-quoted assignment does not match"
-  match "Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp" && ok "grep: bare assignment matches" || bad "grep: bare assignment does not match"
-  match "Environment=OAB_X=1 MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp" && ok "grep: assignment after another setting matches" || bad "grep: later assignment does not match"
-  match "# Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp" && bad "grep: a commented line matches" || ok "grep: a commented line does not match"
-  match "UnsetEnvironment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp" && bad "grep: UnsetEnvironment= matches" || ok "grep: UnsetEnvironment= does not match"
+  # check NAME yes|no TEXT: the guide's pattern matches TEXT (yes) or does not (no).
+  check() {
+    local got=no
+    if printf '%s\n' "$3" | grep -qE "$re"; then got=yes; fi
+    if [ "$got" = "$2" ]; then ok "$1"; else bad "$1"; fi
+  }
+  check "grep: single-quoted assignment matches" yes "Environment='MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp'"
+  check "grep: double-quoted assignment matches" yes 'Environment="MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"'
+  check "grep: bare assignment matches" yes "Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+  check "grep: assignment after another setting matches" yes "Environment=OAB_X=1 MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+  check "grep: a commented line does not match" no "# Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+  check "grep: UnsetEnvironment= does not match" no "UnsetEnvironment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
 fi
 
 echo "pass=$pass fail=$fail"

@@ -71,6 +71,12 @@ impl Extras {
         }
     }
 
+    /// `browser status` fails on this listeners field: a V2 `result=fail`, or `unknown` (a table that
+    /// could not be read). `none` and `not_running` are not failures.
+    pub fn listeners_blocks(&self) -> bool {
+        self.listeners == "unknown" || self.listeners.ends_with("result=fail")
+    }
+
     /// Fills the three legacy fields (L5).
     pub fn set_legacy(&mut self, l: crate::legacy::Legacy) {
         self.legacy_units = l.units;

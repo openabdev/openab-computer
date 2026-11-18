@@ -431,6 +431,33 @@ fn failures_print_one_fixed_line_and_a_hint_and_nothing_else() {
 }
 
 #[test]
+fn status_fails_on_a_v2_failure_or_an_unreadable_listener_table() {
+    let mut x = crate::probe::Extras::none();
+    for (word, blocks) in [
+        ("none", false),
+        ("not_running", false),
+        (
+            "tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass",
+            false,
+        ),
+        (
+            "tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=fail",
+            true,
+        ),
+        (
+            "tcp=1 udp=0 unix=0 unix_outside=0 tmpdir=ok result=fail",
+            true,
+        ),
+        ("unknown", true),
+    ] {
+        x.listeners = word.into();
+        assert_eq!(x.listeners_blocks(), blocks, "{word}");
+    }
+    assert!(xdg_hint(false).is_some_and(|h| h.contains("XDG_RUNTIME_DIR")));
+    assert!(xdg_hint(true).is_none());
+}
+
+#[test]
 fn an_unsupported_platform_is_reported() {
     let e = Env::new(Tw::default());
     let m = e.manifest("test-id-1");

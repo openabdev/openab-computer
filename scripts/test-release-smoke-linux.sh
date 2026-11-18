@@ -55,9 +55,9 @@ gate_real_cell "$L/page.log" "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 t
 gate_real_cell "$L/page.log" "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=pass')" >/dev/null; expect "real cell: unix_outside=1 fails" 1 $?
 
 # root_command: the container runs as root with no sudo, so a leading sudo is removed.
-[ "$(root_command 'sudo apt-get install -y libnss3')" = 'apt-get install -y libnss3' ]; expect "root_command strips a leading sudo" 0 $?
-[ "$(root_command 'apt-get install -y libnss3')" = 'apt-get install -y libnss3' ]; expect "root_command leaves a line without sudo unchanged" 0 $?
-[ "$(root_command 'echo sudo here')" = 'echo sudo here' ]; expect "root_command does not strip sudo mid-line" 0 $?
+if [ "$(root_command 'sudo apt-get install -y libnss3')" = 'apt-get install -y libnss3' ]; then ok "root_command strips a leading sudo"; else bad "root_command strips a leading sudo"; fi
+if [ "$(root_command 'apt-get install -y libnss3')" = 'apt-get install -y libnss3' ]; then ok "root_command leaves a line without sudo unchanged"; else bad "root_command leaves a line without sudo unchanged"; fi
+if [ "$(root_command 'echo sudo here')" = 'echo sudo here' ]; then ok "root_command does not strip sudo mid-line"; else bad "root_command does not strip sudo mid-line"; fi
 # The container path (the in_container body, and the docker run in the workflow) names no sudo.
 body=$(sed -n '/^in_container() {/,/^}/p' "$here/release-smoke-linux.sh" | grep -v '^ *#')
 case $body in *sudo*) bad "in_container runs sudo" ;; *) ok "in_container body names no sudo" ;; esac
@@ -156,6 +156,15 @@ for id in M1 M2 M3 M4 M5 M6 M7 M8 M9 M10; do
   reject "$id result FAIL (upper case)" "/^| $id /s#| pass |#| FAIL |#"
   reject "$id result PENDING" "/^| $id /s#| pass |#| PENDING |#"
 done
+# A bare id (the cell is only "M1", with no description) is still that row: a non-pass duplicate of a
+# valid M1 row, or an empty result, must be refused.
+reject "M1 bare-id duplicate with result fail" "/^| M1 /a\\
+| M1 | fail | | | |"
+reject "M1 bare-id duplicate with an empty result" "/^| M1 /a\\
+| M1 | | | | |"
+reject "M1 result empty" "/^| M1 /s#| pass |#|  |#"
+reject "V1 unpadded-id duplicate with result fail" "/^| V1 /a\\
+|V1|fail|e|b|"
 for cell in "Ubuntu 22.04 amd64" "Ubuntu 22.04 arm64" "Ubuntu 24.04 amd64" "Ubuntu 24.04 arm64" "Debian 12 container amd64" "Debian 12 container arm64"; do
   reject "smoke cell '$cell' row deleted" "/^| $cell |/d"
   reject "smoke cell '$cell' row duplicated" "/^| $cell |/p"
