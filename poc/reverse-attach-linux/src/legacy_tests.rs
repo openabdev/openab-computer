@@ -345,6 +345,8 @@ fn only_an_active_environment_assignment_of_mcp_upstream_counts() {
         "Environment=MCP_UPSTREAM=browser=http://x",
         "  Environment=MCP_UPSTREAM=a",
         "Environment=\"MCP_UPSTREAM=a\"",
+        "Environment='MCP_UPSTREAM=a'",
+        "Environment=FOO=1 'MCP_UPSTREAM=a'",
         "Environment=FOO=1 MCP_UPSTREAM=a",
         "Environment=FOO=1 \"MCP_UPSTREAM=a\"",
     ] {

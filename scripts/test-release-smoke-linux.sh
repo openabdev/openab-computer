@@ -79,7 +79,7 @@ C="$here/check-release-record.sh"
 cp "$here/../docs/release-records/TEMPLATE.md" "$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: the untouched template fails" 1 $?
 fill="$T/filled.md"
-sed 's/PENDING/done/g;s/^\(| V[0-9]* [^|]*\)| done |\(.*| yes[^|]*|\)$/\1| pass |\2/' "$R/linux-9.9.9.md" >"$fill"
+sed 's/PENDING/done/g;s/^\(| V[0-9]* [^|]*\)| done |\(.*| yes[^|]*|\)$/\1| pass |\2/;s/^\(| M[0-9]* [^|]*\)| done |/\1| pass |/;s/^\(| Ubuntu [0-9.]* [a-z0-9]* \)| done |/\1| pass |/;s/^\(| Debian 12 container [a-z0-9]* \)| done |/\1| pass |/' "$R/linux-9.9.9.md" >"$fill"
 cp "$fill" "$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: all rows filled, V2 and D7 decided, passes" 0 $?
 # A row that reopens a decision blocks the release, and the gate names it.
@@ -92,7 +92,7 @@ grep -v '^| D7 ' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a removed D7 row fails" 1 $?
 grep -v '^| V2 ' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a removed V2 row fails" 1 $?
-sed 's/^| M3 \(.*\) | done | done | done | done |$/| M3 \1 | PENDING | done | done | done |/' "$fill" >"$R/linux-9.9.9.md"
+sed 's/^| M3 \(.*\) | pass | done | done | done |$/| M3 \1 | PENDING | done | done | done |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: one PENDING cell fails" 1 $?
 sed 's/^| \(V2 .*\) | pass | /| \1 | PENDING | /' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a V2 row without its measurement (PENDING) fails" 1 $?
@@ -121,13 +121,33 @@ sed 's/^| \(V7 .*\)| yes[^|]* |$/| \1| no |/;s/^| \(V7 [^|]*\)| pass |/| \1| fai
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 fail with Blocking edited to no still fails" 1 $?
 { cat "$fill"; grep '^| V7 ' "$fill"; } >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a duplicated V7 row fails" 1 $?
-# M rows and smoke-cell rows: fail or empty blocks, anything else filled passes.
-sed 's/^| \(M3 [^|]*\)| done |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
+# M rows and smoke-cell rows: each exactly once, Result (any case) pass or n/a with a reason.
+sed 's/^| \(M3 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
 out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: an M3 fail blocks" 1 $?
-case $out in *"manual or smoke-cell row failed: M3"*) ok "record: M3 fail is named" ;; *) bad "record: M3 not named: $out" ;; esac
-sed 's/^| \(Ubuntu 22.04 arm64\) | done |/| \1 | fail |/' "$fill" >"$R/linux-9.9.9.md"
+case $out in *"manual or smoke-cell row not acceptable: M3"*) ok "record: M3 fail is named" ;; *) bad "record: M3 not named: $out" ;; esac
+sed 's/^| \(Ubuntu 22.04 arm64\) | pass |/| \1 | fail |/' "$fill" >"$R/linux-9.9.9.md"
 out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a smoke-cell fail blocks" 1 $?
-case $out in *"manual or smoke-cell row failed: Ubuntu 22.04 arm64"*) ok "record: cell fail is named" ;; *) bad "record: cell not named: $out" ;; esac
+case $out in *"not acceptable: Ubuntu 22.04 arm64"*) ok "record: cell fail is named" ;; *) bad "record: cell not named: $out" ;; esac
+for bad_result in Fail FAIL red 'not run' 'done' ''; do
+  sed "s#^| \\(M5 [^|]*\\)| pass |#| \\1| $bad_result |#" "$fill" >"$R/linux-9.9.9.md"
+  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: M5 result '$bad_result' blocks" 1 $?
+  sed "s#^| \\(Debian 12 container arm64\\) | pass |#| \\1 | $bad_result |#" "$fill" >"$R/linux-9.9.9.md"
+  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a cell result '$bad_result' blocks" 1 $?
+done
+sed 's/^| \(M5 [^|]*\)| pass |/| \1| PASS |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M5 PASS (any case) is accepted" 0 $?
+sed 's/^| \(M4 [^|]*\)| pass |/| \1| n\/a, no Raspberry Pi in this cycle |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M4 n/a with a reason is accepted" 0 $?
+sed 's/^| \(M4 [^|]*\)| pass |/| \1| n\/a |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M4 n/a without a reason blocks" 1 $?
+# A deleted M row or smoke-cell row cannot hide (no PENDING left to find).
+for g in 'M1 ' 'M10 ' 'Ubuntu 22.04 amd64 ' 'Debian 12 container arm64 '; do
+  grep -v "^| $g" "$fill" >"$R/linux-9.9.9.md"
+  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a removed '$g' row fails" 1 $?
+  case $out in *"(row missing)"*) ok "record: removed '$g' row is named" ;; *) bad "record: removed '$g' not named: $out" ;; esac
+done
+{ cat "$fill"; grep '^| M2 ' "$fill"; } >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a duplicated M2 row fails" 1 $?
 # A non-blocking row may be anything but PENDING.
 sed 's/^| \(V3 [^|]*\)| done |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a non-blocking V3 fail does not block" 0 $?

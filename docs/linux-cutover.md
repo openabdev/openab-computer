@@ -93,8 +93,17 @@ flowchart TB
 ```
 
 Notation. Commands run on the host being moved, as the user that runs the daemon, in that user's
-login session (over `ssh`, so that `XDG_RUNTIME_DIR` and the user manager are set). `OLD` stands for the
-old browser unit on that host: `oab-computer-pw-mcp.service` on host A, `oab-pw-mcp.service` on B to D.
+login session (over `ssh`, so that `XDG_RUNTIME_DIR` and the user manager are set). `$OLD` is the
+old browser unit on that host. Set it once per shell, before any command that uses it (host A, then
+B to D), and check it names a real unit:
+
+```sh
+OLD=oab-computer-pw-mcp.service   # host A
+OLD=oab-pw-mcp.service            # hosts B to D (use this line instead)
+systemctl --user cat "$OLD" >/dev/null && echo "OLD=$OLD"
+```
+
+A new `ssh` session starts without it: set it again.
 The binary is `~/.local/oab-computer/oab-computer` (not on `PATH`). Checks that call the daemon from
 outside use the commands of [Verify from another tailnet machine](linux-setup.md#6-verify-from-another-tailnet-machine).
 
@@ -216,14 +225,14 @@ sudo apparmor_parser -R /etc/apparmor.d/oab-computer-chromium-<id> && sudo rm /e
 ~/.local/oab-computer/oab-computer.new browser install
 ~/.local/oab-computer/oab-computer.new browser status
 ss -ltnH 'sport = :8794' | wc -l
-systemctl --user is-active OLD
+systemctl --user is-active "$OLD"
 ```
 
 `install` downloads the pinned set, checks every size and SHA-256, and runs the headless health check
 on a throwaway profile. It does not touch the seat, the old profile or the old unit.
 
 **Verify.** `install` exits 0 and ends with `installed <id>`. `status` shows `state: installed` and
-`pins_match: true`. The old listener is still there: `wc -l` prints `1` or more, and `OLD` is
+`pins_match: true`. The old listener is still there: `wc -l` prints `1` or more, and `$OLD` is
 `active`. From the first release containing L5, `status` also shows `legacy_listener: 8794` and a
 `legacy:` line that lists the old directories with sizes; the profile reads `holds_cookies`. Do not
 continue unless the install succeeded. If it fails, nothing was cut over and the old setup is
@@ -246,7 +255,7 @@ From 5.1 to 5.3 the daemon has no browser. Do them together. Host A first; B to 
 ### 5.1 Disable and stop the old browser unit
 
 ```sh
-systemctl --user disable --now OLD
+systemctl --user disable --now "$OLD"
 ```
 
 A plain `stop` is not enough: the unit comes back at the next login or boot with its unauthenticated
@@ -255,11 +264,11 @@ listener.
 **Verify.**
 
 ```sh
-systemctl --user is-enabled OLD          # prints disabled (exit status 1 is normal for a disabled unit)
+systemctl --user is-enabled "$OLD"          # prints disabled (exit status 1 is normal for a disabled unit)
 ss -ltnH 'sport = :8794' | wc -l         # prints 0
 ```
 
-**Roll back to here.** `systemctl --user enable --now OLD`.
+**Roll back to here.** `systemctl --user enable --now "$OLD"`.
 
 ### 5.2 Remove the `MCP_UPSTREAM` line (host A) or the drop-in file (hosts B to D)
 
@@ -279,7 +288,7 @@ yours): remove it by hand with an editor, keeping every other line.
 Hosts B to D, the line sits in a drop-in file. List every active assignment, with its file and line:
 
 ```sh
-grep -nE '^[[:space:]]*Environment=("|[^#;]*[[:space:]"])?MCP_UPSTREAM=' \
+grep -nE "^[[:space:]]*Environment=(['\"]|[^#;]*[[:space:]'\"])?MCP_UPSTREAM=" \
   ~/.config/systemd/user/oab-computer.service.d/*.conf \
   ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null
 ```
@@ -389,7 +398,7 @@ ss -ltnH 'sport = :8794' | wc -l
   UDP listener, a Unix listener outside the child's private directory, or that directory not being
   `0700` or not yours. Run `status` in the daemon's own login session so `XDG_RUNTIME_DIR` matches.
   From the first release containing L5, `legacy_listener: none`.
-- End your login session and log in again, or reboot. Then `systemctl --user is-enabled OLD` prints
+- End your login session and log in again, or reboot. Then `systemctl --user is-enabled "$OLD"` prints
   `disabled` and the `ss` check still prints `0`. With linger on, the daemon survives the logout.
 
 If any check fails, the host is not cut over: use the [Rollback](#rollback).
@@ -422,7 +431,7 @@ daemon because it runs as a transient unit bound to it; the time Chromium takes 
 
 ## Step 8. Soak
 
-Leave `OLD` disabled **but not deleted**, and the legacy directories in place, for one week of normal
+Leave `$OLD` disabled **but not deleted**, and the legacy directories in place, for one week of normal
 use with no browser incident (D13). Check now and then:
 
 ```sh
@@ -484,10 +493,10 @@ flowchart TB
    If step 5.3 had not run yet, the old binary is still in place; `install` over it is harmless.
    `pw-mcp.sh` was never touched, so the old unit still finds its script.
 
-4. Start the old unit and the daemon:
+4. Start the old unit and the daemon (set `OLD` first, as in the notation at the top, if this is a new shell):
 
    ```sh
-   systemctl --user enable --now OLD
+   systemctl --user enable --now "$OLD"
    systemctl --user start oab-computer.service
    ```
 

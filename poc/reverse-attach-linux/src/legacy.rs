@@ -186,7 +186,7 @@ fn sets_upstream(line: &str) -> bool {
     while let Some(i) = value[from..].find("MCP_UPSTREAM=") {
         let at = from + i;
         match value[..at].chars().next_back() {
-            None | Some('"') => return true,
+            None | Some('"') | Some('\'') => return true,
             Some(c) if c.is_whitespace() => return true,
             _ => {}
         }

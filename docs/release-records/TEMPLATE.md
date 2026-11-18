@@ -4,7 +4,7 @@ Copy this file to `docs/release-records/linux-VERSION.md` (VERSION without the l
 in against the release candidate, and commit it to `main` **before** the tag. The `record` job of
 `.github/workflows/linux-release-smoke.yml` runs `scripts/check-release-record.sh VERSION` and
 fails a release when the file is missing, when any table row still holds the placeholder
-`PENDING`, when the `V2` or `D7` row is missing or says `open, owner decision pending`, when any of V1 to V13 lacks exactly one row of four cells, or when a
+`PENDING`, when the `V2` or `D7` row is missing or says `open, owner decision pending`, when any of V1 to V13 lacks exactly one row of four cells, or when any of M1 to M10 or any of the six smoke cells lacks exactly one row or has a result other than `pass` (or `n/a` with a reason; case does not matter), or when a
 blocking gate row is not `pass` (V1, V2 and V7 take only `pass`; another blocking row may read `n/a` with a reason).
 
 Rules for the person filling it in:

@@ -476,3 +476,27 @@ mod tmp_dir {
         );
     }
 }
+
+#[test]
+fn a_link_between_the_private_directory_and_the_socket_is_not_plain() {
+    use std::os::unix::fs::symlink;
+    let base = std::env::temp_dir().join(format!("oab-plain-{}", std::process::id()));
+    let private = base.join("priv");
+    let outside = base.join("outside");
+    std::fs::create_dir_all(private.join("real")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    symlink(&outside, private.join("link")).unwrap();
+    let p = private.to_str().unwrap();
+    assert!(plain_parents(&format!("{p}/s"), p));
+    assert!(plain_parents(&format!("{p}/real/s"), p));
+    assert!(
+        !plain_parents(&format!("{p}/link/s"), p),
+        "symlinked parent"
+    );
+    assert!(
+        !plain_parents(&format!("{p}/missing/s"), p),
+        "unreadable parent"
+    );
+    assert!(!plain_parents("/elsewhere/s", p));
+    std::fs::remove_dir_all(&base).unwrap();
+}

@@ -12,8 +12,8 @@
 #   - V1, V2 and V7 have a Result of "pass" whatever their Blocking cell says; any other row whose
 #     Blocking cell starts with "yes" has "pass", or "n/a, reason". A "fail", an empty cell or any other
 #     text blocks the release;
-#   - no M1 to M10 row and no smoke-cell row (a row naming amd64 or arm64) has a Result that is empty or
-#     starts with "fail".
+#   - each of M1 to M10 and each of the six smoke cells has exactly one well-formed row, and its Result,
+#     lower-cased, is "pass" or "n/a, reason". A deleted row, "fail", "Fail", "not run" or an empty cell blocks.
 # The script never writes, never fills a cell and never treats V2 or D7 as resolved: those two rows
 # stay red until a person records the owner's decision in the row (and in the ADR). Only lines that
 # start with `|` (table rows) are read, so the instructions around the tables may quote the words.
@@ -77,18 +77,35 @@ else
         else if (seen[k] > 1) print k " (" seen[k] " rows, need exactly one)"
       }
     }')
-  # Manual (M1..M10) and smoke-cell rows: a Result that is empty or starts with "fail" blocks.
+  # Manual (M1..M10, five cells) and smoke-cell (six named cells, three cells) rows: each must exist
+  # exactly once, and its Result, lower-cased, must be "pass" or "n/a" with a reason. A deleted row, an
+  # empty result, "Fail", "FAIL", "red" or "not run" all block.
   badm=$(printf '%s\n' "$rows" | awk -F'|' '
     function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
-    $2 ~ /^ *M[0-9]+ / || $2 ~ /^ *(Ubuntu|Debian)[^|]*(amd64|arm64)/ {
+    function okres(r) { r = tolower(r); return (r == "pass" || r ~ /^n\/a[ ]*[,:;-][ ]*[^ ]/) }
+    BEGIN {
+      split("Ubuntu 22.04 amd64|Ubuntu 22.04 arm64|Ubuntu 24.04 amd64|Ubuntu 24.04 arm64|Debian 12 container amd64|Debian 12 container arm64", cells, "|")
+      for (i in cells) want[cells[i]] = 1
+    }
+    {
       id = trim($2)
-      if (id ~ /^M[0-9]+ /) sub(/ .*/, "", id)
+      if (id ~ /^M[0-9]+ /) {
+        sub(/ .*/, "", id); kind = "m"; need = 7
+      } else if (id in want) {
+        kind = "c"; need = 5
+      } else next
+      seen[id]++
+      if (NF != need) { print id " (malformed row: " NF - 2 " cells, need " need - 2 "; no \"|\" inside a cell)"; next }
       r = trim($3)
-      if (r == "" || r ~ /^fail/) print id " (result: " r ")"
+      if (!okres(r)) print id " (result: " r ")"
+    }
+    END {
+      for (i = 1; i <= 10; i++) { k = "M" i; if (seen[k] == 0) print k " (row missing)"; else if (seen[k] > 1) print k " (" seen[k] " rows, need exactly one)" }
+      for (c in want) { if (seen[c] == 0) print c " (row missing)"; else if (seen[c] > 1) print c " (" seen[c] " rows, need exactly one)" }
     }')
   if [ -n "$badm" ]; then
     while IFS= read -r line; do
-      say "manual or smoke-cell row failed: $line; a fail or empty result blocks the release"
+      say "manual or smoke-cell row not acceptable: $line; M1 to M10 and the six smoke cells need one row each, with pass or n/a and a reason"
     done <<EOF
 $badm
 EOF

@@ -26,6 +26,12 @@ pub const UNKNOWN: &str = "listener_owner_unknown";
 pub trait Source {
     /// The text of `/proc/net/<table>` (`tcp`, `tcp6`, `udp`, `udp6`, `unix`).
     fn table(&self, name: &str) -> std::io::Result<String>;
+    /// Whether every directory between `private` and the socket's own name is a real directory (not
+    /// a link), so the node is physically inside `private`. A fixture with no filesystem keeps the
+    /// default.
+    fn parents_are_plain(&self, _path: &str, _private: &str) -> bool {
+        true
+    }
 }
 
 /// The real `/proc`.
@@ -42,6 +48,30 @@ impl Source for Proc {
         }
         Ok(s)
     }
+
+    fn parents_are_plain(&self, path: &str, private: &str) -> bool {
+        plain_parents(path, private)
+    }
+}
+
+/// `path` is below `private` by [`is_inside`]. Walk each directory between them with `lstat`: a link
+/// (or anything unreadable) fails closed, because the kernel prints the bind path as the program
+/// spelled it, so a link could place the node outside the verified directory.
+pub fn plain_parents(path: &str, private: &str) -> bool {
+    let Some(rest) = path.strip_prefix(private).and_then(|r| r.strip_prefix('/')) else {
+        return false;
+    };
+    let mut cur = std::path::PathBuf::from(private);
+    let mut segs: Vec<&str> = rest.split('/').collect();
+    segs.pop();
+    for seg in segs {
+        cur.push(seg);
+        match std::fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_dir() => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -317,7 +347,7 @@ pub fn listeners_among_in(
             continue;
         }
         out.unix += 1;
-        if !private.is_some_and(|p| is_inside(&path, p)) {
+        if !private.is_some_and(|p| is_inside(&path, p) && src.parents_are_plain(&path, p)) {
             out.unix_outside += 1;
         }
     }

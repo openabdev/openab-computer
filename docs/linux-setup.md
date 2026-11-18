@@ -870,7 +870,7 @@ below is marked if it needs root.
 
    ```sh
    ls ~/.config/systemd/user/ | grep -E 'pw-mcp|oab-instance-mcp'
-   grep -nE '^[[:space:]]*Environment=("|[^#;]*[[:space:]"])?MCP_UPSTREAM=' \
+   grep -nE "^[[:space:]]*Environment=(['\"]|[^#;]*[[:space:]'\"])?MCP_UPSTREAM=" \
      ~/.config/systemd/user/oab-computer.service.d/*.conf \
      ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null     # file:line of each active assignment
    ```
