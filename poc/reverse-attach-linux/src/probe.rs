@@ -109,15 +109,23 @@ fn tree_pids(root_abs: &Path) -> Vec<u32> {
         .collect()
 }
 
+/// A TMPDIR state that a tree with no listener may show. `Ok` is the verified directory. `Missing`
+/// is normal when no child is running (the directory exists only while one runs). Any other state
+/// at the expected path is a V2 finding even when nothing listens (R1.1 as decided).
+fn tmp_is_clean(tmp: procnet::TmpState) -> bool {
+    matches!(tmp, procnet::TmpState::Ok | procnet::TmpState::Missing)
+}
+
 /// The `listeners` field. `none`, `unknown`, or the counts with the V2 verdict:
 /// `tcp=N udp=N unix=N unix_outside=N tmpdir=<state> result=pass|fail` (R1.1 as decided: only
-/// Unix listeners inside the child's verified private `TMPDIR` pass).
+/// Unix listeners inside the child's verified private `TMPDIR` pass, and a TMPDIR that is not
+/// clean fails even with zero listeners). `none` is printed only when the TMPDIR is clean.
 pub(crate) fn listeners_word(
     l: Result<procnet::Listeners, &'static str>,
     tmp: procnet::TmpState,
 ) -> String {
     match l {
-        Ok(l) if l.total() == 0 => "none".into(),
+        Ok(l) if l.total() == 0 && tmp_is_clean(tmp) => "none".into(),
         Ok(l) => format!(
             "tcp={} udp={} unix={} unix_outside={} tmpdir={} result={}",
             l.tcp,
@@ -125,7 +133,11 @@ pub(crate) fn listeners_word(
             l.unix,
             l.unix_outside,
             tmp.word(),
-            if l.passes_v2() { "pass" } else { "fail" }
+            if l.passes_v2() && tmp_is_clean(tmp) {
+                "pass"
+            } else {
+                "fail"
+            }
         ),
         Err(_) => "unknown".into(),
     }

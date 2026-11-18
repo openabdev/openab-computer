@@ -30,6 +30,8 @@ gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=owner result=fa
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=mode result=pass')" >/dev/null; expect "V2 recomputed: tmpdir=mode fails even if result=pass" 1 $?
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=missing result=pass')" >/dev/null; expect "V2 recomputed: tmpdir=missing fails" 1 $?
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=pass')" >/dev/null; expect "V2 a bad TMPDIR fails even with no unix listener" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=fail')" >/dev/null; expect "V2 zero listeners with a 0755 TMPDIR fails (status word)" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=owner result=fail')" >/dev/null; expect "V2 zero listeners with a foreign-owned TMPDIR fails (status word)" 1 $?
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=pass')" >/dev/null; expect "V2 recomputed: unix_outside=1 fails even if result=pass" 1 $?
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=fail')" >/dev/null; expect "V2 result=fail fails" 1 $?
 gate_v2 "$(status_json 'tcp=1 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass')" >/dev/null; expect "V2 tcp=1 fails even with a private dir" 1 $?

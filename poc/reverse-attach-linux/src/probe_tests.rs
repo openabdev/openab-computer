@@ -230,3 +230,28 @@ fn the_listeners_word_carries_the_v2_verdict() {
     assert!(w(tcp, TmpState::Ok).ends_with("result=fail"));
     assert_eq!(listeners_word(Err("x"), TmpState::Ok), "unknown");
 }
+
+/// A running tree that listens on nothing still fails V2 when its TMPDIR is not the verified private
+/// directory (decided V2 rule: the status self-check fails on a TMPDIR that is not 0700 or not the
+/// daemon's uid). Before the fix this printed `none` and exited 0.
+#[test]
+fn a_zero_listener_tree_fails_v2_when_its_tmpdir_is_not_private() {
+    use crate::procnet::{Listeners, TmpState};
+    let silent = || Listeners::default();
+    let w = |t| listeners_word(Ok(silent()), t);
+    assert_eq!(
+        w(TmpState::Mode),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=fail"
+    );
+    assert_eq!(
+        w(TmpState::Owner),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=owner result=fail"
+    );
+    assert_eq!(
+        w(TmpState::NotDir),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=not_dir result=fail"
+    );
+    // The clean states still read `none`: the verified directory, or no child running yet.
+    assert_eq!(w(TmpState::Ok), "none");
+    assert_eq!(w(TmpState::Missing), "none");
+}

@@ -48,12 +48,14 @@ list_field() {
   printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n 1
 }
 
-# gate_v2 STATUS_JSON: the decided V2 rule (R1.1). Passes when the managed tree holds no listener at
-# all, or when it holds no TCP or UDP listener and every Unix listener is inside the child's private
-# per-run TMPDIR, which `status` has checked to be a real directory of the daemon's uid with mode
-# exactly 0700. The word is `tcp=N udp=N unix=N unix_outside=N tmpdir=S result=pass|fail`. This
-# gate trusts no `result=` alone: it recomputes the rule from the counts, and a missing or unknown
-# field fails. There is no path allow-list here; "inside" is decided by `status`.
+# gate_v2 STATUS_JSON: the decided V2 rule (R1.1). `status` prints `none` only when the tree holds no
+# listener and its TMPDIR is clean (the verified directory, or no child running). A bad TMPDIR with no
+# listener prints counts with `tmpdir=S result=fail`, which is judged below. Otherwise it passes when
+# the tree holds no TCP or UDP listener and every Unix listener is inside the child's private per-run
+# TMPDIR, which `status` has checked to be a real directory of the daemon's uid with mode exactly 0700.
+# The word is `tcp=N udp=N unix=N unix_outside=N tmpdir=S result=pass|fail`. This gate trusts no
+# `result=` alone: it recomputes the rule from the counts, and a missing or unknown field fails. There
+# is no path allow-list here; "inside" is decided by `status`.
 gate_v2() {
   local l tcp udp unix out tmp res
   l=$(json_field "$1" listeners)

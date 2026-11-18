@@ -356,7 +356,7 @@ The rule (V2, decided in the ADR and requirement R1.1): no TCP or UDP listener, 
 inside that private directory, which must be a real directory of the daemon's uid with mode exactly
 `0700`. A socket counts as inside only when its directory, with every link followed, is that directory. `browser status` shows `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass`
 while the browser runs, and `result=fail` for anything else (run it in the daemon's user session, so
-`XDG_RUNTIME_DIR` matches the daemon's). While `browser signin` holds the browser, `status` counts that tree's
+`XDG_RUNTIME_DIR` matches the daemon's). The TMPDIR path is derived from `XDG_RUNTIME_DIR` in the shell that runs `status`; a shell without it looks in another place and can report `tmpdir=missing` on a healthy host, which is why `status` prints a hint on stderr when it fails. A tree that listens on nothing prints `listeners: none` only when its TMPDIR is clean; a wrong TMPDIR with no listener prints the counts with `result=fail`. While `browser signin` holds the browser, `status` counts that tree's
 Unix sockets, which sit in another temporary directory, as `unix_outside>0 result=fail`. This is a false alarm that fails
 closed; close the sign-in window and run `status` again. Another local user is refused by the directory and the socket
 mode, and a web page cannot reach a Unix socket path. The release smoke measures the rule on amd64
