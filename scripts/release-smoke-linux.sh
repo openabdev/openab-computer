@@ -67,10 +67,13 @@ gate_v2() {
   out=$(list_field "$l" unix_outside)
   tmp=$(list_field "$l" tmpdir)
   res=$(list_field "$l" result)
-  case "$tcp$udp$unix$out" in
-    '' | *[!0-9]*) echo "GATE V2 fail listeners=${l:-missing}"; return 1 ;;
-  esac
-  if [ -n "$tcp$udp$unix$out" ] && [ "$tcp" = 0 ] && [ "$udp" = 0 ] && [ "$out" = 0 ] \
+  local f
+  for f in "$tcp" "$udp" "$unix" "$out"; do
+    case "$f" in
+      '' | *[!0-9]*) echo "GATE V2 fail listeners=${l:-missing}"; return 1 ;;
+    esac
+  done
+  if [ "$tcp" = 0 ] && [ "$udp" = 0 ] && [ "$out" = 0 ] \
     && [ "$res" = pass ] && { [ "$unix" = 0 ] || [ "$tmp" = ok ]; }; then
     echo "GATE V2 pass listeners=$l"
     return 0

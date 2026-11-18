@@ -172,7 +172,7 @@ curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/
 curl -fsSLO "https://github.com/openabdev/openab-computer/releases/download/v$V/oab-computer-$V-linux-$A.tar.gz.sha256"
 sha256sum -c "oab-computer-$V-linux-$A.tar.gz.sha256"
 # Optional, beside the checksum, from that release (the 0.12.x tarballs carry no attestation):
-gh attestation verify "oab-computer-$V-linux-$A.tar.gz" --repo openabdev/openab-computer
+# gh attestation verify "oab-computer-$V-linux-$A.tar.gz" --repo openabdev/openab-computer
 tar xzf "oab-computer-$V-linux-$A.tar.gz"
 install -m 755 "oab-computer-$V-linux-$A/oab-computer" ~/.local/oab-computer/oab-computer.new
 ~/.local/oab-computer/oab-computer.new browser plan
@@ -276,14 +276,22 @@ grep -c 'MCP_UPSTREAM' ~/.config/systemd/user/oab-computer.service
 If the last command does not print `0`, the line has another form (several upstreams, an edit of
 yours): remove it by hand with an editor, keeping every other line.
 
-Hosts B to D, the line sits in a drop-in file. List the file or files that set it, then delete exactly
-those:
+Hosts B to D, the line sits in a drop-in file. List every active assignment, with its file and line:
 
 ```sh
-grep -l MCP_UPSTREAM ~/.config/systemd/user/oab-computer.service.d/*.conf \
+grep -nE '^[[:space:]]*Environment=("|[^#;]*[[:space:]"])?MCP_UPSTREAM=' \
+  ~/.config/systemd/user/oab-computer.service.d/*.conf \
   ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null
-rm -f <each file the grep printed>
 ```
+
+Comments, `UnsetEnvironment=` and other variables are not matched. For each file printed, run `cat FILE`
+and decide:
+
+- It holds only `[Service]`, that one `Environment=MCP_UPSTREAM=` line, comments and blank lines: it is
+  the dedicated drop-in. `rm -f FILE`.
+- It holds any other setting: keep the file and delete only the line,
+  `sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp$/d' FILE`. If the
+  line has another form (several variables, another URL), edit it by hand and keep everything else.
 
 A drop-in the `grep` did not list may belong to something else. Do not delete it, and do not delete the
 `.d/` directory.
@@ -296,8 +304,8 @@ the `--port` of the run that wrote it, not the kept unit's), and adopt it only t
 It has no `MCP_UPSTREAM` line and carries the marker, so later installer runs keep the unit current.
 This guide never creates that file.
 
-**Verify.** `grep -r MCP_UPSTREAM ~/.config/systemd/user/` prints nothing for the daemon unit and its
-drop-ins.
+**Verify.** The `grep -nE` above prints nothing, and `grep -c 'MCP_UPSTREAM=' ~/.config/systemd/user/oab-computer.service`
+prints `0` on host A.
 
 **Roll back to here.** Restore from the backup (this is the same as the rollback below, steps 3 and 4).
 
@@ -511,14 +519,15 @@ release containing L5) or from your step 0 inventory. The installer never delete
 the same list, in order:
 
 1. Disable and delete the old unit files and the drop-in, then reload. No root. Delete only the
-   drop-in file the `grep` of step 5.2 listed:
+   drop-in file the `grep` of step 5.2 listed, and only when `cat` showed it is the dedicated file
+   (otherwise step 5.2 already removed just the line):
 
    ```sh
    for u in oab-pw-mcp.service oab-computer-pw-mcp.service; do
      if systemctl --user cat "$u" >/dev/null 2>&1; then systemctl --user disable --now "$u"; fi
    done
    rm -f ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
-   rm -f <each drop-in file the grep printed>
+   rm -f <each dedicated drop-in file the grep printed>
    systemctl --user daemon-reload
    ```
 
@@ -568,7 +577,7 @@ is yours to remove, or to keep:
 minor release so that a binary rollback has a script to restore, and is removed after that (ADR D14,
 tracked in [#141](https://github.com/openabdev/openab-computer/issues/141)). From the first release
 containing L5 it carries a `DEPRECATED` header and prints one notice on stderr each time it starts,
-which the old unit's journal shows (`journalctl --user -u OLD`); its launch arguments are unchanged.
+but only the copy in the tarball has that. The installer does not copy `pw-mcp.sh` and this guide does not replace the copy at `~/.local/oab-computer/pw-mcp.sh`, so an old unit keeps running the old copy and its journal shows no notice. Its launch arguments are unchanged.
 The installer no longer writes the unit. The script opens an unauthenticated listener on
 `127.0.0.1:8794` that any local user can reach and that serves `browser_run_code_unsafe`, which is why
 this guide exists.

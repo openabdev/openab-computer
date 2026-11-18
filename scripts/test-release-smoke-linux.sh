@@ -100,7 +100,7 @@ sed 's/^| \(V2 .*\) | pass | /| \1 | PENDING | /' "$fill" >"$R/linux-9.9.9.md"
 for bad_result in fail 'n/a' 'done' 'pass?' ''; do
   sed "s#^| \\(V7 [^|]*\\)| pass |#| \\1| $bad_result |#" "$fill" >"$R/linux-9.9.9.md"
   out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V7 result '$bad_result' blocks" 1 $?
-  case $out in *"blocking gate not passed: V7"*) ok "record: V7 '$bad_result' is named" ;; *) bad "record: V7 '$bad_result' not named: $out" ;; esac
+  case $out in *"gate row not acceptable: V7"*) ok "record: V7 '$bad_result' is named" ;; *) bad "record: V7 '$bad_result' not named: $out" ;; esac
 done
 sed 's/^| \(V7 [^|]*\)| pass |/| \1| n\/a, no sign-in on this release |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 n/a with a reason blocks" 1 $?
@@ -108,6 +108,19 @@ sed 's/^| \(V1 [^|]*\)| pass |/| \1| n\/a, no source yet |/' "$fill" >"$R/linux-
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V1 n/a with a reason blocks" 1 $?
 sed 's/^| \(V1 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V1 fail blocks" 1 $?
+# A strict gate cannot hide: a deleted row, a "|" inside a cell, a Blocking cell edited to "no".
+for g in V1 V2 V7 V13; do
+  grep -v "^| $g " "$fill" >"$R/linux-9.9.9.md"
+  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a removed $g row fails" 1 $?
+  case $out in *"$g (row missing)"*) ok "record: removed $g row is named" ;; *) bad "record: removed $g row not named: $out" ;; esac
+done
+sed 's/^| \(V1 [^|]*\)| pass | \([^|]*\)|/| \1| fail | ss -lxp | grep chrome |/' "$fill" >"$R/linux-9.9.9.md"
+out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V1 fail with a pipe in Evidence fails" 1 $?
+case $out in *"V1 (malformed row"*) ok "record: the malformed V1 row is named" ;; *) bad "record: malformed V1 not named: $out" ;; esac
+sed 's/^| \(V7 .*\)| yes[^|]* |$/| \1| no |/;s/^| \(V7 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 fail with Blocking edited to no still fails" 1 $?
+{ cat "$fill"; grep '^| V7 ' "$fill"; } >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a duplicated V7 row fails" 1 $?
 # A non-blocking row may be anything but PENDING.
 sed 's/^| \(V3 [^|]*\)| done |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a non-blocking V3 fail does not block" 0 $?

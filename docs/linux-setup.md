@@ -444,15 +444,15 @@ Three more fields list what the old external setup left behind. They exist from 
 that contains L5, and they only read: `status` never stops, moves or deletes any of it (D10).
 `legacy_units` is `none` or a comma list of `oab-pw-mcp.service`, `oab-computer-pw-mcp.service`
 (unit files in `~/.config/systemd/user/`) and `drop-in:oab-computer.service.d` or
-`drop-in:oab-instance-mcp.service.d` (a drop-in directory with a `*.conf` that sets
-`MCP_UPSTREAM`; the file's content and the URL are never shown). `legacy` is `none` or a comma
+`drop-in:oab-instance-mcp.service.d` (a drop-in directory with a `*.conf` with an active
+`Environment=MCP_UPSTREAM=` line; the file's content and the URL are never shown). `legacy` is `none` or a comma
 list of `<path>:<size>` for the old directories and files (`~/.local/oab-computer/pw-mcp`,
 `pw-profile`, `pw-output`, `pw-config.json`, `pw-mcp.sh`, `~/.local/oab-instance-mcp/pw-mcp`,
 `~/.cache/ms-playwright`); the old profile carries `:holds_cookies`, a link is `:symlink` and is not
 followed, and a size that could not be taken is `:size_unknown`. Sizes are apparent sizes in a
 fixed unit (`B`, `KiB`, `MiB`, `GiB`). `legacy_listener` is `8794` when a TCP socket listens on the
 old unit's port (any owner, since that port has no authentication), `none`, or `unknown` when the
-table cannot be read. The three fields say `unknown` when `HOME` is not set. When any of them shows
+table cannot be read. `legacy_units` and `legacy` say `unknown` when `HOME` is not set; `legacy_listener` is still probed. When any of them shows
 something, the human output adds one line that points at
 [the cutover guide](linux-cutover.md); `--json` has the fixed fields only. Removing what they list
 is a person's job: use that guide and the checklist under
@@ -870,21 +870,25 @@ below is marked if it needs root.
 
    ```sh
    ls ~/.config/systemd/user/ | grep -E 'pw-mcp|oab-instance-mcp'
-   grep -l MCP_UPSTREAM ~/.config/systemd/user/oab-computer.service.d/*.conf \
-     ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null     # the drop-in file or files
+   grep -nE '^[[:space:]]*Environment=("|[^#;]*[[:space:]"])?MCP_UPSTREAM=' \
+     ~/.config/systemd/user/oab-computer.service.d/*.conf \
+     ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null     # file:line of each active assignment
    ```
 
-   Disable each old unit that exists, then delete exactly the files that listing printed (for
-   example `oab-pw-mcp.service`, or `oab-computer-pw-mcp.service`, and the drop-in file it named),
-   then reload. `rm -f` does not fail on a file the host never had. Do not delete a drop-in the
-   `grep` did not list: others may belong to something else. No root:
+   Disable each old unit that exists and delete the old unit files. Then, for each file the `grep`
+   printed, run `cat` on it. If it holds nothing but `[Service]`, that one `Environment=MCP_UPSTREAM=`
+   line, comments and blank lines, it is the dedicated drop-in and `rm -f` removes it. If it holds
+   any other setting, delete only that line (`sed -i '/^Environment=MCP_UPSTREAM=/d' FILE`, or an
+   editor if the line also sets other variables) and keep the file. A file the `grep` did not list
+   is not touched: it may belong to something else. Reload last. No root:
 
    ```sh
    for u in oab-pw-mcp.service oab-computer-pw-mcp.service; do
      if systemctl --user cat "$u" >/dev/null 2>&1; then systemctl --user disable --now "$u"; fi
    done
    rm -f ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
-   rm -f <each drop-in file the grep printed>
+   cat FILE                                    # for each file the grep printed
+   rm -f FILE                                  # only a dedicated file, as described above
    systemctl --user daemon-reload
    ```
 
@@ -926,7 +930,8 @@ below is marked if it needs root.
 `127.0.0.1:8794`, with `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp` in the daemon unit, started
 by `poc/reverse-attach-linux/pw-mcp.sh` (kept in the tarball for one more release so that a binary
 rollback has a script to restore, and, from the first release that contains L5, marked deprecated: a
-header comment, and a notice on stderr that the old unit's journal shows each time it starts; the
+header comment, and a notice on stderr each time it starts, in the tarball's copy only: the installer
+does not copy the script, so an old unit still runs the copy it already has and shows no notice; the
 launch itself is unchanged). The script is removed in the minor release after that (D14). Moving off
 it is described in [the cutover guide](linux-cutover.md). That path has no authentication on the listener
 and no pinned downloads; it is only for a host that has not moved, or for

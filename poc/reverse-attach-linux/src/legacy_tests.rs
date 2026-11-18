@@ -138,7 +138,7 @@ fn a_drop_in_counts_only_when_it_sets_mcp_upstream_and_its_content_is_never_repo
     put(
         &h,
         &format!("{UNITS}/oab-instance-mcp.service.d/other.conf"),
-        "[Service]\nEnvironment=FOO=1\n# MCP_UPSTREAM=browser=http://x\n; MCP_UPSTREAM=y\n",
+        "[Service]\nEnvironment=FOO=1\n# MCP_UPSTREAM=browser=http://x\n; MCP_UPSTREAM=y\nUnsetEnvironment=MCP_UPSTREAM\n",
     );
     put(
         &h,
@@ -336,6 +336,32 @@ fn the_old_port_is_reported_only_when_something_listens_on_it() {
     assert_eq!(gather(Some(&h), &only4).listener, "none");
     // `unknown` is not a finding.
     assert!(!gather(Some(&h), &Tables(HashMap::new())).present());
+}
+
+#[test]
+fn only_an_active_environment_assignment_of_mcp_upstream_counts() {
+    use super::sets_upstream as set;
+    for yes in [
+        "Environment=MCP_UPSTREAM=browser=http://x",
+        "  Environment=MCP_UPSTREAM=a",
+        "Environment=\"MCP_UPSTREAM=a\"",
+        "Environment=FOO=1 MCP_UPSTREAM=a",
+        "Environment=FOO=1 \"MCP_UPSTREAM=a\"",
+    ] {
+        assert!(set(yes), "{yes}");
+    }
+    for no in [
+        "# Environment=MCP_UPSTREAM=a",
+        "UnsetEnvironment=MCP_UPSTREAM",
+        "UnsetEnvironment=MCP_UPSTREAM=a",
+        "Environment=XMCP_UPSTREAM=a",
+        "Environment=FOO=MCP_UPSTREAM",
+        "Environment=FOO=1 # MCP_UPSTREAM=a",
+        "ExecStart=/bin/true MCP_UPSTREAM=a",
+        "Description=MCP_UPSTREAM=a",
+    ] {
+        assert!(!set(no), "{no}");
+    }
 }
 
 #[test]

@@ -129,7 +129,7 @@ fn units(home: &Path) -> String {
     join_or_none(found)
 }
 
-/// Does a `*.conf` in the drop-in directory `d` hold a `MCP_UPSTREAM` line? `Some(false)` when the
+/// Does a `*.conf` in the drop-in directory `d` hold an active `Environment=MCP_UPSTREAM=` assignment? `Some(false)` when the
 /// directory is absent or is a symlink (not followed); `None` when it cannot be read.
 fn dropin_has_upstream(d: &Path) -> Option<bool> {
     let meta = match fs::symlink_metadata(d) {
@@ -167,15 +167,32 @@ fn dropin_has_upstream(d: &Path) -> Option<bool> {
             // Not text: it cannot be a unit drop-in that sets the variable.
             continue;
         }
-        let set = text.lines().any(|l| {
-            let t = l.trim_start();
-            !t.starts_with('#') && !t.starts_with(';') && t.contains("MCP_UPSTREAM")
-        });
-        if set {
+        if text.lines().any(sets_upstream) {
             return Some(true);
         }
     }
     Some(false)
+}
+
+/// Is this line an active `Environment=` assignment of `MCP_UPSTREAM`? A comment, `UnsetEnvironment=`,
+/// another variable that merely contains the name, and other settings do not count. The cutover guide
+/// uses the same rule (`grep -nE`), so the hint and the runbook agree.
+fn sets_upstream(line: &str) -> bool {
+    let Some(value) = line.trim_start().strip_prefix("Environment=") else {
+        return false;
+    };
+    let value = value.split(['#', ';']).next().unwrap_or("");
+    let mut from = 0;
+    while let Some(i) = value[from..].find("MCP_UPSTREAM=") {
+        let at = from + i;
+        match value[..at].chars().next_back() {
+            None | Some('"') | Some('\'') => return true,
+            Some(c) if c.is_whitespace() => return true,
+            _ => {}
+        }
+        from = at + 1;
+    }
+    false
 }
 
 fn paths(home: &Path) -> String {

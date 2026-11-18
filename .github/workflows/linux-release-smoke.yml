@@ -136,7 +136,7 @@ jobs:
           set -euo pipefail
           cargo build --release
           cargo test --release --no-run --message-format=json \
-            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null) | .executable' \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test == true and .executable != null and .target.name == "oab-computer") | .executable' \
             | tail -n 1 > "$RUNNER_TEMP/harness-path"
           test -x "$(cat "$RUNNER_TEMP/harness-path")"
       - name: Smoke (install, health check, listeners, kill -9, survivors)

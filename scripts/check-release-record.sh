@@ -8,8 +8,10 @@
 #   - the file exists;
 #   - no table row still holds the placeholder PENDING;
 #   - the V2 and D7 rows exist and neither still says "open, owner decision pending";
-#   - every V row whose Blocking cell starts with "yes" has a Result of "pass"; for any other blocking
-#     row an "n/a" followed by a reason ("n/a, reason") also passes. V1, V2 and V7 take only "pass". A "fail", an empty cell or any other text blocks the release.
+#   - each of V1 to V13 has exactly one row of exactly four cells (no "|" inside a cell);
+#   - V1, V2 and V7 have a Result of "pass" whatever their Blocking cell says; any other row whose
+#     Blocking cell starts with "yes" has "pass", or "n/a, reason". A "fail", an empty cell or any other
+#     text blocks the release.
 # The script never writes, never fills a cell and never treats V2 or D7 as resolved: those two rows
 # stay red until a person records the owner's decision in the row (and in the ADR). Only lines that
 # start with `|` (table rows) are read, so the instructions around the tables may quote the words.
@@ -51,18 +53,31 @@ else
       say "$id is open, owner decision pending: a release stays blocked"
     fi
   done
-  # Blocking rows of the release gates table: | Gate | Result | Evidence | Blocking |
+  # Gate rows: | Gate | Result | Evidence | Blocking |. Exactly one row per gate V1..V13 must exist and
+  # have exactly four cells (a "|" inside a cell makes five and is refused, so a row cannot hide from the
+  # check). V1, V2 and V7 take only "pass", whatever their Blocking cell says. Another row whose Blocking
+  # cell starts with "yes" takes "pass", or "n/a" with a reason.
   bad=$(printf '%s\n' "$rows" | awk -F'|' '
     function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
-    $2 ~ /^ *V[0-9]+ / && NF == 6 && trim($5) ~ /^yes/ {
-      r = trim($3)
+    $2 ~ /^ *V[0-9]+ / {
       id = trim($2); sub(/ .*/, "", id)
+      seen[id]++
+      if (NF != 6) { print id " (malformed row: " NF - 2 " cells, need 4; no \"|\" inside a cell)"; next }
+      r = trim($3)
       strict = (id == "V1" || id == "V2" || id == "V7")
-      if (r !~ /^pass$/ && (strict || r !~ /^n\/a[ ]*[,:;-][ ]*[^ ]/)) print trim($2) " (result: " r ")"
+      if (strict) { if (r != "pass") print id " (result: " r ")" }
+      else if (trim($5) ~ /^yes/ && r != "pass" && r !~ /^n\/a[ ]*[,:;-][ ]*[^ ]/) print id " (result: " r ")"
+    }
+    END {
+      for (i = 1; i <= 13; i++) {
+        k = "V" i
+        if (seen[k] == 0) print k " (row missing)"
+        else if (seen[k] > 1) print k " (" seen[k] " rows, need exactly one)"
+      }
     }')
   if [ -n "$bad" ]; then
     while IFS= read -r line; do
-      say "blocking gate not passed: $line; V1, V2 and V7 need pass; another blocking row needs pass, or n/a with a reason"
+      say "gate row not acceptable: $line; V1 to V13 need one well-formed row each; V1, V2 and V7 need pass; another blocking row needs pass, or n/a with a reason"
     done <<EOF
 $bad
 EOF
