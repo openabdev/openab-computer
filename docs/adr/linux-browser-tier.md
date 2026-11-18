@@ -483,7 +483,7 @@ Rejected:
 
 - **No TCP or UDP listener.** The managed tree opens no TCP or UDP port. Two private Unix
   listening sockets remain in its `0700` `TMPDIR`; V2 is decided: they are accepted under the rule
-  "inside the child's private per-run `0700` `TMPDIR`, owned by the daemon's uid", and nothing else is.
+  "inside the child's private per-run `0700` `TMPDIR`, owned by the daemon's uid", and nothing else is. Inside is judged on the resolved path of the socket's directory, so a link that leads outside the directory does not count.
   Measured on a Debian 13 arm64 node: neither socket can be removed (Playwright binds the first on
   every start path, Chromium aborts without the second, and the DevTools transport is already a pipe).
   Another local user gets `EACCES` on both, and a web page cannot reach a Unix socket path. The residual

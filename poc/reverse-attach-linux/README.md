@@ -296,7 +296,7 @@ is outside this control.
 V2 (decided): the managed tree opens no TCP or UDP socket, and holds two listening Unix sockets inside its
 private `0700` `TMPDIR` (Playwright's browser socket and Chromium's `SingletonSocket`). The rule: any Unix
 listener must be inside that directory, which must be a real directory of the daemon's uid with mode
-exactly `0700`. `browser status` reports `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok
+exactly `0700`. Inside is judged on the resolved path of the socket's directory, so a link that leads outside does not count. `browser status` reports `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok
 result=pass`, or `result=fail` for a TCP or UDP listener, a Unix listener outside the directory or a
 directory that is not `0700` or not the daemon's (`tmpdir=mode|owner|missing|not_dir|unreadable`). The
 release smoke recomputes it on both architectures.

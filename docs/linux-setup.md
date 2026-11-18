@@ -354,7 +354,7 @@ directory. They are not TCP or UDP ports, but they are listeners: another proces
 can connect to them and drive the managed browser, so the claim "no socket of any kind" is not made.
 The rule (V2, decided in the ADR and requirement R1.1): no TCP or UDP listener, and every Unix listener
 inside that private directory, which must be a real directory of the daemon's uid with mode exactly
-`0700`. `browser status` shows `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass`
+`0700`. A socket counts as inside only when its directory, with every link followed, is that directory. `browser status` shows `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass`
 while the browser runs, and `result=fail` for anything else (run it in the daemon's user session, so
 `XDG_RUNTIME_DIR` matches the daemon's). While `browser signin` holds the browser, `status` counts that tree's
 Unix sockets, which sit in another temporary directory, as `unix_outside>0 result=fail`. This is a false alarm that fails

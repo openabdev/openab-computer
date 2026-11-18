@@ -262,7 +262,10 @@ check `systemctl --user is-system-running` before they start. Unlike the optiona
 `kernel.apparmor_restrict_unprivileged_userns=0` and the log says so. That is a property of the
 ephemeral runner, not advice for hosts. The Debian 12 job also runs its container with
 `seccomp=unconfined` and `apparmor=unconfined`, for the same reason (Chromium's sandbox needs a user
-namespace), and its log says so. The binary under test is built on the runner and is the one that runs
+namespace), and its log says so. Inside that container the install runs as a non-root user, and the
+root actions it needs (apt packages from `browser preflight --root-actions`) run as root. The image has
+no `sudo`, so the container path never calls it: `root_command` removes a leading "sudo" followed by a space and runs the
+line as root, and the host-side `sudo sysctl` line runs before the container starts. The binary under test is built on the runner and is the one that runs
 on Debian 12, so the job also shows that it runs on glibc 2.36. The release tarballs are built on
 `ubuntu-24.04` (amd64) and `ubuntu-24.04-arm` (arm64), the same images as the 24.04 smoke cells, so those
 cells test the same toolchain and glibc as the shipped binaries.
@@ -302,8 +305,12 @@ Both are decided. Neither was decided by this workflow, and neither gate is weak
   holds two such sockets (Playwright's browser socket and Chromium's `SingletonSocket`). `GATE V2` fails
   on any TCP or UDP listener, on any Unix listener outside that directory, on a `TMPDIR` that is not
   mode `0700` or not the daemon's uid, and on a listener table that cannot be read, and it has no
-  other allow-list. The gate is blocking and is measured by every release on both architectures; it is
-  closed for a release only when both cells print `GATE V2 pass`.
+  other allow-list. A Unix listener counts as inside only when its directory resolves (every link
+  followed) to that `TMPDIR`; a socket reached through a link that leads elsewhere is outside. A real
+  cell passes V2 only with `NAVIGATE ok` and `SNAPSHOT_HAS_TEXT true` in its log, so `listeners=none`
+  alone never passes. The gate is blocking and is measured by every release on both architectures; it
+  is closed for a release only when both cells print `GATE V2 pass`, and the cells have not been
+  dispatched for this change (see the checklist).
 - **D7: the AppArmor profile.** The single path-scoped glob profile that `browser preflight` prints is
   kept as built; the residual risk (code running as the same user can place a file named `chrome` under
   the data path and run it with `userns` allowed) is written in the ADR and in `linux-setup.md`.
@@ -312,7 +319,8 @@ Both are decided. Neither was decided by this workflow, and neither gate is weak
 
 `scripts/check-release-record.sh` still fails a record whose `V2` or `D7` row is missing or says
 `open, owner decision pending`: a row that reopens the decision blocks the release. It also fails a
-record in which a blocking gate row (V1, V2, V7) is not `pass`. These three accept no `n/a`; put a reason in the Evidence cell.
+record in which any of V1 to V13 is not `pass`. `n/a`, `fail` and an empty cell all block; the
+Blocking column does not relax this.
 
 ### The per-release manual record
 
@@ -324,10 +332,10 @@ the blocking column, and the support-table rows to update. Every unfilled cell i
 
 The `record` job fails a release when the file is missing, when any table row still has `PENDING`,
 when the `V2` or `D7` row is missing or still says `open, owner decision pending`, when any of V1 to V13
-is missing, duplicated or not four cells wide, or when V1, V2 or V7 is not `pass` (another blocking row
-needs `pass` or `n/a, reason`), or when any of M1 to M10 or any of the six smoke cells is missing, duplicated or malformed, or has a
-result other than `pass` (case does not matter; ADR D16 makes these a per-release requirement, so `n/a` is refused). It never fills a
-row for anyone. On a dispatch it reports and passes. The requirements ask for "a release requirement"
+is missing, duplicated or not four cells wide, or has a result other than `pass`, or when any of M1 to M10
+or any of the six smoke cells is missing, duplicated or malformed, or has a result other than `pass`
+(case does not matter; ADR D16 makes these a per-release requirement, so `n/a` is refused everywhere).
+It never fills a row for anyone. On a dispatch it reports and passes. The requirements ask for "a release requirement"
 and "a person records each result"; this file and this check are how that becomes verifiable.
 
 ### Linux release checklist
@@ -336,7 +344,9 @@ Before tagging a release that contains the managed Linux tier:
 
 1. `python3 scripts/playwright-pins.py verify --offline` and `scripts/test-release-smoke-linux.sh`
    pass locally or in CI.
-2. Dispatch `linux-release-smoke.yml` on the release candidate and read every `GATE` line. All of
+2. **Post-merge step, not part of the change that adds this checklist.** That change does not dispatch
+   `linux-release-smoke.yml`. After it is merged, dispatch the workflow on the release candidate and read
+   every `GATE` line. All of
    `pins`, the four cells and the two Debian 12 jobs are green, including `GATE V2 pass` on amd64 and
    arm64.
 3. Copy `docs/release-records/TEMPLATE.md` to `docs/release-records/linux-VERSION.md`, run the manual

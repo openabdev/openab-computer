@@ -15,7 +15,7 @@
 ### R1. Managed child
 
 - R1.1 `@playwright/mcp` runs as a stdio child of the daemon. No TCP or UDP listener exists in the
-  managed tree. Port 8794 is not used by the managed path. **Decided (V2):** any Unix listener in the managed tree is inside the child's private per-run `0700` `TMPDIR`, owned by the daemon's uid. The
+  managed tree. Port 8794 is not used by the managed path. **Decided (V2):** any Unix listener in the managed tree is inside the child's private per-run `0700` `TMPDIR`, owned by the daemon's uid. Inside is judged on the resolved path of the socket's directory: a link that leads outside that directory does not make a socket inside. The
   Playwright browser socket and Chromium's `SingletonSocket` are the two expected ones. `browser status`
   and the release smoke fail on a TCP or UDP listener, on a Unix listener outside that directory, and
   on a `TMPDIR` that is not mode `0700` or not the daemon's. A process of the same user can still connect to those sockets and drive the managed browser, including its signed-in profile; that user can already read the profile directory, so this adds a second control path and no data access. Another local user is refused (the `0700` directory and the socket file mode; `EACCES` in a measurement), and a web page cannot reach a Unix socket path.
