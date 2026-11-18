@@ -11,7 +11,7 @@ impl Source for Tables {
         self.0
             .get(name)
             .cloned()
-            .ok_or_else(|| std::io::Error::other("none"))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
     }
 }
 
@@ -413,4 +413,63 @@ fn everything_present_is_listed_and_nothing_on_disk_changes() {
     assert!(all
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b" ~/.:_,-".contains(&b)));
+}
+
+/// A table that is readable for `tcp` and fails for every other name with a permission error.
+struct Denied;
+
+impl Source for Denied {
+    fn table(&self, name: &str) -> std::io::Result<String> {
+        match name {
+            "tcp" => Ok(HEAD.to_string()),
+            _ => Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        }
+    }
+}
+
+#[test]
+fn an_unreadable_ipv6_table_is_unknown_and_only_a_missing_one_is_none() {
+    let t = TempDir::new();
+    let h = home(&t);
+    assert_eq!(gather(Some(&h), &Denied).listener, "unknown");
+    assert!(
+        !gather(Some(&h), &Denied).present(),
+        "unknown is not a finding"
+    );
+    let only4 = Tables(HashMap::from([("tcp", HEAD.to_string())]));
+    assert_eq!(gather(Some(&h), &only4).listener, "none");
+}
+
+#[test]
+fn a_real_directory_holding_a_link_counts_only_the_link() {
+    let t = TempDir::new();
+    let big = t.path.join("big");
+    fs::create_dir_all(&big).unwrap();
+    fs::write(big.join("f"), vec![0u8; 5 * 1024 * 1024]).unwrap();
+    let d = t.path.join("real");
+    fs::create_dir_all(&d).unwrap();
+    symlink(&big, d.join("inner")).unwrap();
+    let n = dir_size(&d).unwrap();
+    assert!(n < 1024, "only the link's own length is counted, got {n}");
+}
+
+#[test]
+fn a_single_quoted_or_double_quoted_or_bare_assignment_of_mcp_upstream_counts() {
+    // systemd accepts all three forms; the cutover guide's grep matches the same three.
+    use super::sets_upstream as set;
+    assert!(set(
+        "Environment='MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp'"
+    ));
+    assert!(set(
+        "Environment=\"MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp\""
+    ));
+    assert!(set(
+        "Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+    ));
+    assert!(!set(
+        "# Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+    ));
+    assert!(!set(
+        "UnsetEnvironment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+    ));
 }

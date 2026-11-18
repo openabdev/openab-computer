@@ -287,8 +287,10 @@ fn listener(src: &dyn Source) -> String {
                     .iter()
                     .any(|r| r.state == 0x0A && r.local.port() == LEGACY_PORT);
             }
-            Err(_) if required => return "unknown".into(),
-            Err(_) => {}
+            // Only a table that does not exist (no IPv6 on this host) is a clean absence. Any other
+            // error means the listener is unknown, never none.
+            Err(e) if !required && e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return "unknown".into(),
         }
     }
     if hit {

@@ -409,3 +409,34 @@ fn sigkill_of_a_cli_leaves_its_unit_and_the_next_starts_sweep_stops_it() {
     );
     assert_eq!(units_left(), 0);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cli_launch_that_cannot_get_the_sweep_lock_is_refused_and_spawns_nothing() {
+    // A busy sweep lock is a refusal of the launch (as in `Supervisor::start`), not a start that
+    // goes on unswept. The launch would run `touch`, so a marker file shows whether it started.
+    let t = TempDir::new();
+    let root = t.root();
+    let held = crate::state::open_named_lock(&root, crate::state::SWEEP_LOCK_NAME).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    let marker = t.path.join("spawned");
+    let spec = crate::proc::Spec {
+        exe: std::path::PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            format!("touch '{}'; sleep 30", marker.display()),
+        ],
+        env: vec![],
+        cwd: t.path.clone(),
+    };
+    let sup = Supervised::new(Arc::new(Direct::new(Ok(SYSTEMD))))
+        .with_sweep_wait(Duration::from_millis(100));
+    let err = sup
+        .launch(&root, &spec, &t.path)
+        .err()
+        .expect("the launch is refused");
+    assert_eq!(err.to_string(), "sweep_busy");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "a child was started without a sweep");
+    drop(held);
+}
