@@ -66,6 +66,8 @@ gate_v2() {
   unix=$(list_field "$l" unix)
   out=$(list_field "$l" unix_outside)
   tmp=$(list_field "$l" tmpdir)
+  # tmpdir is judged only when a Unix listener exists (unix>0); with none, a bad TMPDIR cannot hold a
+  # socket, and the real cell separately requires NAVIGATE ok and SNAPSHOT_HAS_TEXT true.
   res=$(list_field "$l" result)
   local f
   for f in "$tcp" "$udp" "$unix" "$out"; do
@@ -284,7 +286,9 @@ in_container() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     echo "root action: ${line%%$'\t'*}"
-    sh -c "${line%%$'\t'*}" || echo "(that action failed; the health check decides)"
+    act=${line%%$'\t'*}
+    act=${act#sudo }   # already root in the throwaway container, which has no sudo
+    sh -c "$act" || echo "(that action failed; the health check decides)"
   done </tmp/root-actions.tsv
   runuser -u smoke -- env TMPDIR=/tmp bash "$self" --bin "$bin" --container
 }

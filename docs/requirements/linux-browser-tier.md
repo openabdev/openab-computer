@@ -245,7 +245,7 @@ flowchart TB
     r2["2 Optional, oab-computer browser remove to free disk, it restores nothing"]
     r3["3 Restore the backed up daemon unit and drop-in, put oab-computer.prev back as the binary, daemon-reload"]
     r4["4 Enable and start the old browser unit, then start oab-computer.service"]
-    r5["5 Verify as in step 6, expecting a listener on 8794 and backend external"]
+    r5["5 Verify as in step 6, expecting a listener on 8794 (the previous binary has no browser object in sys_info)"]
     start --> r1 --> r2 --> r3 --> r4 --> r5
 ```
 
@@ -256,7 +256,7 @@ flowchart TB
    run `daemon-reload`.
 4. Enable and start the old browser unit with `systemctl --user enable --now`, then start
    `oab-computer.service`.
-5. Verify as in step 6, expecting the old behaviour: a listener on 8794 and `backend: external`.
+5. Verify as in step 6, expecting the old behaviour: a listener on 8794 (the previous binary, 0.12.0, has no `browser` object in `sys_info`).
 
 If the new binary stays but the managed tier misbehaves, set `OAB_BROWSER=off` in a drop-in and
 restart. With a managed install that means no `browser_*` tools at all: the router ignores a stale

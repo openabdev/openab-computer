@@ -121,7 +121,7 @@ sed 's/^| \(V7 .*\)| yes[^|]* |$/| \1| no |/;s/^| \(V7 [^|]*\)| pass |/| \1| fai
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 fail with Blocking edited to no still fails" 1 $?
 { cat "$fill"; grep '^| V7 ' "$fill"; } >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a duplicated V7 row fails" 1 $?
-# M rows and smoke-cell rows: each exactly once, Result (any case) pass or n/a with a reason.
+# M rows and smoke-cell rows: each exactly once, Result (any case) pass only (ADR D16, no n/a).
 sed 's/^| \(M3 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
 out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: an M3 fail blocks" 1 $?
 case $out in *"manual or smoke-cell row not acceptable: M3"*) ok "record: M3 fail is named" ;; *) bad "record: M3 not named: $out" ;; esac
@@ -137,9 +137,11 @@ done
 sed 's/^| \(M5 [^|]*\)| pass |/| \1| PASS |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M5 PASS (any case) is accepted" 0 $?
 sed 's/^| \(M4 [^|]*\)| pass |/| \1| n\/a, no Raspberry Pi in this cycle |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M4 n/a with a reason is accepted" 0 $?
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M4 n/a with a reason blocks (ADR D16)" 1 $?
 sed 's/^| \(M4 [^|]*\)| pass |/| \1| n\/a |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M4 n/a without a reason blocks" 1 $?
+sed 's/^| \(Ubuntu 24.04 arm64\) | pass |/| \1 | n\/a, no runner |/' "$fill" >"$R/linux-9.9.9.md"
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a smoke cell n/a with a reason blocks" 1 $?
 # A deleted M row or smoke-cell row cannot hide (no PENDING left to find).
 for g in 'M1 ' 'M10 ' 'Ubuntu 22.04 amd64 ' 'Debian 12 container arm64 '; do
   grep -v "^| $g" "$fill" >"$R/linux-9.9.9.md"

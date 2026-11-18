@@ -97,9 +97,17 @@ login session (over `ssh`, so that `XDG_RUNTIME_DIR` and the user manager are se
 old browser unit on that host. Set it once per shell, before any command that uses it (host A, then
 B to D), and check it names a real unit:
 
+Host A:
+
 ```sh
-OLD=oab-computer-pw-mcp.service   # host A
-OLD=oab-pw-mcp.service            # hosts B to D (use this line instead)
+OLD=oab-computer-pw-mcp.service
+systemctl --user cat "$OLD" >/dev/null && echo "OLD=$OLD"
+```
+
+Hosts B to D:
+
+```sh
+OLD=oab-pw-mcp.service
 systemctl --user cat "$OLD" >/dev/null && echo "OLD=$OLD"
 ```
 

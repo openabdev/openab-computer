@@ -326,7 +326,7 @@ The `record` job fails a release when the file is missing, when any table row st
 when the `V2` or `D7` row is missing or still says `open, owner decision pending`, when any of V1 to V13
 is missing, duplicated or not four cells wide, or when V1, V2 or V7 is not `pass` (another blocking row
 needs `pass` or `n/a, reason`), or when any of M1 to M10 or any of the six smoke cells is missing, duplicated or malformed, or has a
-result other than `pass` or `n/a, reason` (case does not matter). It never fills a
+result other than `pass` (case does not matter; ADR D16 makes these a per-release requirement, so `n/a` is refused). It never fills a
 row for anyone. On a dispatch it reports and passes. The requirements ask for "a release requirement"
 and "a person records each result"; this file and this check are how that becomes verifiable.
 

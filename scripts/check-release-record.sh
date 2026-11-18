@@ -13,7 +13,8 @@
 #     Blocking cell starts with "yes" has "pass", or "n/a, reason". A "fail", an empty cell or any other
 #     text blocks the release;
 #   - each of M1 to M10 and each of the six smoke cells has exactly one well-formed row, and its Result,
-#     lower-cased, is "pass" or "n/a, reason". A deleted row, "fail", "Fail", "not run" or an empty cell blocks.
+#     lower-cased, is "pass". ADR D16 makes the manual full run and the matrix a per-release
+#     requirement, so no "n/a" is accepted. A deleted row, "fail", "Fail", "not run", "n/a" or an empty cell blocks.
 # The script never writes, never fills a cell and never treats V2 or D7 as resolved: those two rows
 # stay red until a person records the owner's decision in the row (and in the ADR). Only lines that
 # start with `|` (table rows) are read, so the instructions around the tables may quote the words.
@@ -78,11 +79,11 @@ else
       }
     }')
   # Manual (M1..M10, five cells) and smoke-cell (six named cells, three cells) rows: each must exist
-  # exactly once, and its Result, lower-cased, must be "pass" or "n/a" with a reason. A deleted row, an
-  # empty result, "Fail", "FAIL", "red" or "not run" all block.
+  # exactly once, and its Result, lower-cased, must be "pass" (ADR D16: required every release, no "n/a").
+  # A deleted row, an empty result, "n/a", "Fail", "FAIL", "red" or "not run" all block.
   badm=$(printf '%s\n' "$rows" | awk -F'|' '
     function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
-    function okres(r) { r = tolower(r); return (r == "pass" || r ~ /^n\/a[ ]*[,:;-][ ]*[^ ]/) }
+    function okres(r) { r = tolower(r); return (r == "pass") }
     BEGIN {
       split("Ubuntu 22.04 amd64|Ubuntu 22.04 arm64|Ubuntu 24.04 amd64|Ubuntu 24.04 arm64|Debian 12 container amd64|Debian 12 container arm64", cells, "|")
       for (i in cells) want[cells[i]] = 1
@@ -105,7 +106,7 @@ else
     }')
   if [ -n "$badm" ]; then
     while IFS= read -r line; do
-      say "manual or smoke-cell row not acceptable: $line; M1 to M10 and the six smoke cells need one row each, with pass or n/a and a reason"
+      say "manual or smoke-cell row not acceptable: $line; M1 to M10 and the six smoke cells need one row each, each with pass (no n/a: ADR D16 requires them every release)"
     done <<EOF
 $badm
 EOF
