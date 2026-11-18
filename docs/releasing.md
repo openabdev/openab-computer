@@ -350,7 +350,8 @@ Before tagging a release that contains the managed Linux tier:
    `pins`, the four cells and the two Debian 12 jobs are green, including `GATE V2 pass` on amd64 and
    arm64.
 3. Copy `docs/release-records/TEMPLATE.md` to `docs/release-records/linux-VERSION.md`, run the manual
-   rows, fill every `PENDING`, and commit it to `main`.
+   rows, fill every `PENDING`, and commit it to `main`. **`docs/release-records/` holds only the
+   template today, so the first Linux release fails the `record` job until this file is committed.**
 4. The `V2` row of the record quotes the two `GATE V2 pass` lines (amd64 and arm64). The decision
    itself is in the ADR.
 5. The `D7` row of the record says the single glob profile is kept, with the M3 result beside it.

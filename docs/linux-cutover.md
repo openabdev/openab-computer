@@ -283,7 +283,7 @@ Host A, the line sits inside `oab-computer.service`:
 
 ```sh
 grep -n 'MCP_UPSTREAM' ~/.config/systemd/user/oab-computer.service
-sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp$/d' ~/.config/systemd/user/oab-computer.service
+sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp[[:space:]]*$/d' ~/.config/systemd/user/oab-computer.service
 grep -c 'MCP_UPSTREAM' ~/.config/systemd/user/oab-computer.service
 ```
 
@@ -306,7 +306,7 @@ and decide:
   wrote it: no installer in this repository writes an `MCP_UPSTREAM` drop-in, so a hand-written file of
   the same shape is removed too.
 - It holds any other setting: keep the file and delete only the line,
-  `sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp$/d' FILE`. If the
+  `sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp[[:space:]]*$/d' FILE`. If the
   line has another form (several variables, another URL), edit it by hand and keep everything else.
 
 Run this block once, after the bullets above. It removes a drop-in only when the file has exactly the
