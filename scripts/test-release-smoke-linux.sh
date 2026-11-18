@@ -121,6 +121,13 @@ sed 's/^| \(V7 .*\)| yes[^|]* |$/| \1| no |/;s/^| \(V7 [^|]*\)| pass |/| \1| fai
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 fail with Blocking edited to no still fails" 1 $?
 { cat "$fill"; grep '^| V7 ' "$fill"; } >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a duplicated V7 row fails" 1 $?
+# M rows and smoke-cell rows: fail or empty blocks, anything else filled passes.
+sed 's/^| \(M3 [^|]*\)| done |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
+out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: an M3 fail blocks" 1 $?
+case $out in *"manual or smoke-cell row failed: M3"*) ok "record: M3 fail is named" ;; *) bad "record: M3 not named: $out" ;; esac
+sed 's/^| \(Ubuntu 22.04 arm64\) | done |/| \1 | fail |/' "$fill" >"$R/linux-9.9.9.md"
+out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a smoke-cell fail blocks" 1 $?
+case $out in *"manual or smoke-cell row failed: Ubuntu 22.04 arm64"*) ok "record: cell fail is named" ;; *) bad "record: cell not named: $out" ;; esac
 # A non-blocking row may be anything but PENDING.
 sed 's/^| \(V3 [^|]*\)| done |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a non-blocking V3 fail does not block" 0 $?

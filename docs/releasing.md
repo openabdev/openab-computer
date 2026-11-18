@@ -325,7 +325,8 @@ the blocking column, and the support-table rows to update. Every unfilled cell i
 The `record` job fails a release when the file is missing, when any table row still has `PENDING`,
 when the `V2` or `D7` row is missing or still says `open, owner decision pending`, when any of V1 to V13
 is missing, duplicated or not four cells wide, or when V1, V2 or V7 is not `pass` (another blocking row
-needs `pass` or `n/a, reason`). It never fills a
+needs `pass` or `n/a, reason`), or when an M row or a smoke-cell row has an empty result or one that starts
+with `fail`. It never fills a
 row for anyone. On a dispatch it reports and passes. The requirements ask for "a release requirement"
 and "a person records each result"; this file and this check are how that becomes verifiable.
 

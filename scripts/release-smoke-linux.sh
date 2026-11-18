@@ -203,6 +203,11 @@ real_cell() {
     return 14
   }
   sed 's/^/e2e.log: /' "$log"
+  # V2 is only measured with a browser running: the harness prints READY whatever the navigation did.
+  if ! { grep -q '^NAVIGATE ok$' "$log" && grep -q '^SNAPSHOT_HAS_TEXT true$' "$log"; }; then
+    echo "GATE harness fail no browser page was loaded (need NAVIGATE ok and SNAPSHOT_HAS_TEXT true)"
+    return 14
+  fi
 
   contain=$(sed -n 's/^CONTAINMENT //p' "$log" | head -n 1)
   gate_v4 "$contain" || note_fail 24
@@ -211,6 +216,12 @@ real_cell() {
   status=$("$bin" browser status --json)
   echo "status: $status"
   gate_v2 "$status" || note_fail 20
+  case "$(json_field "$status" listeners)" in
+    none | "")
+      echo "GATE V2 fail no listener seen in the real cell: the browser tree was not measured"
+      note_fail 20
+      ;;
+  esac
   # V11: the mount tier's answer. `--retry` runs the containment self-test in this process, which
   # uses the production unit names, so only the CI job sets this (a throwaway runner).
   if [ "${OAB_SMOKE_STATUS_RETRY:-0}" = 1 ]; then

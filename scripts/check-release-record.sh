@@ -11,7 +11,9 @@
 #   - each of V1 to V13 has exactly one row of exactly four cells (no "|" inside a cell);
 #   - V1, V2 and V7 have a Result of "pass" whatever their Blocking cell says; any other row whose
 #     Blocking cell starts with "yes" has "pass", or "n/a, reason". A "fail", an empty cell or any other
-#     text blocks the release.
+#     text blocks the release;
+#   - no M1 to M10 row and no smoke-cell row (a row naming amd64 or arm64) has a Result that is empty or
+#     starts with "fail".
 # The script never writes, never fills a cell and never treats V2 or D7 as resolved: those two rows
 # stay red until a person records the owner's decision in the row (and in the ADR). Only lines that
 # start with `|` (table rows) are read, so the instructions around the tables may quote the words.
@@ -75,6 +77,22 @@ else
         else if (seen[k] > 1) print k " (" seen[k] " rows, need exactly one)"
       }
     }')
+  # Manual (M1..M10) and smoke-cell rows: a Result that is empty or starts with "fail" blocks.
+  badm=$(printf '%s\n' "$rows" | awk -F'|' '
+    function trim(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
+    $2 ~ /^ *M[0-9]+ / || $2 ~ /^ *(Ubuntu|Debian)[^|]*(amd64|arm64)/ {
+      id = trim($2)
+      if (id ~ /^M[0-9]+ /) sub(/ .*/, "", id)
+      r = trim($3)
+      if (r == "" || r ~ /^fail/) print id " (result: " r ")"
+    }')
+  if [ -n "$badm" ]; then
+    while IFS= read -r line; do
+      say "manual or smoke-cell row failed: $line; a fail or empty result blocks the release"
+    done <<EOF
+$badm
+EOF
+  fi
   if [ -n "$bad" ]; then
     while IFS= read -r line; do
       say "gate row not acceptable: $line; V1 to V13 need one well-formed row each; V1, V2 and V7 need pass; another blocking row needs pass, or n/a with a reason"

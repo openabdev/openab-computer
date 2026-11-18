@@ -350,6 +350,9 @@ Run this after 5.4. The token and the URL are those of
 [Verify from another tailnet machine](linux-setup.md#6-verify-from-another-tailnet-machine); run the
 `curl` lines from another machine on your tailnet.
 
+If a `browser signin` window is still open, `browser status` shows `unix_outside>0 result=fail`. That is a false
+alarm that fails closed; close the sign-in window and run `status` again.
+
 ```sh
 TOKEN=$(ssh <host> 'cat ~/.config/oab-computer/token')
 U=https://<host>.<tailnet>.ts.net:8444
