@@ -152,8 +152,9 @@ pub fn gather(
         if !pids.is_empty() {
             let tmp = crate::child::RuntimeTmp::expected_path(root.abs_path());
             let tmp_state = procnet::tmp_state(&tmp, rustix::process::geteuid().as_raw());
+            // The directory is resolved once here; a link in its path is followed (V2).
             let private = (tmp_state == procnet::TmpState::Ok)
-                .then(|| tmp.to_str().map(str::to_owned))
+                .then(|| std::fs::canonicalize(&tmp).ok())
                 .flatten();
             x.listeners = listeners_word(
                 procnet::listeners_of_tree_in(src, &pids, private.as_deref()),

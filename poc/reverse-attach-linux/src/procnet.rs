@@ -26,12 +26,6 @@ pub const UNKNOWN: &str = "listener_owner_unknown";
 pub trait Source {
     /// The text of `/proc/net/<table>` (`tcp`, `tcp6`, `udp`, `udp6`, `unix`).
     fn table(&self, name: &str) -> std::io::Result<String>;
-    /// Whether every directory between `private` and the socket's own name is a real directory (not
-    /// a link), so the node is physically inside `private`. A fixture with no filesystem keeps the
-    /// default.
-    fn parents_are_plain(&self, _path: &str, _private: &str) -> bool {
-        true
-    }
 }
 
 /// The real `/proc`.
@@ -48,30 +42,6 @@ impl Source for Proc {
         }
         Ok(s)
     }
-
-    fn parents_are_plain(&self, path: &str, private: &str) -> bool {
-        plain_parents(path, private)
-    }
-}
-
-/// `path` is below `private` by [`is_inside`]. Walk each directory between them with `lstat`: a link
-/// (or anything unreadable) fails closed, because the kernel prints the bind path as the program
-/// spelled it, so a link could place the node outside the verified directory.
-pub fn plain_parents(path: &str, private: &str) -> bool {
-    let Some(rest) = path.strip_prefix(private).and_then(|r| r.strip_prefix('/')) else {
-        return false;
-    };
-    let mut cur = std::path::PathBuf::from(private);
-    let mut segs: Vec<&str> = rest.split('/').collect();
-    segs.pop();
-    for seg in segs {
-        cur.push(seg);
-        match std::fs::symlink_metadata(&cur) {
-            Ok(m) if m.file_type().is_dir() => {}
-            _ => return false,
-        }
-    }
-    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,18 +124,28 @@ pub fn parse_unix_listener_paths(text: &str) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// Whether `path`, as bound, is strictly below the private directory `private`: it starts with
-/// `private` and a `/`, and every segment after that is a plain name (no empty segment, `.` or
-/// `..`). An exact string rule, no pattern and no symlink resolution: a path that reaches the
-/// directory in another spelling counts as outside (fail closed).
-pub fn is_inside(path: &str, private: &str) -> bool {
-    let Some(rest) = path.strip_prefix(private).and_then(|r| r.strip_prefix('/')) else {
+/// Whether the Unix socket bound as `path` lies physically inside the private directory
+/// `private_real`, which the caller has already resolved with `canonicalize`.
+///
+/// The kernel prints the bind path as the program spelled it, so `path` is judged by where its
+/// directory really is: the directory is canonicalized (every link in it is followed), then compared
+/// with `Path::starts_with`, which compares whole components (a sibling `<dir>x` is outside). The
+/// node itself must still exist as a socket. A socket unlinked after the bind prints ` (deleted)` in
+/// the table and fails here. A relative path, or a directory that cannot be resolved, is outside.
+pub fn inside_resolved(path: &str, private_real: &std::path::Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        return false;
+    }
+    match std::fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_socket() => {}
+        _ => return false,
+    }
+    let Some(dir) = p.parent() else {
         return false;
     };
-    !rest.is_empty()
-        && rest
-            .split('/')
-            .all(|s| !s.is_empty() && s != "." && s != "..")
+    std::fs::canonicalize(dir).is_ok_and(|real| real.starts_with(private_real))
 }
 
 /// What is wrong with the child's private `TMPDIR`, or `ok`. Read without following a link.
@@ -197,6 +177,9 @@ impl TmpState {
 }
 
 /// `ok` only for a real directory (not a link) owned by `uid` with mode exactly `0700`.
+///
+/// The TMPDIR state and the listener table are read at different times, so a verdict that uses
+/// both is a point-in-time self-report, not an atomic snapshot.
 pub fn tmp_state(path: &std::path::Path, uid: u32) -> TmpState {
     use std::os::unix::fs::MetadataExt;
     let m = match std::fs::symlink_metadata(path) {
@@ -321,12 +304,13 @@ pub fn listeners_among(src: &dyn Source, inodes: &HashSet<u64>) -> Result<Listen
     listeners_among_in(src, inodes, None)
 }
 
-/// Like [`listeners_among`]. `private` is the child's private `TMPDIR`, passed only when it was
-/// verified (`TmpState::Ok`); a Unix listener is "outside" unless its path is below it.
+/// Like [`listeners_among`]. `private` is the child's private `TMPDIR`, resolved with `canonicalize`
+/// and passed only when it was verified (`TmpState::Ok`); a Unix listener is "outside" unless its
+/// directory resolves below it (see [`inside_resolved`]).
 pub fn listeners_among_in(
     src: &dyn Source,
     inodes: &HashSet<u64>,
-    private: Option<&str>,
+    private: Option<&std::path::Path>,
 ) -> Result<Listeners, &'static str> {
     let mut out = Listeners::default();
     for v6 in [false, true] {
@@ -347,7 +331,7 @@ pub fn listeners_among_in(
             continue;
         }
         out.unix += 1;
-        if !private.is_some_and(|p| is_inside(&path, p) && src.parents_are_plain(&path, p)) {
+        if !private.is_some_and(|p| inside_resolved(&path, p)) {
             out.unix_outside += 1;
         }
     }
@@ -364,7 +348,7 @@ pub fn listeners_of_tree(src: &dyn Source, pids: &[u32]) -> Result<Listeners, &'
 pub fn listeners_of_tree_in(
     src: &dyn Source,
     pids: &[u32],
-    private: Option<&str>,
+    private: Option<&std::path::Path>,
 ) -> Result<Listeners, &'static str> {
     let mut inodes = HashSet::new();
     for p in pids {
