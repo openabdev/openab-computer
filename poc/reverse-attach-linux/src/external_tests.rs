@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::HashMap;
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[test]
 fn only_literal_loopback_urls_parse() {
@@ -510,7 +510,7 @@ fn a_row_that_is_not_there_yet_is_read_again_and_another_owner_is_never_accepted
         SameUid {
             source: Box::new(Shared(Arc::clone(f))),
         }
-        .check(client, server)
+        .check(client, server, Instant::now() + Duration::from_secs(60))
     };
     // Missing twice, then there: accepted.
     let f = flaky(2, me);
@@ -539,4 +539,242 @@ fn a_row_that_is_not_there_yet_is_read_again_and_another_owner_is_never_accepted
     let f = flaky(0, me.wrapping_add(1));
     assert_eq!(check(&f), Err(procnet::UNKNOWN));
     assert_eq!(f.reads.load(Ordering::SeqCst), 25);
+}
+
+mod paging {
+    //! `tools()` follows `nextCursor` with the rules of `stdio_client::list_tools_paged`.
+    use super::*;
+
+    /// A server whose `tools/list` answer is picked by the request cursor (`None` for the first
+    /// page). `page` returns the result, or `None` for a server error. The counter is the number of
+    /// `tools/list` requests.
+    fn pager(
+        page: impl Fn(Option<&str>, usize) -> Option<Value> + Send + Sync + 'static,
+    ) -> (Fake, Arc<AtomicUsize>) {
+        let lists = Arc::new(AtomicUsize::new(0));
+        let l2 = Arc::clone(&lists);
+        let f = fake(Box::new(move |req| {
+            let id = req["id"].clone();
+            match req["method"].as_str().unwrap_or("") {
+                "initialize" => http(
+                    "200 OK",
+                    "Mcp-Session-Id: s\r\nContent-Type: application/json\r\n",
+                    &json!({"jsonrpc":"2.0","id":id,"result":{}}).to_string(),
+                ),
+                "notifications/initialized" => http("202 Accepted", "", ""),
+                "tools/list" => {
+                    let n = l2.fetch_add(1, Ordering::SeqCst) + 1;
+                    match page(req["params"]["cursor"].as_str(), n) {
+                        Some(r) => json_ok(&id, r),
+                        None => http("500 Internal Server Error", "", ""),
+                    }
+                }
+                _ => http("400 Bad Request", "", ""),
+            }
+        }));
+        (f, lists)
+    }
+
+    fn names(e: &External) -> Vec<String> {
+        e.tools()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn three_pages_are_joined_in_order() {
+        let (f, lists) = pager(|cur, _| match cur {
+            None => Some(json!({"tools":[{"name":"a"}],"nextCursor":"p2"})),
+            Some("p2") => Some(json!({"tools":[{"name":"b"},{"name":"a"}],"nextCursor":"p3"})),
+            _ => Some(json!({"tools":[{"name":"c"}]})),
+        });
+        let e = External::for_test("browser", &f.url);
+        assert_eq!(names(&e), ["a", "b", "c"]);
+        assert_eq!(lists.load(Ordering::SeqCst), 3);
+        // The joined list is cached: no second walk.
+        assert_eq!(names(&e), ["a", "b", "c"]);
+        assert_eq!(lists.load(Ordering::SeqCst), 3);
+        assert_eq!(e.last_class(), "ok");
+    }
+
+    #[test]
+    fn a_single_page_is_unchanged_and_asks_once() {
+        let (f, lists) = pager(|_, _| Some(json!({"tools":[{"name":"a"},{"name":"b"}]})));
+        let e = External::for_test("browser", &f.url);
+        assert_eq!(names(&e), ["a", "b"]);
+        assert_eq!(lists.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn null_and_empty_string_cursors_end_the_list() {
+        for end in [Value::Null, json!("")] {
+            let e2 = end.clone();
+            let (f, lists) =
+                pager(move |_, _| Some(json!({"tools":[{"name":"a"}],"nextCursor":e2})));
+            let e = External::for_test("browser", &f.url);
+            assert_eq!(names(&e), ["a"], "{end}");
+            assert_eq!(lists.load(Ordering::SeqCst), 1, "{end}");
+        }
+    }
+
+    #[test]
+    fn an_empty_page_with_a_cursor_does_not_end_the_list() {
+        let (f, lists) = pager(|cur, _| match cur {
+            None => Some(json!({"tools":[],"nextCursor":"p2"})),
+            _ => Some(json!({"tools":[{"name":"a"}]})),
+        });
+        let e = External::for_test("browser", &f.url);
+        assert_eq!(names(&e), ["a"]);
+        assert_eq!(lists.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_cursor_that_never_ends_stops_at_the_page_cap_and_lists_nothing() {
+        let (f, lists) =
+            pager(|_, n| Some(json!({"tools":[{"name":"a"}],"nextCursor":format!("c{n}")})));
+        let e = External::for_test("browser", &f.url);
+        assert!(e.tools().is_empty());
+        assert_eq!(
+            lists.load(Ordering::SeqCst),
+            crate::stdio_client::MAX_LIST_PAGES
+        );
+        assert_eq!(e.last_class(), "upstream_bad_body");
+    }
+
+    #[test]
+    fn a_repeated_cursor_or_one_that_is_not_a_string_lists_nothing() {
+        let (f, lists) = pager(|cur, _| match cur {
+            None => Some(json!({"tools":[{"name":"a"}],"nextCursor":"x"})),
+            Some("x") => Some(json!({"tools":[],"nextCursor":"y"})),
+            _ => Some(json!({"tools":[],"nextCursor":"x"})),
+        });
+        let e = External::for_test("browser", &f.url);
+        assert!(e.tools().is_empty());
+        assert_eq!(lists.load(Ordering::SeqCst), 3);
+        assert_eq!(e.last_class(), "upstream_bad_body");
+
+        let (f, _) = pager(|_, _| Some(json!({"tools":[{"name":"a"}],"nextCursor":7})));
+        let e = External::for_test("browser", &f.url);
+        assert!(e.tools().is_empty());
+        assert_eq!(e.last_class(), "upstream_bad_body");
+    }
+
+    #[test]
+    fn a_failing_second_page_drops_the_first_and_is_not_cached() {
+        let fail = Arc::new(AtomicBool::new(true));
+        let f2 = Arc::clone(&fail);
+        let (f, lists) = pager(move |cur, _| match cur {
+            None => Some(json!({"tools":[{"name":"a"}],"nextCursor":"p2"})),
+            _ if f2.load(Ordering::SeqCst) => None,
+            _ => Some(json!({"tools":[{"name":"b"}]})),
+        });
+        let e = External::for_test("browser", &f.url);
+        assert!(e.tools().is_empty());
+        assert_eq!(lists.load(Ordering::SeqCst), 2);
+        assert_eq!(e.last_class(), "upstream_http_500");
+        // The failure is not cached: the next listing walks again and now succeeds.
+        fail.store(false, Ordering::SeqCst);
+        assert_eq!(names(&e), ["a", "b"]);
+        assert_eq!(lists.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn the_walk_shares_one_deadline() {
+        // Each page takes 150 ms and always names a new cursor; the whole walk may take 400 ms.
+        let (f, lists) = pager(|_, n| {
+            std::thread::sleep(Duration::from_millis(150));
+            Some(json!({"tools":[],"nextCursor":format!("c{n}")}))
+        });
+        let e = External::for_test("browser", &f.url).with_deadline(Duration::from_millis(400));
+        let started = Instant::now();
+        assert!(e.tools().is_empty());
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(lists.load(Ordering::SeqCst) < crate::stdio_client::MAX_LIST_PAGES);
+    }
+
+    #[test]
+    fn a_server_that_stops_reading_ends_the_request_by_the_deadline() {
+        // Accepts and never reads: a request larger than the socket buffers cannot be written.
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/mcp", l.local_addr().unwrap());
+        let t = std::thread::spawn(move || {
+            let held = l.accept().map(|(s, _)| s);
+            std::thread::sleep(Duration::from_secs(4));
+            drop(held);
+        });
+        let e = External::for_test("browser", &url).with_deadline(Duration::from_millis(500));
+        let big = json!({"cursor": "a".repeat(64 << 20)});
+        let started = Instant::now();
+        let r = e.post(&big, Some(Duration::from_secs(30)));
+        assert_eq!(r.err().as_deref(), Some("upstream_timeout"));
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+        t.join().unwrap();
+    }
+}
+
+mod ordinary_calls {
+    //! `rpc` keeps the timing and the error classes it had before the listing followed cursors.
+    use super::*;
+
+    #[test]
+    fn each_post_has_the_whole_deadline() {
+        // Every reply takes 0.6 s against a 1 s deadline: three requests (initialize, the
+        // notification, the call) take longer than the deadline in all, and each one is inside it.
+        let f = fake(Box::new(|req| {
+            std::thread::sleep(Duration::from_millis(600));
+            let id = req["id"].clone();
+            match req["method"].as_str().unwrap_or("") {
+                "initialize" => http(
+                    "200 OK",
+                    "Mcp-Session-Id: s\r\nContent-Type: application/json\r\n",
+                    &json!({"jsonrpc":"2.0","id":id,"result":{}}).to_string(),
+                ),
+                "notifications/initialized" => http("202 Accepted", "", ""),
+                _ => json_ok(&id, json!({"ok": true})),
+            }
+        }));
+        let e = External::for_test("browser", &f.url).with_deadline(Duration::from_secs(1));
+        assert_eq!(e.rpc("ping", None).unwrap(), json!({"ok": true}));
+    }
+
+    #[test]
+    fn a_refused_connection_is_unreachable() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let e = External::for_test("browser", &format!("http://127.0.0.1:{port}/mcp"));
+        assert_eq!(
+            e.rpc("ping", None).err().as_deref(),
+            Some("upstream_unreachable")
+        );
+    }
+}
+
+mod owner_deadline {
+    use super::*;
+
+    #[test]
+    fn the_owner_check_ends_at_the_request_deadline() {
+        // The owner is never ours: the check retries, but not past `end`.
+        let client: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let server: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+        let started = Instant::now();
+        let r = SameUid::real().check(client, server, Instant::now() + Duration::from_millis(60));
+        assert_eq!(r, Err("upstream_timeout"));
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "{:?}",
+            started.elapsed()
+        );
+    }
 }
