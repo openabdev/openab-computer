@@ -66,8 +66,8 @@ gate_v2() {
   unix=$(list_field "$l" unix)
   out=$(list_field "$l" unix_outside)
   tmp=$(list_field "$l" tmpdir)
-  # tmpdir is judged only when a Unix listener exists (unix>0); with none, a bad TMPDIR cannot hold a
-  # socket, and the real cell separately requires NAVIGATE ok and SNAPSHOT_HAS_TEXT true.
+  # The TMPDIR must be the verified private directory whenever the word has counts (decided V2: a
+  # directory that is not 0700 or not the daemon's fails the gate, even with no Unix listener).
   res=$(list_field "$l" result)
   local f
   for f in "$tcp" "$udp" "$unix" "$out"; do
@@ -76,12 +76,39 @@ gate_v2() {
     esac
   done
   if [ "$tcp" = 0 ] && [ "$udp" = 0 ] && [ "$out" = 0 ] \
-    && [ "$res" = pass ] && { [ "$unix" = 0 ] || [ "$tmp" = ok ]; }; then
+    && [ "$res" = pass ] && [ "$tmp" = ok ]; then
     echo "GATE V2 pass listeners=$l"
     return 0
   fi
   echo "GATE V2 fail listeners=$l"
   return 1
+}
+
+# gate_real_cell LOG STATUS_JSON: V2 in a real cell, the only place it is measured. It passes only when
+# the harness log shows a loaded page (NAVIGATE ok and SNAPSHOT_HAS_TEXT true) and the status word
+# measured a tree with listeners that pass gate_v2. `listeners=none` alone is not a pass: a tree that
+# was never measured reads the same way.
+gate_real_cell() {
+  local log=$1 status=$2 l
+  if ! { grep -q '^NAVIGATE ok$' "$log" && grep -q '^SNAPSHOT_HAS_TEXT true$' "$log"; }; then
+    echo "GATE V2 fail no browser page was loaded (need NAVIGATE ok and SNAPSHOT_HAS_TEXT true)"
+    return 1
+  fi
+  l=$(json_field "$status" listeners)
+  case "$l" in
+    none | "")
+      echo "GATE V2 fail no listener seen in the real cell: the browser tree was not measured"
+      return 1
+      ;;
+  esac
+  gate_v2 "$status"
+}
+
+# root_command LINE: a root action as it runs inside the throwaway Debian 12 container. That process
+# is already root and the image has no sudo, so a leading `sudo ` is removed; any other line runs
+# unchanged. The host-side `sudo sysctl` line is not run through here.
+root_command() {
+  printf '%s\n' "${1#sudo }"
 }
 
 # gate_v4 CONTAINMENT: the self-test must have reached a systemd mode (BindsTo fires, V4).
@@ -205,9 +232,11 @@ real_cell() {
     return 14
   }
   sed 's/^/e2e.log: /' "$log"
-  # V2 is only measured with a browser running: the harness prints READY whatever the navigation did.
+  # The harness prints READY whatever the navigation did, so a cell without a loaded page stops here,
+  # and V2 is reported as not passing (gate_real_cell below would say the same).
   if ! { grep -q '^NAVIGATE ok$' "$log" && grep -q '^SNAPSHOT_HAS_TEXT true$' "$log"; }; then
     echo "GATE harness fail no browser page was loaded (need NAVIGATE ok and SNAPSHOT_HAS_TEXT true)"
+    echo "GATE V2 fail not measured: no browser page was loaded"
     return 14
   fi
 
@@ -217,13 +246,7 @@ real_cell() {
   # The listener self-check on the live tree: the status command reads it from /proc.
   status=$("$bin" browser status --json)
   echo "status: $status"
-  gate_v2 "$status" || note_fail 20
-  case "$(json_field "$status" listeners)" in
-    none | "")
-      echo "GATE V2 fail no listener seen in the real cell: the browser tree was not measured"
-      note_fail 20
-      ;;
-  esac
+  gate_real_cell "$log" "$status" || note_fail 20
   # V11: the mount tier's answer. `--retry` runs the containment self-test in this process, which
   # uses the production unit names, so only the CI job sets this (a throwaway runner).
   if [ "${OAB_SMOKE_STATUS_RETRY:-0}" = 1 ]; then
@@ -286,8 +309,7 @@ in_container() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     echo "root action: ${line%%$'\t'*}"
-    act=${line%%$'\t'*}
-    act=${act#sudo }   # already root in the throwaway container, which has no sudo
+    act=$(root_command "${line%%$'\t'*}")
     sh -c "$act" || echo "(that action failed; the health check decides)"
   done </tmp/root-actions.tsv
   runuser -u smoke -- env TMPDIR=/tmp bash "$self" --bin "$bin" --container

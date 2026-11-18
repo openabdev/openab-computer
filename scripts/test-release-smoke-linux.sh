@@ -19,7 +19,7 @@ status_json() { # listeners
 
 # V2 (decided): no TCP or UDP listener, and every Unix listener inside the verified private TMPDIR.
 P='tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass'
-out=$(gate_v2 "$(status_json none)"); expect "V2 none passes" 0 $?
+out=$(gate_v2 "$(status_json none)"); expect "V2 none passes the status rule" 0 $?
 case $out in "GATE V2 pass"*) ok "V2 pass line" ;; *) bad "V2 pass line: $out" ;; esac
 out=$(gate_v2 "$(status_json "$P")"); expect "V2 two private unix sockets pass" 0 $?
 case $out in *"unix=2"*"result=pass"*) ok "V2 pass line names the listeners" ;; *) bad "V2 pass line: $out" ;; esac
@@ -29,6 +29,7 @@ gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=mode result=fai
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=owner result=fail')" >/dev/null; expect "V2 TMPDIR of another uid fails" 1 $?
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=mode result=pass')" >/dev/null; expect "V2 recomputed: tmpdir=mode fails even if result=pass" 1 $?
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=missing result=pass')" >/dev/null; expect "V2 recomputed: tmpdir=missing fails" 1 $?
+gate_v2 "$(status_json 'tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=pass')" >/dev/null; expect "V2 a bad TMPDIR fails even with no unix listener" 1 $?
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=pass')" >/dev/null; expect "V2 recomputed: unix_outside=1 fails even if result=pass" 1 $?
 gate_v2 "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=fail')" >/dev/null; expect "V2 result=fail fails" 1 $?
 gate_v2 "$(status_json 'tcp=1 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass')" >/dev/null; expect "V2 tcp=1 fails even with a private dir" 1 $?
@@ -39,6 +40,31 @@ gate_v2 "$(status_json unknown)" >/dev/null; expect "V2 unknown fails" 1 $?
 gate_v2 "$(status_json not_running)" >/dev/null; expect "V2 not_running fails (nothing was measured)" 1 $?
 gate_v2 '{"state":"installed"}' >/dev/null; expect "V2 missing field fails" 1 $?
 gate_v2 '' >/dev/null; expect "V2 empty output fails" 1 $?
+
+# V2 in a real cell: a loaded page is required, and `listeners=none` alone never passes.
+L="$(mktemp -d "${TMPDIR:-/tmp}/oab-l5-test-gate.XXXXXX")"
+trap 'rm -rf "$L"' EXIT
+printf 'READY ok\n' >"$L/nonav.log"
+printf 'READY ok\nNAVIGATE ok\nSNAPSHOT_HAS_TEXT true\n' >"$L/page.log"
+gate_real_cell "$L/nonav.log" "$(status_json "$P")" >/dev/null; expect "real cell: no NAVIGATE ok fails even with two private sockets" 1 $?
+gate_real_cell "$L/page.log" "$(status_json none)" >/dev/null; expect "real cell: a loaded page with listeners=none alone fails" 1 $?
+out=$(gate_real_cell "$L/page.log" "$(status_json none)"); case $out in *"not measured"*) ok "real cell: listeners=none is named" ;; *) bad "real cell none not named: $out" ;; esac
+out=$(gate_real_cell "$L/page.log" "$(status_json "$P")"); expect "real cell: a loaded page and two private sockets pass" 0 $?
+case $out in "GATE V2 pass"*) ok "real cell: pass line" ;; *) bad "real cell pass line: $out" ;; esac
+gate_real_cell "$L/page.log" "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=fail')" >/dev/null; expect "real cell: result=fail fails" 1 $?
+gate_real_cell "$L/page.log" "$(status_json 'tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=pass')" >/dev/null; expect "real cell: unix_outside=1 fails" 1 $?
+
+# root_command: the container runs as root with no sudo, so a leading sudo is removed.
+[ "$(root_command 'sudo apt-get install -y libnss3')" = 'apt-get install -y libnss3' ]; expect "root_command strips a leading sudo" 0 $?
+[ "$(root_command 'apt-get install -y libnss3')" = 'apt-get install -y libnss3' ]; expect "root_command leaves a line without sudo unchanged" 0 $?
+[ "$(root_command 'echo sudo here')" = 'echo sudo here' ]; expect "root_command does not strip sudo mid-line" 0 $?
+# The container path (the in_container body, and the docker run in the workflow) names no sudo.
+body=$(sed -n '/^in_container() {/,/^}/p' "$here/release-smoke-linux.sh" | grep -v '^ *#')
+case $body in *sudo*) bad "in_container runs sudo" ;; *) ok "in_container body names no sudo" ;; esac
+wf="$here/../.github/workflows/linux-release-smoke.yml"
+run=$(sed -n '/docker run/,/--in-container/p' "$wf")
+case $run in *"docker run"*) ;; *) bad "docker run line not found in the workflow" ;; esac
+case $run in *sudo*) bad "docker run passes sudo into the container" ;; *) ok "docker run line names no sudo" ;; esac
 
 # V4: the two systemd modes pass; anything else fails.
 gate_v4 systemd >/dev/null; expect "V4 systemd" 0 $?
@@ -51,7 +77,7 @@ if [ "$(json_field "$(status_json 'tcp=0 udp=0 unix=2')" listeners)" = "tcp=0 ud
 
 # Survivor check: a process whose executable is below the directory is found, then not once gone.
 T=$(mktemp -d "${TMPDIR:-/tmp}/oab-l5-test-smoke.XXXXXX")
-trap 'rm -rf "$T"' EXIT
+trap 'rm -rf "$T" "$L"' EXIT
 mkdir -p "$T/install" "$T/other"
 if [ ! -e /proc/self/exe ]; then
   echo "SKIP survivor check (no /proc: Linux only; CI runs it)"
@@ -69,94 +95,83 @@ wait "$inside" "$outside" 2>/dev/null
 if [ -z "$(survivors_under "$T/install")" ]; then ok "no survivor after the kill"; else bad "survivor after the kill"; fi
 fi
 
-# The record gate. A filled record copies the template's rows.
+# ---------------------------------------------------------------- the record gate (ADR D16)
+#
+# The valid record is the template with every PENDING replaced by pass. Each bypass below edits a COPY
+# of it and must make check-release-record.sh exit 1; the untouched copy must exit 0. The rows are
+# matched by their first cell, so a row is found by its id (V1 .. V13, M1 .. M10) or by its cell name.
+# Known limit: the checker reads every line that starts with "|", so a row placed inside an HTML comment
+# still counts. Nothing here relies on comments.
 R="$T/records"
 mkdir -p "$R"
 C="$here/check-release-record.sh"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: missing file fails" 1 $?
-"$C" 9.9.9 --dir "$R" --report-only >/dev/null 2>&1; expect "record: missing file, --report-only exits 0" 0 $?
+TPL="$here/../docs/release-records/TEMPLATE.md"
+VALID="$R/valid.md"
+REC="$R/linux-9.9.9.md"
+sed 's/PENDING/pass/g' "$TPL" >"$VALID"
+
+"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: no record file fails" 1 $?
+"$C" 9.9.9 --dir "$R" --report-only >/dev/null 2>&1; expect "record: no record file, --report-only exits 0" 0 $?
 "$C" v9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a leading v is a usage error" 64 $?
-cp "$here/../docs/release-records/TEMPLATE.md" "$R/linux-9.9.9.md"
+"$C" abc --dir "$R" >/dev/null 2>&1; expect "record: a non-version is a usage error" 64 $?
+cp "$TPL" "$REC"
 "$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: the untouched template fails" 1 $?
-fill="$T/filled.md"
-sed 's/PENDING/done/g;s/^\(| V[0-9]* [^|]*\)| done |\(.*| yes[^|]*|\)$/\1| pass |\2/;s/^\(| M[0-9]* [^|]*\)| done |/\1| pass |/;s/^\(| Ubuntu [0-9.]* [a-z0-9]* \)| done |/\1| pass |/;s/^\(| Debian 12 container [a-z0-9]* \)| done |/\1| pass |/' "$R/linux-9.9.9.md" >"$fill"
-cp "$fill" "$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: all rows filled, V2 and D7 decided, passes" 0 $?
-# A row that reopens a decision blocks the release, and the gate names it.
-sed 's/^| \(V2 .*\) | pass | /| \1 | open, owner decision pending | /;s/^| \(D7 .*\) | decided, glob kept | /| \1 | open, owner decision pending | /' "$fill" >"$R/linux-9.9.9.md"
-out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V2 and D7 reopened blocks" 1 $?
-case $out in *"V2 is open"*"D7 is open"*) ok "record: both open rows are named" ;; *) bad "record: open rows not named: $out" ;; esac
-sed 's/^| \(D7 .*\) | decided, glob kept | /| \1 | open, owner decision pending | /' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: D7 reopened alone blocks" 1 $?
-grep -v '^| D7 ' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a removed D7 row fails" 1 $?
-grep -v '^| V2 ' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a removed V2 row fails" 1 $?
-sed 's/^| M3 \(.*\) | pass | done | done | done |$/| M3 \1 | PENDING | done | done | done |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: one PENDING cell fails" 1 $?
-sed 's/^| \(V2 .*\) | pass | /| \1 | PENDING | /' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a V2 row without its measurement (PENDING) fails" 1 $?
-# A blocking gate (V1, V2, V7) needs exactly pass; n/a (with or without a reason), fail or free text blocks.
-for bad_result in fail 'n/a' 'done' 'pass?' ''; do
-  sed "s#^| \\(V7 [^|]*\\)| pass |#| \\1| $bad_result |#" "$fill" >"$R/linux-9.9.9.md"
-  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V7 result '$bad_result' blocks" 1 $?
-  case $out in *"gate row not acceptable: V7"*) ok "record: V7 '$bad_result' is named" ;; *) bad "record: V7 '$bad_result' not named: $out" ;; esac
+cp "$VALID" "$REC"
+"$C" 9.9.9 --dir "$R" >"$T/valid.out" 2>&1; expect "record: the valid record passes" 0 $?
+
+# reject NAME SED_PROGRAM: the copy edited by SED_PROGRAM must make the checker exit 1, and the name is
+# printed for each case.
+reject() {
+  sed "$2" "$VALID" >"$REC"
+  "$C" 9.9.9 --dir "$R" >"$T/out" 2>&1
+  code=$?
+  if [ "$code" -eq 1 ] && grep -q '^release record: ' "$T/out"; then ok "reject: $1"; else bad "reject: $1 (exit $code, wanted 1 with a finding): $(head -c 300 "$T/out")"; fi
+}
+# accept NAME SED_PROGRAM: the copy must still pass.
+accept() {
+  sed "$2" "$VALID" >"$REC"
+  "$C" 9.9.9 --dir "$R" >"$T/out" 2>&1
+  code=$?
+  if [ "$code" -eq 0 ]; then ok "accept: $1"; else bad "accept: $1 (exit $code, wanted 0): $(head -c 300 "$T/out")"; fi
+}
+
+# Each row id (with its trailing space, so V1 does not match V10) gets the same set of mutations.
+for id in V1 V2 V3 V4 V5 V6 V7 V8 V9 V10 V11 V12 V13; do
+  reject "$id row deleted" "/^| $id /d"
+  reject "$id row duplicated" "/^| $id /p"
+  reject "$id row malformed (five cells)" "/^| $id /s/\$/ extra |/"
+  reject "$id result fail" "/^| $id /s#| pass |#| fail |#"
+  reject "$id result empty" "/^| $id /s#| pass |#|  |#"
+  reject "$id result n/a without a reason" "/^| $id /s#| pass |#| n/a |#"
+  reject "$id result n/a with a reason" "/^| $id /s#| pass |#| n/a, no runner in this cycle |#"
+  reject "$id result PENDING" "/^| $id /s#| pass |#| PENDING |#"
 done
-sed 's/^| \(V7 [^|]*\)| pass |/| \1| n\/a, no sign-in on this release |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 n/a with a reason blocks" 1 $?
-sed 's/^| \(V1 [^|]*\)| pass |/| \1| n\/a, no source yet |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V1 n/a with a reason blocks" 1 $?
-sed 's/^| \(V1 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V1 fail blocks" 1 $?
-# A strict gate cannot hide: a deleted row, a "|" inside a cell, a Blocking cell edited to "no".
-for g in V1 V2 V7 V13; do
-  grep -v "^| $g " "$fill" >"$R/linux-9.9.9.md"
-  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a removed $g row fails" 1 $?
-  case $out in *"$g (row missing)"*) ok "record: removed $g row is named" ;; *) bad "record: removed $g row not named: $out" ;; esac
+for id in M1 M2 M3 M4 M5 M6 M7 M8 M9 M10; do
+  reject "$id row deleted" "/^| $id /d"
+  reject "$id row duplicated" "/^| $id /p"
+  reject "$id row malformed (extra cell)" "/^| $id /s/\$/ extra |/"
+  reject "$id result n/a" "/^| $id /s#| pass |#| n/a |#"
+  reject "$id result n/a with a reason" "/^| $id /s#| pass |#| n/a, no Raspberry Pi in this cycle |#"
+  reject "$id result fail" "/^| $id /s#| pass |#| fail |#"
+  reject "$id result FAIL (upper case)" "/^| $id /s#| pass |#| FAIL |#"
+  reject "$id result PENDING" "/^| $id /s#| pass |#| PENDING |#"
 done
-sed 's/^| \(V1 [^|]*\)| pass | \([^|]*\)|/| \1| fail | ss -lxp | grep chrome |/' "$fill" >"$R/linux-9.9.9.md"
-out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: V1 fail with a pipe in Evidence fails" 1 $?
-case $out in *"V1 (malformed row"*) ok "record: the malformed V1 row is named" ;; *) bad "record: malformed V1 not named: $out" ;; esac
-sed 's/^| \(V7 .*\)| yes[^|]* |$/| \1| no |/;s/^| \(V7 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: V7 fail with Blocking edited to no still fails" 1 $?
-{ cat "$fill"; grep '^| V7 ' "$fill"; } >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a duplicated V7 row fails" 1 $?
-# M rows and smoke-cell rows: each exactly once, Result (any case) pass only (ADR D16, no n/a).
-sed 's/^| \(M3 [^|]*\)| pass |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
-out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: an M3 fail blocks" 1 $?
-case $out in *"manual or smoke-cell row not acceptable: M3"*) ok "record: M3 fail is named" ;; *) bad "record: M3 not named: $out" ;; esac
-sed 's/^| \(Ubuntu 22.04 arm64\) | pass |/| \1 | fail |/' "$fill" >"$R/linux-9.9.9.md"
-out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a smoke-cell fail blocks" 1 $?
-case $out in *"not acceptable: Ubuntu 22.04 arm64"*) ok "record: cell fail is named" ;; *) bad "record: cell not named: $out" ;; esac
-for bad_result in Fail FAIL red 'not run' 'done' ''; do
-  sed "s#^| \\(M5 [^|]*\\)| pass |#| \\1| $bad_result |#" "$fill" >"$R/linux-9.9.9.md"
-  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: M5 result '$bad_result' blocks" 1 $?
-  sed "s#^| \\(Debian 12 container arm64\\) | pass |#| \\1 | $bad_result |#" "$fill" >"$R/linux-9.9.9.md"
-  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a cell result '$bad_result' blocks" 1 $?
+for cell in "Ubuntu 22.04 amd64" "Ubuntu 22.04 arm64" "Ubuntu 24.04 amd64" "Ubuntu 24.04 arm64" "Debian 12 container amd64" "Debian 12 container arm64"; do
+  reject "smoke cell '$cell' row deleted" "/^| $cell |/d"
+  reject "smoke cell '$cell' row duplicated" "/^| $cell |/p"
+  reject "smoke cell '$cell' row malformed" "/^| $cell |/s/\$/ extra |/"
+  reject "smoke cell '$cell' result n/a" "/^| $cell |/s#| pass |#| n/a |#"
+  reject "smoke cell '$cell' result fail" "/^| $cell |/s#| pass |#| fail |#"
 done
-sed 's/^| \(M5 [^|]*\)| pass |/| \1| PASS |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M5 PASS (any case) is accepted" 0 $?
-sed 's/^| \(M4 [^|]*\)| pass |/| \1| n\/a, no Raspberry Pi in this cycle |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M4 n/a with a reason blocks (ADR D16)" 1 $?
-sed 's/^| \(M4 [^|]*\)| pass |/| \1| n\/a |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: M4 n/a without a reason blocks" 1 $?
-sed 's/^| \(Ubuntu 24.04 arm64\) | pass |/| \1 | n\/a, no runner |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a smoke cell n/a with a reason blocks" 1 $?
-# A deleted M row or smoke-cell row cannot hide (no PENDING left to find).
-for g in 'M1 ' 'M10 ' 'Ubuntu 22.04 amd64 ' 'Debian 12 container arm64 '; do
-  grep -v "^| $g" "$fill" >"$R/linux-9.9.9.md"
-  out=$("$C" 9.9.9 --dir "$R" 2>&1); expect "record: a removed '$g' row fails" 1 $?
-  case $out in *"(row missing)"*) ok "record: removed '$g' row is named" ;; *) bad "record: removed '$g' not named: $out" ;; esac
-done
-{ cat "$fill"; grep '^| M2 ' "$fill"; } >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a duplicated M2 row fails" 1 $?
-# A non-blocking row may be anything but PENDING.
-sed 's/^| \(V3 [^|]*\)| done |/| \1| fail |/' "$fill" >"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: a non-blocking V3 fail does not block" 0 $?
-# The instruction text outside the tables may quote the words without tripping the gate.
-cp "$fill" "$R/linux-9.9.9.md"
-printf '\nThe words open, owner decision pending and PENDING in prose are not a table row.\n' >>"$R/linux-9.9.9.md"
-"$C" 9.9.9 --dir "$R" >/dev/null 2>&1; expect "record: prose outside the tables is ignored" 0 $?
+reject "V2 row still PENDING" "/^| V2 /s#| pass |#| PENDING |#"
+reject "V2 reopened as an owner decision" "/^| V2 /s#| pass |#| open, owner decision pending |#"
+reject "D7 reopened as an owner decision" "/^| D7 /s#| decided, glob kept |#| open, owner decision pending |#"
+reject "V2 row removed" "/^| V2 /d"
+reject "D7 row removed" "/^| D7 /d"
+reject "a PENDING cell in a manual row" "/^| M6 /s#| pass |#| PENDING |#"
+accept "M5 result in another case (PASS) is pass" "/^| M5 /s#| pass |#| PASS |#"
+accept "prose outside the tables may quote the words" "\$a\\
+The words open, owner decision pending, n/a and PENDING in prose are not a table row."
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

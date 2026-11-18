@@ -4,15 +4,17 @@ Copy this file to `docs/release-records/linux-VERSION.md` (VERSION without the l
 in against the release candidate, and commit it to `main` **before** the tag. The `record` job of
 `.github/workflows/linux-release-smoke.yml` runs `scripts/check-release-record.sh VERSION` and
 fails a release when the file is missing, when any table row still holds the placeholder
-`PENDING`, when the `V2` or `D7` row is missing or says `open, owner decision pending`, when any of V1 to V13 lacks exactly one row of four cells, or when any of M1 to M10 or any of the six smoke cells lacks exactly one row or has a result other than `pass` (case does not matter; no `n/a`: ADR D16 requires these every release), or when a
-blocking gate row is not `pass` (V1, V2 and V7 take only `pass`; another blocking row may read `n/a` with a reason).
+`PENDING`, when the `V2` or `D7` row is missing or says `open, owner decision pending`, or when any
+of V1 to V13, M1 to M10 or the six smoke cells lacks exactly one well-formed row (four cells for V,
+five for the smoke cells, seven for M) or has a result other than `pass` (case does not matter).
+`n/a` is never accepted: ADR D16 requires the manual checks and the matrix every release.
 
 Rules for the person filling it in:
 
-- Replace every `PENDING` with a result. Write `n/a` and the reason only on a V3 to V13 row that does not apply (never on a blocking row);
-  never delete a row. M1 to M10 and the six smoke cells take `pass` only.
-  A gate row whose Blocking cell says `yes` (V1, V2, V7) must read `pass` and nothing else (no `n/a`); `fail` or
-  anything else fails the record check.
+- Replace every `PENDING` with a result. Every V1 to V13 row, every M row and every smoke-cell row takes
+  `pass` only. `n/a`, `fail`, an empty cell or any other text fails the record check, and so does a
+  deleted, duplicated or malformed row. Do not change the cell count of a row (no `|` inside a cell).
+  A row that cannot be run is a release blocker to report, not a row to mark `n/a`.
 - Record what you ran and saw. No host names, tailnet names, addresses, logins or tokens: name a host
   by class ("amd64 desktop", "arm64 desktop", "headless-seat host").
 - The `V2` and `D7` rows record decisions the owner made ([the ADR](../adr/linux-browser-tier.md)).
