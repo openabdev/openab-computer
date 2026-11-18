@@ -123,7 +123,7 @@ jobs:
         # The pure parts of scripts/release-smoke-linux.sh and scripts/check-release-record.sh. The
         # smoke itself runs in .github/workflows/linux-release-smoke.yml (dispatch and release only).
         run: bash scripts/test-release-smoke-linux.sh
-      - name: Cutover guide: its shell blocks parse, its drop-in removal block and grep match the fixtures
+      - name: "Cutover guide: its shell blocks parse, its drop-in removal block and grep match the fixtures"
         # Runs the guide's own text against fixtures under a temporary HOME. Touches no unit or port.
         run: bash scripts/test-cutover-guide.sh
       - name: pw-mcp.sh is marked deprecated and still launches unchanged (D14)
