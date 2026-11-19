@@ -276,25 +276,34 @@ impl Listeners {
     }
 }
 
-/// Socket inodes held open by `pid` (`/proc/<pid>/fd/*` links of the form `socket:[N]`).
-pub fn socket_inodes(pid: u32) -> HashSet<u64> {
+/// Socket inodes held open by `pid` (`/proc/<pid>/fd/*` links of the form `socket:[N]`). A failure to
+/// read the fd table is `UNKNOWN`, never an empty set: "no sockets" would be a claim.
+pub fn socket_inodes(pid: u32) -> Result<HashSet<u64>, &'static str> {
+    socket_inodes_in(std::path::Path::new(&format!("/proc/{pid}/fd")))
+}
+
+/// [`socket_inodes`] for the fd directory at `dir`. An unreadable directory, an unreadable entry, an
+/// unreadable link, or more than `FD_LIMIT` entries is `UNKNOWN`: a listener could be among the
+/// descriptors that were not read.
+pub fn socket_inodes_in(dir: &std::path::Path) -> Result<HashSet<u64>, &'static str> {
+    let rd = std::fs::read_dir(dir).map_err(|_| UNKNOWN)?;
     let mut set = HashSet::new();
-    let Ok(rd) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
-        return set;
-    };
-    for e in rd.flatten().take(FD_LIMIT) {
-        if let Ok(t) = std::fs::read_link(e.path()) {
-            if let Some(n) = t
-                .to_str()
-                .and_then(|s| s.strip_prefix("socket:["))
-                .and_then(|s| s.strip_suffix(']'))
-                .and_then(|s| s.parse::<u64>().ok())
-            {
-                set.insert(n);
-            }
+    for (i, e) in rd.enumerate() {
+        if i >= FD_LIMIT {
+            return Err(UNKNOWN);
+        }
+        let e = e.map_err(|_| UNKNOWN)?;
+        let t = std::fs::read_link(e.path()).map_err(|_| UNKNOWN)?;
+        if let Some(n) = t
+            .to_str()
+            .and_then(|s| s.strip_prefix("socket:["))
+            .and_then(|s| s.strip_suffix(']'))
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            set.insert(n);
         }
     }
-    set
+    Ok(set)
 }
 
 /// Listeners among `inodes`: TCP in state LISTEN (0A), UDP sockets bound and not connected (07),
@@ -352,7 +361,7 @@ pub fn listeners_of_tree_in(
 ) -> Result<Listeners, &'static str> {
     let mut inodes = HashSet::new();
     for p in pids {
-        inodes.extend(socket_inodes(*p));
+        inodes.extend(socket_inodes(*p)?);
     }
     listeners_among_in(src, &inodes, private)
 }

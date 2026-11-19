@@ -367,6 +367,43 @@ fn s(p: &std::path::Path) -> String {
     p.to_str().unwrap().to_string()
 }
 
+// ---------------------------------------------------------------- the fd scan (F2)
+
+#[test]
+fn an_unreadable_fd_directory_is_unknown_never_no_sockets() {
+    let d = Scratch::new("fd-unreadable");
+    let not_a_dir = d.0.join("fd");
+    std::fs::write(&not_a_dir, b"").unwrap();
+    assert_eq!(socket_inodes_in(&not_a_dir), Err(UNKNOWN));
+    assert_eq!(socket_inodes_in(&d.0.join("absent")), Err(UNKNOWN));
+}
+
+#[test]
+fn more_fds_than_the_scan_limit_is_unknown_never_a_partial_set() {
+    let d = Scratch::new("fd-over-cap");
+    for i in 0..=FD_LIMIT {
+        std::os::unix::fs::symlink(format!("socket:[{}]", i + 1), d.0.join(i.to_string())).unwrap();
+    }
+    assert_eq!(socket_inodes_in(&d.0), Err(UNKNOWN));
+}
+
+#[test]
+fn an_fd_table_at_the_scan_limit_is_read_in_full() {
+    let d = Scratch::new("fd-at-cap");
+    for i in 0..FD_LIMIT {
+        std::os::unix::fs::symlink(format!("socket:[{}]", i + 1), d.0.join(i.to_string())).unwrap();
+    }
+    assert_eq!(socket_inodes_in(&d.0).unwrap().len(), FD_LIMIT);
+}
+
+#[test]
+fn socket_links_are_collected_and_other_fds_are_ignored() {
+    let d = Scratch::new("fd-kinds");
+    std::os::unix::fs::symlink("socket:[7]", d.0.join("3")).unwrap();
+    std::os::unix::fs::symlink("pipe:[9]", d.0.join("4")).unwrap();
+    assert_eq!(socket_inodes_in(&d.0), Ok(HashSet::from([7])));
+}
+
 #[test]
 fn a_socket_directly_in_the_private_directory_is_inside() {
     let t = Scratch::new("direct");

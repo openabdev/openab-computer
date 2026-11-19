@@ -293,21 +293,27 @@ yours): remove it by hand with an editor, keeping every other line.
 Hosts B to D, the line sits in a drop-in file. List every active assignment, with its file and line:
 
 ```sh
-grep -nE "^[[:space:]]*Environment=(['\"]|[^#;]*[[:space:]'\"])?MCP_UPSTREAM=" \
+grep -nE "^[[:space:]]*Environment=(['\"]|.*[[:space:]'\"])?MCP_UPSTREAM=" \
   ~/.config/systemd/user/oab-computer.service.d/*.conf \
   ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null
 ```
 
-Comments, `UnsetEnvironment=` and other variables are not matched. For each file printed, run `cat FILE`
+Comments, `UnsetEnvironment=` and other variables are not matched. A `#` or `;` in the middle of a line is
+an ordinary character (systemd reads them as comments only at the start of a line), so
+`Environment=FOO=1 # MCP_UPSTREAM=...` is matched and counted. For each file printed, run `cat FILE`
 and decide:
 
 - It holds only `[Service]`, that one `Environment=MCP_UPSTREAM=` line, comments and blank lines: it is
   the dedicated drop-in. The block below removes it. The file is identified by its content, not by who
-  wrote it: no installer in this repository writes an `MCP_UPSTREAM` drop-in, so a hand-written file of
-  the same shape is removed too.
+  wrote it (see the owner decision below).
 - It holds any other setting: keep the file and delete only the line,
   `sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp[[:space:]]*$/d' FILE`. If the
   line has another form (several variables, another URL), edit it by hand and keep everything else.
+
+**Owner decision: content-based removal (option A).** The owner decided that the drop-in is removed by
+its content, not by who wrote it, and accepted that rule. No installer in this repository writes an
+`MCP_UPSTREAM` drop-in, so a hand-written file with exactly the dedicated shape is removed too. A file
+that differs in any way is kept and reported.
 
 Run this block once, after the bullets above. It removes a drop-in only when the file has exactly the
 dedicated shape and is not a link. It keeps every other file and says why:
@@ -559,9 +565,9 @@ with its size and `holds_cookies`. No command here copies or moves cookies.
 
 Only a person does this, after the soak, from the list that `browser status` prints (from the first
 release containing L5) or from your step 0 inventory. The installer never deletes any of it, and
-`browser remove` never touches the old locations (D10). The commands are the ones in
-[Removing the old browser setup after the soak](linux-setup.md#removing-the-old-browser-setup-after-the-soak);
-the same list, in order:
+`browser remove` never touches the old locations (D10). This section is the one removal procedure for
+the old browser setup. The [setup guide](linux-setup.md#removing-the-old-browser-setup-after-the-soak)
+points here and repeats none of these commands.
 
 1. Disable and delete the old unit files, then reload. No root. Step 5.2 owns the drop-in: it already
    removed the dedicated drop-in file, or only the `MCP_UPSTREAM` line from a shared one, and the
@@ -617,10 +623,17 @@ the same list, in order:
    ```
 
    The profile of the managed browser is a different file, `/etc/apparmor.d/oab-computer-chromium-<id>`,
-   and stays.
+   and stays. A host that ran a pre-release `main` build may also have an unsuffixed
+   `/etc/apparmor.d/oab-computer-chromium`. No release shipped it, so remove it the same way
+   (`sudo apparmor_parser -R` it, then `sudo rm` it).
 
 4. Delete the old Chromium policy file. **Needs root:** `sudo rm /etc/chromium/policies/managed/oab-computer.json`
    (0.11-era installers named it `oab-instance-mcp.json`; remove that one the same way if it is there).
+
+5. Decide on the `.proposed` files that an earlier installer run may have left. No root. Review
+   `~/.config/systemd/user/oab-computer.service.proposed` (step 5.2 says how to adopt it) and either
+   adopt it or delete it. Delete `~/.config/systemd/user/oab-seat.service.proposed` the same way. The
+   installer never adopts or removes either file.
 
 ### Never deleted automatically
 

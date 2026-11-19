@@ -175,13 +175,14 @@ fn dropin_has_upstream(d: &Path) -> Option<bool> {
 }
 
 /// Is this line an active `Environment=` assignment of `MCP_UPSTREAM`? A comment, `UnsetEnvironment=`,
-/// another variable that merely contains the name, and other settings do not count. The cutover guide
-/// uses the same rule (`grep -nE`), so the hint and the runbook agree.
+/// another variable that merely contains the name, and other settings do not count. systemd reads
+/// `#` and `;` as comments only at the start of a line (`systemd.syntax(7)`), so a mid-line one is an
+/// ordinary word and does not end the value. Comment lines never reach here: they do not start with
+/// `Environment=`. The cutover guide uses the same rule (`grep -nE`), so the hint and the runbook agree.
 fn sets_upstream(line: &str) -> bool {
     let Some(value) = line.trim_start().strip_prefix("Environment=") else {
         return false;
     };
-    let value = value.split(['#', ';']).next().unwrap_or("");
     let mut from = 0;
     while let Some(i) = value[from..].find("MCP_UPSTREAM=") {
         let at = from + i;

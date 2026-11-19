@@ -17,6 +17,8 @@
 # The script never writes, never fills a cell and never treats V2 or D7 as resolved: those two rows
 # stay red until a person records the owner's decision in the row (and in the ADR). Only lines that
 # start with `|` (table rows) are read, so the instructions around the tables may quote the words.
+# A record that contains an HTML comment (`<!--`) is refused: a row inside a comment is hidden from a
+# reader, and it must not count either.
 # --report-only prints the same findings and exits 0 (a workflow_dispatch run without a tag).
 set -u
 
@@ -44,6 +46,9 @@ say() { echo "release record: $*"; problems=$((problems + 1)); }
 if [ ! -f "$file" ]; then
   say "missing: docs/release-records/linux-$version.md (copy docs/release-records/TEMPLATE.md, run the manual rows, commit it before the tag)"
 else
+  if grep -q '<!--' "$file"; then
+    say "the record contains an HTML comment (<!--): remove it, rows inside a comment are refused"
+  fi
   rows=$(grep '^|' "$file" || true)
   n=$(printf '%s\n' "$rows" | grep -c 'PENDING' || true)
   [ "$n" -eq 0 ] || say "$n table row(s) still contain PENDING"

@@ -103,6 +103,20 @@ else
   check "grep: assignment after another setting matches" yes "Environment=OAB_X=1 MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
   check "grep: a commented line does not match" no "# Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
   check "grep: UnsetEnvironment= does not match" no "UnsetEnvironment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+  check "grep: a # after another setting does not hide the assignment" yes "Environment=FOO=1 # MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+  check "grep: a quoted ; does not hide the assignment" yes 'Environment="FOO=x;y" MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp'
+  check "grep: a quoted # does not hide the assignment" yes 'Environment="FOO=1#2" MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp'
+fi
+
+# The setup guide must point to the one removal procedure in the cutover guide and repeat none of its
+# commands. Its removal section is the text from its heading to the next "## " heading.
+SETUP="$here/../docs/linux-setup.md"
+rem=$(awk '/^## Removing the old browser setup after the soak$/ { on = 1; next } /^## / { on = 0 } on' "$SETUP")
+if [ -z "$rem" ]; then
+  bad "the setup guide has no removal section"
+else
+  if printf '%s\n' "$rem" | grep -qF 'linux-cutover.md#removing-the-leftovers'; then ok "setup removal section points to the cutover guide"; else bad "setup removal section does not link to linux-cutover.md#removing-the-leftovers"; fi
+  if printf '%s\n' "$rem" | grep -qE '(^|[[:space:];&|])(rm|sed|apparmor_parser|systemctl|mv)[[:space:]]|^[[:space:]]*```'; then bad "setup removal section repeats removal commands; keep one procedure in linux-cutover.md"; else ok "setup removal section repeats no removal commands"; fi
 fi
 
 echo "pass=$pass fail=$fail"

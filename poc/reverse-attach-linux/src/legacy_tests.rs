@@ -349,6 +349,9 @@ fn only_an_active_environment_assignment_of_mcp_upstream_counts() {
         "Environment=FOO=1 'MCP_UPSTREAM=a'",
         "Environment=FOO=1 MCP_UPSTREAM=a",
         "Environment=FOO=1 \"MCP_UPSTREAM=a\"",
+        // systemd reads a "#" or ";" only at the start of a line; mid-line it is an ordinary word.
+        "Environment=FOO=1 # MCP_UPSTREAM=a",
+        "Environment=FOO=1 ; MCP_UPSTREAM=a",
     ] {
         assert!(set(yes), "{yes}");
     }
@@ -358,12 +361,19 @@ fn only_an_active_environment_assignment_of_mcp_upstream_counts() {
         "UnsetEnvironment=MCP_UPSTREAM=a",
         "Environment=XMCP_UPSTREAM=a",
         "Environment=FOO=MCP_UPSTREAM",
-        "Environment=FOO=1 # MCP_UPSTREAM=a",
         "ExecStart=/bin/true MCP_UPSTREAM=a",
         "Description=MCP_UPSTREAM=a",
     ] {
         assert!(!set(no), "{no}");
     }
+}
+
+#[test]
+fn a_hash_or_semicolon_inside_a_quoted_value_does_not_hide_the_assignment() {
+    use super::sets_upstream as set;
+    assert!(set("Environment=\"FOO=x;y\" MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"));
+    assert!(set("Environment=\"FOO=1#2\" MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"));
+    assert!(set("Environment='FOO=1#2' MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"));
 }
 
 #[test]

@@ -862,67 +862,9 @@ so it does not loop). A `browser=` entry that a managed install ignores is not c
 
 ## Removing the old browser setup after the soak
 
-Only a person does this, after the managed browser has run for about a week without trouble. The
-installer never deletes any of it. Take the old paths from your inventory of the host; each command
-below is marked if it needs root.
-
-1. Find what the host has. No root:
-
-   ```sh
-   ls ~/.config/systemd/user/ | grep -E 'pw-mcp|oab-instance-mcp'
-   grep -nE "^[[:space:]]*Environment=(['\"]|[^#;]*[[:space:]'\"])?MCP_UPSTREAM=" \
-     ~/.config/systemd/user/oab-computer.service.d/*.conf \
-     ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf 2>/dev/null     # file:line of each active assignment
-   ```
-
-   Disable each old unit that exists and delete the old unit files. Then, for each file the `grep`
-   printed, run `cat` on it. If it holds nothing but `[Service]`, that one `Environment=MCP_UPSTREAM=`
-   line, comments and blank lines, it is the dedicated drop-in and `rm -f` removes it. If it holds
-   any other setting, delete only that line (`sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp$/d' FILE`, or an
-   editor if the line also sets other variables) and keep the file. A file the `grep` did not list
-   is not touched: it may belong to something else. Reload last. No root:
-
-   ```sh
-   for u in oab-pw-mcp.service oab-computer-pw-mcp.service; do
-     if systemctl --user cat "$u" >/dev/null 2>&1; then systemctl --user disable --now "$u"; fi
-   done
-   rm -f ~/.config/systemd/user/oab-pw-mcp.service ~/.config/systemd/user/oab-computer-pw-mcp.service
-   cat FILE                                    # for each file the grep printed
-   rm -f FILE                                  # only a dedicated file, as described above
-   systemctl --user daemon-reload
-   ```
-
-   If an earlier installer run left `~/.config/systemd/user/oab-computer.service.proposed` (it keeps
-   a unit that has no installer marker, see
-   [Upgrading a host that already has a browser unit](#upgrading-a-host-that-already-has-a-browser-unit)),
-   either adopt it (review it, `mv` it over `oab-computer.service`, `daemon-reload`, restart) or
-   delete it. Same for `oab-seat.service.proposed`. No root.
-
-2. Delete the old directories, after looking inside: the old profile holds cookies. No root:
-
-   ```sh
-   du -sh ~/.local/oab-computer/pw-mcp ~/.local/oab-computer/pw-profile ~/.local/oab-instance-mcp/pw-mcp
-   rm -rf ~/.local/oab-computer/pw-mcp ~/.local/oab-computer/pw-profile ~/.local/oab-instance-mcp/pw-mcp
-   rm -f ~/.local/oab-computer/pw-config.json ~/.local/oab-computer/pw-mcp.sh
-   rm -rf ~/.cache/ms-playwright    # only if nothing else of yours uses Playwright's cache
-   ```
-
-3. Unload the old AppArmor profile that allowed `/home/*/.cache/ms-playwright/...`, then delete
-   it (in this order: once the file is gone the profile can no longer be unloaded by name).
-   **Root:**
-
-   ```sh
-   sudo apparmor_parser -R /etc/apparmor.d/playwright-chromium && sudo rm /etc/apparmor.d/playwright-chromium
-   ```
-
-   The profile for the managed browser is a different file, `/etc/apparmor.d/oab-computer-chromium-<id>` (`<id>` is a short hash of the install
-   path, so each user on a host has their own), and stays. A host that ran a pre-release `main` build
-   may also have an unsuffixed `/etc/apparmor.d/oab-computer-chromium`; no release shipped it, and it can be removed the same way as the file above (`sudo apparmor_parser -R` it, then `sudo rm` it).
-
-4. Delete the old Chromium policy file the old installer wrote. **Root:**
-   `sudo rm /etc/chromium/policies/managed/oab-computer.json`. Installers from the 0.11 era named
-   it `oab-instance-mcp.json`; if `ls /etc/chromium/policies/managed/` shows that file, remove it the
-   same way (`sudo rm /etc/chromium/policies/managed/oab-instance-mcp.json`).
+The removal procedure is in one place: [Removing the leftovers](linux-cutover.md#removing-the-leftovers)
+in the cutover guide. Only a person runs it, after the managed browser has run for about a week without
+trouble. The installer never deletes any of it. Take the old paths from your inventory of the host.
 
 ## Old external browser (deprecated)
 
