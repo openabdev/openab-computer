@@ -193,7 +193,7 @@ together after one week of normal use on the class N host with no browser incide
 5. **Cutover, in one short window.**
    1. Stop and disable the old browser unit with `systemctl --user disable --now <old unit>`. A plain
       stop would bring the unauthenticated listener back at the next login or boot.
-   2. Remove the `MCP_UPSTREAM` line (class N) or the drop-in file (class O). Edit after the backup
+   2. Remove the `MCP_UPSTREAM` line (class N) or the drop-in (class O), as `docs/linux-cutover.md` step 5.2 describes. Edit after the backup
       of step 1, and do not delete anything else. A unit written before the installer's ownership
       marker existed is never updated by the installer. If an installer run left
       `oab-computer.service.proposed`, review it and adopt it only after checking that its `BIND`
@@ -221,7 +221,8 @@ together after one week of normal use on the class N host with no browser incide
 
 Differences for class N: the unit to disable is the one the installer wrote, the `MCP_UPSTREAM` line
 sits inside the daemon unit (edited, with the backup), and its profile and output directories are
-under `~/.local/oab-computer`. Differences for class O: the thing to remove is the drop-in, the old
+under `~/.local/oab-computer`. Differences for class O: the thing to remove is the drop-in (the rule is in
+`docs/linux-cutover.md` step 5.2), the old
 unit has its own name, and the legacy tree may hold a `node_modules`, a profile with cookies and an
 output directory.
 
@@ -230,7 +231,9 @@ output directory.
 The installer never deletes these. A person does, from the list that `browser status` prints with
 sizes. Each command is documented in `docs/linux-setup.md` and marked if it needs root.
 
-1. Disable and delete the old unit files, delete the drop-in, run `daemon-reload`.
+1. Disable and delete the old unit files. Remove the drop-in only by the content rule in
+   `docs/linux-cutover.md` step 5.2, which keeps any file that differs from the dedicated shape. Then run
+   `daemon-reload`.
 2. Delete the legacy directories. The old profile holds cookies, so check it first.
 3. Delete the old AppArmor profile (root) and the stale `pw-config.json`.
 
