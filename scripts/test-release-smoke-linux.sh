@@ -159,15 +159,15 @@ for id in M1 M2 M3 M4 M5 M6 M7 M8 M9 M10; do
 done
 # Hidden rows: the visible V1 row is deleted and a passing copy is placed inside an HTML comment, and a
 # whole valid record is wrapped in one comment. Both must be refused.
-reject "V1 row deleted and a passing copy hidden in an HTML comment" '/^| V1 /d
-$a\
-<!--\
-| V1 | pass | hidden | b |\
--->'
-reject "a complete valid record wrapped in one HTML comment" '1i\
+reject "V1 row deleted and a passing copy hidden in an HTML comment" "/^| V1 /d
+\$a\\
+<!--\\
+| V1 | pass | hidden | b |\\
+-->"
+reject "a complete valid record wrapped in one HTML comment" "1i\\
 <!--
-$a\
--->'
+\$a\\
+-->"
 # A bare id (the cell is only "M1", with no description) is still that row: a non-pass duplicate of a
 # valid M1 row, or an empty result, must be refused.
 reject "M1 bare-id duplicate with result fail" "/^| M1 /a\\

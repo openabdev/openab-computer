@@ -371,9 +371,15 @@ fn only_an_active_environment_assignment_of_mcp_upstream_counts() {
 #[test]
 fn a_hash_or_semicolon_inside_a_quoted_value_does_not_hide_the_assignment() {
     use super::sets_upstream as set;
-    assert!(set("Environment=\"FOO=x;y\" MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"));
-    assert!(set("Environment=\"FOO=1#2\" MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"));
-    assert!(set("Environment='FOO=1#2' MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"));
+    assert!(set(
+        "Environment=\"FOO=x;y\" MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+    ));
+    assert!(set(
+        "Environment=\"FOO=1#2\" MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+    ));
+    assert!(set(
+        "Environment='FOO=1#2' MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp"
+    ));
 }
 
 #[test]
