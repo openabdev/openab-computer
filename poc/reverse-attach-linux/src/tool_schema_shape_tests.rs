@@ -348,7 +348,10 @@ fn forwarded_upstream_list_refuses_banned_tools_and_keeps_recorded_tools() {
         .filter_map(|(_, t)| t["name"].as_str())
         .collect();
     for name in &recorded {
-        assert!(names.contains(&name.as_str()), "{name} was dropped: {names:?}");
+        assert!(
+            names.contains(&name.as_str()),
+            "{name} was dropped: {names:?}"
+        );
     }
     for name in BANNED_NAMES {
         assert!(!names.contains(&name), "{name} is forwarded: {names:?}");
