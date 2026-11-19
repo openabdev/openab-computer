@@ -303,3 +303,32 @@ fn served_owner_list_carries_option_b_for_upstream_emulate_media() {
         .expect("browser_emulate_media is served to owner");
     assert_option_b_emulate_media(&entry["inputSchema"]);
 }
+
+/// Every forwarded upstream tool in the owner list, not only browser_emulate_media, passes the
+/// shape rules. Each recorded upstream name must be served, so a dropped tool cannot hide a schema.
+#[test]
+fn every_served_owner_tool_obeys_the_schema_rules_with_recorded_upstream() {
+    let fixture: Value = serde_json::from_str(RECORDED_PLAYWRIGHT_TOOLS).expect("fixture parses");
+    let tools = fixture["result"]["tools"]
+        .as_array()
+        .expect("fixture has result.tools")
+        .clone();
+    let upstream_names: Vec<String> = tools
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    let ups: Vec<Arc<dyn Upstream>> = vec![Arc::new(RecordedUpstream(tools))];
+    let owner = tool_list_with("owner", &ups);
+    let owner = owner.as_array().expect("tools/list is an array");
+    for name in &upstream_names {
+        assert!(
+            owner
+                .iter()
+                .any(|t| t["name"].as_str() == Some(name.as_str())),
+            "upstream tool {name} is not served to owner"
+        );
+    }
+    for tool in owner {
+        assert_tool_passes(tool, "owner+upstream");
+    }
+}
