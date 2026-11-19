@@ -153,6 +153,17 @@ final class UpstreamMCPTests: XCTestCase {
         XCTAssertEqual(content?[1]["mimeType"]?.stringValue, "image/png")
     }
 
+    func testNullEmulateMediaOverrideIsRefusedBeforeTheUpstreamSeesIt() async throws {
+        let up = UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:9/mcp")!, prefix: "pw_")
+        do {
+            _ = try await up.call("pw_browser_emulate_media", arguments: ["colorScheme": .null])
+            XCTFail("a null override was forwarded upstream")
+        } catch let e as JSONRPCError {
+            XCTAssertEqual(e.code, JSONRPCError.invalidParams)
+            XCTAssertEqual(e.message, "Invalid params: browser_emulate_media: colorScheme cannot be null; omit it or send one of its enum values")
+        }
+    }
+
     func testDeniedUpstreamToolIsUnknownUnderObserve() async throws {
         let up = try FakeUpstream(); defer { up.stop() }
         let s = makeServer(up, profile: .observe)

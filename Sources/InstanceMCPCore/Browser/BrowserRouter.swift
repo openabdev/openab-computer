@@ -106,6 +106,9 @@ public actor BrowserRouter {
             return Self.errorResult("\(name) is not available with the \(backend.id.rawValue) backend. "
                 + "Install Playwright or select it in OpenAB Computer, Browser tools.", backend: backend.id)
         }
+        if let why = UpstreamTool.nullOverrideRefusal(name, arguments) {
+            return Self.errorResult(why, backend: backend.id)
+        }
         last[conn.key] = (backend.id, clock())
         do {
             let r = try await backend.call(name, arguments: arguments)

@@ -41,7 +41,10 @@ public actor UpstreamMCP {
         do {
             let r = try await rpc("tools/list", params: nil)
             let list = (r["result"]?["tools"]?.arrayValue ?? []).map { t -> JSONValue in
-                guard var o = t.objectValue, let n = o["name"]?.stringValue else { return t }
+                // Forwarded on the upstream's own name, before the prefix is added, so a prefix cannot make
+                // a schema rewrite miss (browser_emulate_media).
+                let forwarded = UpstreamTool.forwardedDescriptor(t)
+                guard var o = forwarded.objectValue, let n = o["name"]?.stringValue else { return forwarded }
                 o["name"] = .string(prefix + n)
                 return .object(o)
             }
@@ -66,6 +69,7 @@ public actor UpstreamMCP {
     /// Forward a `tools/call`. `name` is the prefixed name the caller used.
     public func call(_ name: String, arguments: JSONValue) async throws -> JSONValue {
         let upstreamName = name.hasPrefix(prefix) ? String(name.dropFirst(prefix.count)) : name
+        if let why = UpstreamTool.nullOverrideRefusal(upstreamName, arguments) { throw JSONRPCError.invalidParams(why) }
         let r = try await rpc("tools/call", params: ["name": .string(upstreamName), "arguments": arguments])
         if let e = r["error"] { throw JSONRPCError(code: e["code"]?.intValue ?? -32000, message: e["message"]?.stringValue ?? "upstream error") }
         return r["result"] ?? .null
@@ -193,8 +197,8 @@ struct UpstreamTool: Tool {
 
     /// browser_emulate_media's five overrides are `anyOf: [enum string, null]`, a union that strict
     /// MCP clients drop (#145). Only that branch is kept: each property becomes its plain enum
-    /// string. Owner decision on PR #146 (option B): clients can no longer send null to clear
-    /// these overrides. Every other upstream schema is forwarded unchanged.
+    /// string. Owner decision on PR #146 (option B): the served schema no longer offers null, and
+    /// `nullOverrideRefusal` refuses a null at the call. Every other upstream schema is forwarded unchanged.
     static func forwardedSchema(name: String, _ schema: JSONValue) -> JSONValue {
         guard name == "browser_emulate_media", var root = schema.objectValue,
               var props = root["properties"]?.objectValue else { return schema }
@@ -208,6 +212,19 @@ struct UpstreamTool: Tool {
         }
         root["properties"] = .object(props)
         return .object(root)
+    }
+
+    /// The five browser_emulate_media overrides, which take a string from their enum (option B).
+    static let emulateMediaOverrides = ["colorScheme", "reducedMotion", "forcedColors", "contrast", "media"]
+
+    /// Why a `tools/call` must not be forwarded, or nil: browser_emulate_media's overrides are not
+    /// nullable any more, so an explicit null is refused before anything is sent. The reason names
+    /// the key, never the value. Shared by the upstream path and the browser router.
+    static func nullOverrideRefusal(_ name: String, _ arguments: JSONValue) -> String? {
+        guard name == "browser_emulate_media", let args = arguments.objectValue,
+              let key = emulateMediaOverrides.first(where: { args[$0]?.isNull == true })
+        else { return nil }
+        return "browser_emulate_media: \(key) cannot be null; omit it or send one of its enum values"
     }
 
     func call(arguments: JSONValue) async throws -> ToolResult {

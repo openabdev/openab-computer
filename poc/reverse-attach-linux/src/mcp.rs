@@ -265,6 +265,31 @@ pub(crate) fn forwarded_descriptor(mut t: Value) -> Value {
     t
 }
 
+/// The five browser_emulate_media overrides, which take a string from their enum (option B).
+const EMULATE_MEDIA_OVERRIDES: [&str; 5] = [
+    "colorScheme",
+    "reducedMotion",
+    "forcedColors",
+    "contrast",
+    "media",
+];
+
+/// Why a `tools/call` must not be forwarded, or nil: an explicit null for one of
+/// browser_emulate_media's overrides (option B: the served schema no longer offers null).
+/// Names the key, never the value. Mirrors `UpstreamTool.nullOverrideRefusal` on the Swift side.
+pub(crate) fn null_override_refusal(name: &str, arguments: &Value) -> Option<String> {
+    if name != "browser_emulate_media" {
+        return None;
+    }
+    let key = EMULATE_MEDIA_OVERRIDES
+        .iter()
+        .copied()
+        .find(|key| arguments.get(*key).is_some_and(Value::is_null))?;
+    Some(format!(
+        "browser_emulate_media: {key} cannot be null; omit it or send one of its enum values"
+    ))
+}
+
 pub(crate) fn upstream_owning_with(
     name: &str,
     profile: &str,
@@ -652,7 +677,10 @@ pub(crate) fn handle_tool_call_with(
         // Not tied to `cancel`: a job outlives the attach that started it.
         n if JOB_TOOL_NAMES.contains(&n) => crate::jobs::tools::call(n, &arguments),
         other => match upstream_owning_with(other, profile, ups) {
-            Some(up) => up.call(other, arguments).map_err(|e| (-32000, e)),
+            Some(up) => match null_override_refusal(other, &arguments) {
+                Some(why) => Err((INVALID_PARAMS, format!("Invalid params: {why}"))),
+                None => up.call(other, arguments).map_err(|e| (-32000, e)),
+            },
             None => Err((
                 INVALID_PARAMS,
                 format!("Invalid params: unknown tool: {other}"),

@@ -162,14 +162,15 @@ final class ToolSchemaShapeTests: XCTestCase {
 
     /// Checks the browser_emulate_media entry of a `tools/list` result as a client receives it:
     /// no anyOf anywhere, and each of the five overrides is a plain string enum with no null.
-    static func assertServedOptionB(_ result: JSONValue?, file: StaticString = #filePath, line: UInt = #line) {
-        guard let entry = result?["tools"]?.arrayValue?.first(where: { $0["name"]?.stringValue == "browser_emulate_media" }) else {
-            return XCTFail("browser_emulate_media is not in tools/list", file: file, line: line)
+    static func assertServedOptionB(_ result: JSONValue?, name: String = "browser_emulate_media",
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        guard let entry = result?["tools"]?.arrayValue?.first(where: { $0["name"]?.stringValue == name }) else {
+            return XCTFail("\(name) is not in tools/list", file: file, line: line)
         }
         let schema = entry["inputSchema"] ?? .null
         let text = String(decoding: (try? JSONCoding.encoder.encode(schema)) ?? Data(), as: UTF8.self)
-        XCTAssertFalse(text.contains("anyOf"), "served browser_emulate_media schema still has anyOf", file: file, line: line)
-        XCTAssertEqual(problems(schema, root: "browser_emulate_media"), [], "served schema uses a banned construct", file: file, line: line)
+        XCTAssertFalse(text.contains("anyOf"), "served \(name) schema still has anyOf", file: file, line: line)
+        XCTAssertEqual(problems(schema, root: name), [], "served schema uses a banned construct", file: file, line: line)
         for (key, values) in emulateMediaEnums {
             let prop = schema["properties"]?[key]
             XCTAssertEqual(prop?["type"]?.stringValue, "string", "\(key) is not a plain string", file: file, line: line)
@@ -187,6 +188,15 @@ final class ToolSchemaShapeTests: XCTestCase {
         Self.assertServedOptionB(try await serverRequest(server, "tools/list")?.result)
     }
 
+    // F1: the rewrite is decided on the upstream's own name, so a non-empty prefix still gets option B.
+    func testServedToolsListCarriesOptionBUnderAPrefix() async throws {
+        let up = try FakeUpstream(descriptors: try Self.recordedUpstreamTools()); defer { up.stop() }
+        let server = MCPServer(name: "t", version: "0", tools: [],
+                               upstreams: [UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:\(up.port)/mcp")!,
+                                                       prefix: "pw_")])
+        Self.assertServedOptionB(try await serverRequest(server, "tools/list")?.result, name: "pw_browser_emulate_media")
+    }
+
     // The real tools/list handler, on the browser router path (Playwright backend, recorded list).
     func testServedToolsListCarriesOptionBForBrowserRouterEmulateMedia() async throws {
         let backend = FakeBrowserBackend(.playwright)
@@ -194,6 +204,20 @@ final class ToolSchemaShapeTests: XCTestCase {
         let server = MCPServer(name: "t", version: "0", tools: [],
                                browser: BrowserRouter(playwright: backend, store: MemoryPreferenceStore()))
         Self.assertServedOptionB(try await serverRequest(server, "tools/list")?.result)
+    }
+
+    // F2: a null override is refused at the call on the browser router path, before the backend runs.
+    func testNullEmulateMediaOverrideIsRefusedOnTheBrowserRouter() async throws {
+        let backend = FakeBrowserBackend(.playwright)
+        backend.served = try Self.recordedUpstreamTools()
+        let server = MCPServer(name: "t", version: "0", tools: [],
+                               browser: BrowserRouter(playwright: backend, store: MemoryPreferenceStore()))
+        let r = try await serverRequest(server, "tools/call",
+                                        params: ["name": "browser_emulate_media", "arguments": ["media": .null]])
+        XCTAssertEqual(r?.result?["isError"], true)
+        let text = r?.result?["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        XCTAssertTrue(text.contains("media cannot be null"), text)
+        XCTAssertEqual(backend.calls, [], "a refused null reached the browser backend")
     }
 
     func testOtherRecordedPlaywrightToolsAreForwardedUnchanged() throws {

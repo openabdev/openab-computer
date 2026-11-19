@@ -5,12 +5,16 @@
 //! array, at any schema position, and every schema position carries one plain `type` string.
 //! browser_emulate_media is also pinned to option B, as on the Swift side.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serde_json::{json, Value};
 
 use crate::backend::{BackendStatus, Upstream};
-use crate::mcp::{tool_list_with, upstream_owning_with, upstream_tools_for_with};
+use crate::mcp::{
+    handle_tool_call_with, tool_list_with, upstream_owning_with, upstream_tools_for_with,
+    INVALID_PARAMS,
+};
 use crate::schema_shape::{problems, BANNED};
 
 /// A schema `{type: object, properties: {a: {type: string, <keyword>: value}}}`.
@@ -374,4 +378,63 @@ fn upstream_does_not_own_a_call_to_a_banned_schema_tool() {
         upstream_owning_with("browser_union", "owner", &ups).is_none(),
         "a call to a refused tool is routed to the upstream"
     );
+}
+
+/// An upstream that counts the calls it receives and answers each with an empty result.
+struct CountingUpstream {
+    tools: Vec<Value>,
+    calls: AtomicUsize,
+}
+
+impl Upstream for CountingUpstream {
+    fn tools(&self) -> Vec<Value> {
+        self.tools.clone()
+    }
+    fn call(&self, _name: &str, _arguments: Value) -> Result<Value, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({ "content": [] }))
+    }
+    fn status(&self) -> BackendStatus {
+        BackendStatus {
+            backend: "managed",
+            reason: String::new(),
+            containment: String::new(),
+            display: "",
+        }
+    }
+}
+
+/// F2: an explicit null for a browser_emulate_media override is refused at the call, and the
+/// upstream never sees it. The reason names the key only.
+#[test]
+fn emulate_media_null_override_is_refused_before_the_upstream_call() {
+    let upstream = Arc::new(CountingUpstream {
+        tools: recorded_tools(),
+        calls: AtomicUsize::new(0),
+    });
+    let ups: Vec<Arc<dyn Upstream>> = vec![upstream.clone()];
+    let params = json!({ "name": "browser_emulate_media",
+        "arguments": { "colorScheme": null, "media": "print" } });
+    let refused = handle_tool_call_with(&params, "owner", None, &ups);
+    let err = refused.expect_err("a null override is refused");
+    assert_eq!(err.0, INVALID_PARAMS);
+    assert_eq!(
+        err.1,
+        "Invalid params: browser_emulate_media: colorScheme cannot be null; omit it or send one of its enum values"
+    );
+    assert_eq!(upstream.calls.load(Ordering::SeqCst), 0, "a refused call reached the upstream");
+}
+
+/// The enum values still reach the upstream, so the refusal is only for null.
+#[test]
+fn emulate_media_enum_value_still_reaches_the_upstream() {
+    let upstream = Arc::new(CountingUpstream {
+        tools: recorded_tools(),
+        calls: AtomicUsize::new(0),
+    });
+    let ups: Vec<Arc<dyn Upstream>> = vec![upstream.clone()];
+    let params = json!({ "name": "browser_emulate_media", "arguments": { "colorScheme": "dark" } });
+    let ok = handle_tool_call_with(&params, "owner", None, &ups);
+    assert!(ok.is_ok(), "{ok:?}");
+    assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
 }
