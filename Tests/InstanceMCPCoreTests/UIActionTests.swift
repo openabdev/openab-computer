@@ -361,10 +361,37 @@ final class UIActionToolTests: XCTestCase {
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "hello"])
         XCTAssertTrue(r.isToolError)
         XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: false))
-        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's type (AX error -25201). The `value` has no number or boolean form, so it does not fit this control. Take a new ui_snapshot to check the control's value type, then send a `value` of that type")
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's type (AX error -25201). The `value` is text with no number or boolean form, and this control cannot take text. Take a new ui_snapshot to check the control's current value")
         XCTAssertFalse(r.text.contains("JSON"), r.text)
         XCTAssertFalse(r.text.contains("does not support"), r.text)
         XCTAssertFalse(r.text.contains("Supported on it"), r.text)
+        assertNothingDone(f)
+    }
+
+    func testValueTypeRefusedForNativeNumberSaysTheControlRefusesNumbers() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.setError = .other(UIAXError.illegalArgumentCode)
+        // The caller sent a native number, so there is no string form to retry and the message must not
+        // say the value has no number form.
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": .number(3)])
+        XCTAssertTrue(r.isToolError)
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's number type (AX error -25201). This control does not accept a number `value`. Take a new ui_snapshot to check the control's current value")
+        XCTAssertFalse(r.text.contains("no number or boolean form"), r.text)
+        XCTAssertFalse(r.text.contains("3"), "the value is never echoed: \(r.text)")
+        assertNothingDone(f)
+    }
+
+    func testValueTypeRefusedForNativeBoolSaysTheControlRefusesBooleans() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.setError = .other(UIAXError.illegalArgumentCode)
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": .bool(true)])
+        XCTAssertTrue(r.isToolError)
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's boolean type (AX error -25201). This control does not accept a boolean `value`. Take a new ui_snapshot to check the control's current value")
+        XCTAssertFalse(r.text.contains("no number or boolean form"), r.text)
         assertNothingDone(f)
     }
 
@@ -387,13 +414,13 @@ final class UIActionToolTests: XCTestCase {
         }
     }
 
-    func testValueParseErrorNamesOnlyTheSchemaType() async {
+    func testValueParseErrorNamesTheAcceptedTypes() async {
         let f = Fixture()
         let id = await f.snapshot()
-        // The schema declares `value` as a string only, so the error names that type alone.
+        // The parser accepts a string, a number or a boolean, and the error names all three.
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": ["a"]])
         XCTAssertEqual(r.error?.code, JSONRPCError.invalidParams)
-        XCTAssertEqual(r.error?.message, "Invalid params: value must be a string")
+        XCTAssertEqual(r.error?.message, "Invalid params: value must be a string, number or boolean")
         assertNothingDone(f)
     }
 
@@ -807,7 +834,7 @@ final class UIActionToolTests: XCTestCase {
              "action must be one of press, set_value, focus, show_menu, confirm, cancel, increment, decrement"),
             (["snapshot_id": sid, "ref": "e2", "action": "set_value"], "value is required for set_value"),
             (["snapshot_id": sid, "ref": "e3", "action": "press", "value": "x"], "value is only accepted with set_value"),
-            (["snapshot_id": sid, "ref": "e2", "action": "set_value", "value": ["a"]], "value must be a string"),
+            (["snapshot_id": sid, "ref": "e2", "action": "set_value", "value": ["a"]], "value must be a string, number or boolean"),
             (["snapshot_id": sid, "ref": "e2", "action": "set_value", "value": .string(String(repeating: "x", count: 65_537))],
              "value is longer than 65536 characters"),
             (["snapshot_id": sid, "ref": "e3", "action": "press", "activate": "yes"], "activate must be a boolean"),

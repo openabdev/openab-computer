@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::backend::{BackendStatus, Upstream};
-use crate::mcp::tool_list_with;
+use crate::mcp::{tool_list_with, upstream_owning_with, upstream_tools_for_with};
 
 /// Keywords no guarded schema may use at a schema position.
 const BANNED: &[&str] = &[
@@ -258,9 +258,10 @@ impl Upstream for RecordedUpstream {
     }
 }
 
-/// browser_emulate_media as a client receives it: no anyOf, and each override is a plain
-/// string enum with no null branch (option B).
-fn assert_option_b_emulate_media(schema: &Value) {
+/// browser_emulate_media as a client receives it: no anyOf, each override is a plain string enum
+/// with no null branch (option B), and the description no longer offers null.
+fn assert_option_b_emulate_media(entry: &Value) {
+    let schema = &entry["inputSchema"];
     let text = schema.to_string();
     assert!(
         !text.contains("anyOf"),
@@ -270,6 +271,11 @@ fn assert_option_b_emulate_media(schema: &Value) {
         problems(schema, "browser_emulate_media").is_empty(),
         "served browser_emulate_media schema uses a banned construct: {:?}",
         problems(schema, "browser_emulate_media")
+    );
+    let description = entry["description"].as_str().unwrap_or_default();
+    assert!(
+        !description.contains("null"),
+        "served browser_emulate_media description still mentions null: {description}"
     );
     let expected = [
         ("colorScheme", json!(["light", "dark"])),
@@ -301,7 +307,7 @@ fn served_owner_list_carries_option_b_for_upstream_emulate_media() {
         .iter()
         .find(|t| t["name"].as_str() == Some("browser_emulate_media"))
         .expect("browser_emulate_media is served to owner");
-    assert_option_b_emulate_media(&entry["inputSchema"]);
+    assert_option_b_emulate_media(entry);
 }
 
 /// Every forwarded upstream tool in the owner list, not only browser_emulate_media, passes the
@@ -331,4 +337,99 @@ fn every_served_owner_tool_obeys_the_schema_rules_with_recorded_upstream() {
     for tool in owner {
         assert_tool_passes(tool, "owner+upstream");
     }
+}
+
+fn recorded_tools() -> Vec<Value> {
+    let fixture: Value = serde_json::from_str(RECORDED_PLAYWRIGHT_TOOLS).expect("fixture parses");
+    fixture["result"]["tools"]
+        .as_array()
+        .expect("fixture has result.tools")
+        .clone()
+}
+
+/// Upstream descriptors whose schemas still carry a banned construct after forwarding. Option B
+/// covers browser_emulate_media only, so these other names must be refused by the runtime guard.
+fn banned_upstream_tools() -> Vec<Value> {
+    vec![
+        json!({ "name": "browser_union", "description": "fixture", "inputSchema": {
+            "type": "object",
+            "properties": { "x": { "type": "string", "anyOf": [{ "type": "string" }, { "type": "null" }] } }
+        } }),
+        json!({ "name": "browser_ref", "description": "fixture", "inputSchema": {
+            "type": "object",
+            "properties": { "x": { "$ref": "#/$defs/x" } }
+        } }),
+        json!({ "name": "browser_defs", "description": "fixture", "inputSchema": {
+            "type": "object",
+            "$defs": { "x": { "type": "string" } },
+            "properties": { "x": { "type": "string" } }
+        } }),
+    ]
+}
+
+const BANNED_NAMES: [&str; 3] = ["browser_union", "browser_ref", "browser_defs"];
+
+/// An upstream tool whose schema has a banned construct is not served to the owner profile, and its
+/// name is not left in the list. Covers anyOf, $ref and $defs.
+#[test]
+fn served_owner_list_hides_upstream_tools_with_banned_schemas() {
+    let mut tools = recorded_tools();
+    tools.extend(banned_upstream_tools());
+    let ups: Vec<Arc<dyn Upstream>> = vec![Arc::new(RecordedUpstream(tools))];
+    let owner = tool_list_with("owner", &ups);
+    let owner = owner.as_array().expect("tools/list is an array");
+    let names: Vec<&str> = owner.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(names.contains(&"browser_navigate"), "owner list: {names:?}");
+    for name in BANNED_NAMES {
+        assert!(
+            !names.contains(&name),
+            "{name} is served with a banned schema: {names:?}"
+        );
+    }
+    for tool in owner {
+        assert_tool_passes(tool, "owner+banned");
+    }
+}
+
+/// The forwarded upstream list is shape-checked: every recorded tool is still forwarded, and the
+/// banned tools are dropped. The recorded list is live only for the pinned fixture; a query to a
+/// running @playwright/mcp is not part of the unit tests.
+#[test]
+fn forwarded_upstream_list_refuses_banned_tools_and_keeps_recorded_tools() {
+    let recorded: Vec<String> = recorded_tools()
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    let mut tools = recorded_tools();
+    tools.extend(banned_upstream_tools());
+    let ups: Vec<Arc<dyn Upstream>> = vec![Arc::new(RecordedUpstream(tools))];
+    let forwarded = upstream_tools_for_with("owner", &[], &ups);
+    let names: Vec<&str> = forwarded
+        .iter()
+        .filter_map(|(_, t)| t["name"].as_str())
+        .collect();
+    for name in &recorded {
+        assert!(names.contains(&name.as_str()), "{name} was dropped: {names:?}");
+    }
+    for name in BANNED_NAMES {
+        assert!(!names.contains(&name), "{name} is forwarded: {names:?}");
+    }
+    for (_, tool) in &forwarded {
+        let name = tool["name"].as_str().unwrap_or("?");
+        assert_eq!(
+            problems(&tool["inputSchema"], name),
+            Vec::<String>::new(),
+            "{name} forwarded with a banned construct"
+        );
+    }
+}
+
+/// A call to a refused upstream tool is not routed upstream, so the upstream never runs it.
+#[test]
+fn upstream_does_not_own_a_call_to_a_banned_schema_tool() {
+    let ups: Vec<Arc<dyn Upstream>> = vec![Arc::new(RecordedUpstream(banned_upstream_tools()))];
+    assert!(
+        upstream_owning_with("browser_union", "owner", &ups).is_none(),
+        "a call to a refused tool is routed to the upstream"
+    );
 }

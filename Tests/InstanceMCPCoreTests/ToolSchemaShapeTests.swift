@@ -203,6 +203,8 @@ final class ToolSchemaShapeTests: XCTestCase {
         let text = String(decoding: (try? JSONCoding.encoder.encode(schema)) ?? Data(), as: UTF8.self)
         XCTAssertFalse(text.contains("anyOf"), "served browser_emulate_media schema still has anyOf", file: file, line: line)
         XCTAssertEqual(problems(schema, root: "browser_emulate_media"), [], "served schema uses a banned construct", file: file, line: line)
+        let description = entry["description"]?.stringValue ?? ""
+        XCTAssertFalse(description.contains("null"), "served browser_emulate_media description still mentions null: \(description)", file: file, line: line)
         for (key, values) in emulateMediaEnums {
             let prop = schema["properties"]?[key]
             XCTAssertEqual(prop?["type"]?.stringValue, "string", "\(key) is not a plain string", file: file, line: line)
@@ -235,6 +237,73 @@ final class ToolSchemaShapeTests: XCTestCase {
             let t = UpstreamTool(descriptorValue: d, upstream: upstream)
             XCTAssertEqual(t.inputSchema, d["inputSchema"] ?? ["type": "object"], t.name)
         }
+    }
+
+    // Runtime refusal (finding 1). A forwarded schema that still carries a banned construct is hidden
+    // from tools/list and cannot be called, on the upstream path and on the browser router path. Option B
+    // covers browser_emulate_media only, so these fixtures use other names.
+
+    private static func rawTool(_ name: String, _ inputSchema: JSONValue) -> JSONValue {
+        ["name": .string(name), "description": "fixture", "inputSchema": inputSchema]
+    }
+
+    private static let bannedUpstreamTools: [JSONValue] = [
+        rawTool("browser_union", ["type": "object", "properties": ["x": ["type": "string",
+            "anyOf": [["type": "string"], ["type": "null"]]]]]),
+        rawTool("browser_ref", ["type": "object", "properties": ["x": ["$ref": "#/$defs/x"]]]),
+        rawTool("browser_defs", ["type": "object", "$defs": ["x": ["type": "string"]],
+            "properties": ["x": ["type": "string"]]]),
+    ]
+
+    func testServedToolsListHidesUpstreamToolsWithBannedSchemas() async throws {
+        let up = try FakeUpstream(descriptors: [Self.descriptor("browser_navigate", ["url": Self.plain("string")], required: ["url"])]
+            + Self.bannedUpstreamTools)
+        defer { up.stop() }
+        let server = MCPServer(name: "t", version: "0", tools: [],
+                               upstreams: [UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:\(up.port)/mcp")!)])
+        let names = listedNames(try await serverRequest(server, "tools/list"))
+        XCTAssertTrue(names.contains("browser_navigate"), "\(names)")
+        for name in ["browser_union", "browser_ref", "browser_defs"] {
+            XCTAssertFalse(names.contains(name), "\(name) is served with a banned schema: \(names)")
+        }
+    }
+
+    func testUpstreamToolWithBannedSchemaIsNotCalled() async throws {
+        let up = try FakeUpstream(descriptors: Self.bannedUpstreamTools)
+        defer { up.stop() }
+        let server = MCPServer(name: "t", version: "0", tools: [],
+                               upstreams: [UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:\(up.port)/mcp")!)])
+        _ = try await serverRequest(server, "tools/call", params: ["name": "browser_union", "arguments": [:]])
+        XCTAssertTrue(up.calls.isEmpty, "the upstream ran browser_union, whose schema is refused")
+    }
+
+    func testBrowserRouterHidesToolWithBannedSchema() async throws {
+        let backend = FakeBrowserBackend(.playwright)
+        backend.served = [Self.rawTool("browser_navigate", ["type": "object", "properties": ["x": ["type": "string",
+            "anyOf": [["type": "string"], ["type": "null"]]]]]),
+            Self.rawTool("browser_snapshot", ["type": "object"])]
+        let server = MCPServer(name: "t", version: "0", tools: [],
+                               browser: BrowserRouter(playwright: backend, store: MemoryPreferenceStore()))
+        let names = listedNames(try await serverRequest(server, "tools/list"))
+        XCTAssertTrue(names.contains("browser_snapshot"), "\(names)")
+        XCTAssertFalse(names.contains("browser_navigate"), "browser_navigate is served with a banned schema: \(names)")
+    }
+
+    func testBrowserRouterRefusesCallToToolWithBannedSchema() async {
+        let backend = FakeBrowserBackend(.playwright)
+        backend.served = [Self.rawTool("browser_navigate", ["type": "object", "properties": ["x": ["$ref": "#/$defs/x"]]])]
+        let router = BrowserRouter(playwright: backend, store: MemoryPreferenceStore())
+        let result = await router.call("browser_navigate", arguments: [:], BrowserConnection(key: "c1"))
+        XCTAssertEqual(result["isError"]?.boolValue, true, "\(result)")
+        XCTAssertTrue(backend.calls.isEmpty, "the backend ran browser_navigate, whose schema is refused")
+    }
+
+    func testForwardedEmulateMediaDescriptionDoesNotMentionNull() throws {
+        let upstream = UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:9/mcp")!)
+        let d = try XCTUnwrap(Self.recordedUpstreamTools().first { $0["name"]?.stringValue == "browser_emulate_media" })
+        let served = UpstreamTool(descriptorValue: d, upstream: upstream).descriptor["description"]?.stringValue ?? ""
+        XCTAssertFalse(served.contains("null"), "served description still mentions null: \(served)")
+        XCTAssertTrue(served.contains("Omitted parameters are left unchanged"), served)
     }
 
     // One test per banned keyword, so deleting an entry from `banned` fails its own test.
