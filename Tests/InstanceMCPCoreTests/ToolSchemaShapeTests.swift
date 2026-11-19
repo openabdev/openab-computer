@@ -230,8 +230,9 @@ final class ToolSchemaShapeTests: XCTestCase {
 
     // One test per banned keyword, so deleting an entry from `banned` fails its own test.
 
-    func testBannedSetIsExactlyTheSevenKeywords() {
-        XCTAssertEqual(Self.banned, ["anyOf", "oneOf", "allOf", "not", "$ref", "$defs", "definitions"])
+    func testBannedSetIsExactlyTheNineKeywords() {
+        XCTAssertEqual(Self.banned, ["anyOf", "oneOf", "allOf", "not", "$ref", "$dynamicRef", "$recursiveRef",
+                                     "$defs", "definitions"])
     }
 
     func testBansAnyOf() {
@@ -252,6 +253,14 @@ final class ToolSchemaShapeTests: XCTestCase {
 
     func testBansRef() {
         XCTAssertEqual(Self.problems(fixture("$ref", "#/$defs/x"), root: "t"), ["t.properties.a.$ref"])
+    }
+
+    func testBansDynamicRef() {
+        XCTAssertEqual(Self.problems(fixture("$dynamicRef", "#meta"), root: "t"), ["t.properties.a.$dynamicRef"])
+    }
+
+    func testBansRecursiveRef() {
+        XCTAssertEqual(Self.problems(fixture("$recursiveRef", "#"), root: "t"), ["t.properties.a.$recursiveRef"])
     }
 
     func testBansDefs() {
@@ -366,13 +375,10 @@ final class ToolSchemaShapeTests: XCTestCase {
         XCTAssertEqual(Self.problems(fixture("$comment", "c"), root: "t"), [])
     }
 
-    // Round-5 F1: the dynamic and recursive reference keywords are refused like `$ref`; their
-    // anchors stay allowed, since an anchor does nothing without a reference.
+    // Round-5 F1: `$dynamicRef` and `$recursiveRef` are banned (see testBansDynamicRef and
+    // testBansRecursiveRef); their anchors stay allowed, since an anchor does nothing without a reference.
 
-    func testDynamicAndRecursiveRefsAreBanned() {
-        for key in ["$dynamicRef", "$recursiveRef"] {
-            XCTAssertEqual(Self.problems(fixture(key, "#meta"), root: "t"), ["t.properties.a.\(key)"], key)
-        }
+    func testAnchorsWithoutAReferenceAreAllowed() {
         for key in ["$dynamicAnchor", "$recursiveAnchor"] {
             XCTAssertEqual(Self.problems(fixture(key, "meta"), root: "t"), [], key)
         }

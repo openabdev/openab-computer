@@ -40,7 +40,7 @@ fn assert_tool_passes(tool: &Value, context: &str) {
 }
 
 #[test]
-fn banned_set_is_exactly_the_seven_keywords() {
+fn banned_set_is_exactly_the_nine_keywords() {
     assert_eq!(
         BANNED,
         [
@@ -49,6 +49,8 @@ fn banned_set_is_exactly_the_seven_keywords() {
             "allOf",
             "not",
             "$ref",
+            "$dynamicRef",
+            "$recursiveRef",
             "$defs",
             "definitions"
         ]
@@ -74,6 +76,8 @@ bans! {
     bans_all_of => "allOf",
     bans_schema_not => "not",
     bans_ref => "$ref",
+    bans_dynamic_ref => "$dynamicRef",
+    bans_recursive_ref => "$recursiveRef",
     bans_defs => "$defs",
     bans_definitions => "definitions",
 }
@@ -659,18 +663,10 @@ fn unknown_keyword_fails_closed() {
     }
 }
 
-/// Round-5 F1: the dynamic and recursive reference keywords are refused like `$ref`; their anchors
-/// stay allowed, since an anchor does nothing without a reference.
+/// Round-5 F1: `$dynamicRef` and `$recursiveRef` are banned (see `bans!`); their anchors stay
+/// allowed, since an anchor does nothing without a reference.
 #[test]
-fn dynamic_and_recursive_refs_are_banned() {
-    for keyword in ["$dynamicRef", "$recursiveRef"] {
-        let schema = with_property_keyword(keyword, json!("#meta"));
-        assert_eq!(
-            problems(&schema, "t"),
-            vec![format!("t.properties.a.{keyword}")],
-            "{keyword}"
-        );
-    }
+fn anchors_without_a_reference_are_allowed() {
     for keyword in ["$dynamicAnchor", "$recursiveAnchor"] {
         let schema = with_property_keyword(keyword, json!("meta"));
         assert_eq!(problems(&schema, "t"), Vec::<String>::new(), "{keyword}");
