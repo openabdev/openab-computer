@@ -9,6 +9,14 @@ This page is the step-by-step guide. The README keeps a shorter version with the
 and new names: [Upgrading from 0.11 or earlier](../README.md#upgrading-from-011-or-earlier). Linux
 nodes also have [Upgrading from 0.11](linux-setup.md#upgrading-from-011) in their setup guide.
 
+> **Which installer this page describes.** The steps are for upgrading to 0.12.0. Releases after
+> 0.12.0 change the Linux installer: it no longer asks for `wlrctl`, runs no `sudo` by itself
+> (root actions are printed, or run with `--apply-system-changes`), writes no
+> `oab-computer-pw-mcp.service` and no `MCP_UPSTREAM` line, and offers the managed browser instead.
+> Where a step differs, the text says "0.12.0" and "after 0.12.0". The host shapes in
+> [Upgrading a host that already has a browser unit](linux-setup.md#upgrading-a-host-that-already-has-a-browser-unit)
+> cover a host that already runs a browser unit.
+
 ## What changes
 
 | | 0.11 and earlier | 0.12.0 |
@@ -16,7 +24,7 @@ nodes also have [Upgrading from 0.11](linux-setup.md#upgrading-from-011) in thei
 | Executable | `oab-instance-mcp` | `oab-computer` |
 | macOS bundle id and LaunchAgent label | `dev.openab.instance-mcp` | `dev.openab.computer` |
 | macOS Playwright LaunchAgent | `dev.openab.instance-mcp.pw-mcp` | `dev.openab.computer.pw-mcp` |
-| Linux units | `oab-instance-mcp.service`, `oab-pw-mcp.service` | `oab-computer.service`, `oab-computer-pw-mcp.service` |
+| Linux units | `oab-instance-mcp.service`, `oab-pw-mcp.service` | `oab-computer.service`, `oab-computer-pw-mcp.service` (the second only in 0.12.0 and earlier installers; later ones write no browser unit) |
 | Config and token | `~/.config/oab-instance-mcp/` | `~/.config/oab-computer/` |
 | Install directory | `~/.local/oab-instance-mcp` | `~/.local/oab-computer` |
 | macOS logs, saved grants and audit | `~/Library/Logs/oab-instance-mcp`, `~/Library/Application Support/oab-instance-mcp` | `~/Library/Logs/oab-computer`, `~/Library/Application Support/oab-computer` |
@@ -30,11 +38,12 @@ the bearer token (it is copied, see below), and the tools.
 
 Things that are new in 0.12.0 and are worth knowing before you install:
 
-- **Installers map the tailnet port.** The `.pkg`, `install-prebuilt.sh` and (with passwordless
-  `sudo`) `install-linux.sh` run `tailscale serve --bg --https=8444` toward `127.0.0.1:8795`. After a
-  package install the computer is reachable on your tailnet at `:8444` before the wizard asks
-  anything. A caller still needs the bearer token and an allowed Tailscale login. Without
-  passwordless `sudo`, `install-linux.sh` prints the command instead of running it.
+- **Installers map the tailnet port.** The `.pkg`, `install-prebuilt.sh` and (in 0.12.0, with
+  passwordless `sudo`) `install-linux.sh` run `tailscale serve --bg --https=8444` toward
+  `127.0.0.1:8795`. After a package install the computer is reachable on your tailnet at `:8444`
+  before the wizard asks anything. A caller still needs the bearer token and an allowed Tailscale
+  login. Without passwordless `sudo`, the 0.12.0 `install-linux.sh` prints the command instead of
+  running it; later versions always print it and run it only with `--apply-system-changes`.
   A plain app launch without the installer creates no mapping until you turn tailnet access on,
   but it leaves an existing `:8444` mapping in place (for example one from an earlier install) and
   never overwrites one it does not own. Remove it with **Turn Off Tailnet Access** or
@@ -42,13 +51,16 @@ Things that are new in 0.12.0 and are worth knowing before you install:
   control the mapping afterwards (the menu item **Allow tailnet access…** turns it on).
 - **macOS browser tools are managed by the app.** The wizard offers to install Playwright
   (about 249 MB download, about 593 MB installed, about 842 MB free space needed while it runs on Apple silicon).
-  See [Browser tools](browser-tools.md).
+  See [Browser tools](browser-tools.md). If macOS refuses the downloaded Chromium, 0.12.0 stops the
+  install; from the next release after 0.12.0 the wizard and menu then offer **Use my installed Google
+  Chrome**, which the app does not pin or check against a digest
+  ([details](browser-tools.md#if-macos-refuses-the-downloaded-chromium-after-0120)).
 - **macOS permissions are asked again** (next section).
 
 ## How the upgrade flows
 
 The diagram shows the order of the steps below. Dotted arrows are optional or failure paths. The
-Linux managed browser tier is planned and not built.
+Linux managed browser tier arrives after 0.12.0.
 
 ```mermaid
 flowchart TB
@@ -62,8 +74,8 @@ flowchart TB
     retire["Step 4 Stop and remove the old agent"]
     start["Step 5 Restart the new agent so it can bind port 8795"]
     check["Step 6 Check which process listens on 8795"]
-    browser["Step 7 Optional, macOS wizard installs managed Playwright, Linux keeps the external 8794 unit"]
-    linuxmanaged["Linux managed browser tier, planned"]
+    browser["Step 7 Optional, macOS wizard installs managed Playwright, Linux 0.12.0 keeps the external 8794 unit"]
+    linuxmanaged["Linux managed browser tier, in releases after 0.12.0"]
     cleanup["Step 8 Delete the old directories and the backup"]
     rollback["Rollback, stop the new agent and restore the old one from the backup"]
 
@@ -125,9 +137,11 @@ reused by 0.12 anyway: lend each session again after the upgrade.
   `install-prebuilt.sh` from the unzipped `.app.zip`
   ([Download and install](../README.md#download-and-install)).
 - Linux: download `oab-computer-VERSION-linux-ARCH.tar.gz`, unpack it and run `./install-linux.sh`
-  ([Quick start](../README.md#quick-start), [Linux setup](linux-setup.md)). On Ubuntu 24.04 the
-  installer currently stops with exit 78 unless `wlrctl` is installed. Ubuntu 24.04 packages it only
-  for amd64 (universe); on Ubuntu arm64 install the units by hand ([Linux setup](linux-setup.md), steps 3-5) ([#130](https://github.com/openabdev/openab-computer/issues/130)).
+  ([Quick start](../README.md#quick-start), [Linux setup](linux-setup.md)). The 0.12.0 installer
+  stops with exit 78 unless `wlrctl` is installed, although nothing uses it; Ubuntu packages it only
+  for amd64 (universe), so on Ubuntu arm64 install the units by hand ([Linux setup](linux-setup.md),
+  steps 3-5) ([#130](https://github.com/openabdev/openab-computer/issues/130)). Later installers no
+  longer ask for it.
 
 The installer prints a warning when it finds the old agent. It never stops, disables or removes it.
 Until you finish step 4, `/healthz` on port 8795 may be answered by the old agent, so a healthy check
@@ -186,9 +200,11 @@ Linux:
 ```sh
 systemctl --user disable --now oab-instance-mcp.service
 rm ~/.config/systemd/user/oab-instance-mcp.service
-# only if you used the Playwright unit (not on --no-browser nodes):
+# only if you used the Playwright unit. With an installer after 0.12.0, disable it only once
+# `oab-computer browser status` shows the managed browser working:
 systemctl --user disable --now oab-pw-mcp.service
-rm ~/.config/systemd/user/oab-pw-mcp.service
+# the unit file stays until the soak is over; then remove it, see
+# docs/linux-setup.md#removing-the-old-browser-setup-after-the-soak
 systemctl --user daemon-reload
 ```
 
@@ -203,9 +219,12 @@ The new agent could not bind port 8795 while the old one held it.
 ```sh
 # macOS
 launchctl kickstart -k gui/$(id -u)/dev.openab.computer
-# Linux
+# Linux (restart alone does not enable the unit for the next login)
+systemctl --user enable oab-computer.service
 systemctl --user restart oab-computer.service
 ```
+
+After 0.12.0 the Linux installer enables the unit itself once the old one is gone, when the unit carries the installer's marker line (a unit written by the 0.12.0 installer does not); run it again after Step 4, and for an unmarked unit run the `enable --now` command it prints.
 
 ## Step 6: check
 
@@ -216,10 +235,8 @@ Confirm that the new agent, not a leftover, owns the port.
 lsof -nP -iTCP:8795 -sTCP:LISTEN
 # Linux
 ss -ltnp 'sport = :8795'
-ss -ltnp 'sport = :8794'   # only on a node with the browser tools: the Playwright unit should own it
+ss -ltnp 'sport = :8794'   # only on a node with the old browser unit (0.12.0): that unit should own it; if it was only just (re)started, for example by a reboot or by you, give it a few seconds to bind
 ```
-
-Browser sign-ins live in the old profile, which step 8 deletes, so sign in again after the upgrade.
 
 You should see one `oab-computer` process (macOS may shorten the name). Then `curl -s http://127.0.0.1:8795/healthz` prints `ok`,
 and a client with the token should reach the MCP URL (`https://<host>.<tailnet>.ts.net:8444/mcp`).
@@ -235,11 +252,15 @@ the unauthenticated Playwright port to the tailnet: `tailscale serve status`, an
   from the menu (**Set up browser tools…**) and install the managed Playwright, then keep the old
   agent removed. To keep the external agent instead, install the new one from a clone of this repo
   (`poc/pw-mcp/install.sh`) and run the main installer again so it adds `--upstream`.
-- **Linux.** The installer sets up the external Playwright unit `oab-computer-pw-mcp.service` on
-  `127.0.0.1:8794` unless you pass `--no-browser`. That port has no authentication. The old policy
-  file `/etc/chromium/policies/managed/oab-instance-mcp.json` is not removed; the new installer writes
-  `oab-computer.json` with the same settings, so you can remove the old file with `sudo rm`.
-  A managed Linux tier is planned and not built ([linux-browser-tier ADR](adr/linux-browser-tier.md)).
+- **Linux.** The 0.12.0 installer sets up the external Playwright unit `oab-computer-pw-mcp.service`
+  on `127.0.0.1:8794` unless you pass `--no-browser`. That port has no authentication. The old policy
+  file `/etc/chromium/policies/managed/oab-instance-mcp.json` is not removed; the 0.12.0 installer
+  writes `oab-computer.json` with the same settings, so you can remove the old file with `sudo rm`.
+  Installers after 0.12.0 write neither a browser unit nor that policy file: they offer the managed
+  browser, which has no port ([linux-browser-tier ADR](adr/linux-browser-tier.md),
+  [Linux setup](linux-setup.md#4-browser-tools-playwrightmcp)).
+
+The new install starts with an empty browser profile, so sign in again. The old profile is deleted in step 8.
 
 Full guide: [Browser tools](browser-tools.md).
 
@@ -275,9 +296,16 @@ launchctl bootout gui/$(id -u)/dev.openab.computer.pw-mcp   # only if step 7 ins
 mv ~/Library/LaunchAgents/dev.openab.computer.pw-mcp.plist ~/oab-instance-mcp-backup/ 2>/dev/null   # else it starts again at login and holds 127.0.0.1:8794 (only if step 7 installed it)
 mv ~/Library/LaunchAgents/dev.openab.computer.plist ~/oab-instance-mcp-backup/   # else it starts again at login and races the old agent for 127.0.0.1:8795
 cp ~/oab-instance-mcp-backup/dev.openab.instance-mcp*.plist ~/Library/LaunchAgents/
+# only if you had the old Playwright agent: start it first (see the note below)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist
+# wait a few seconds for the agent to bind the port
+lsof -nP -iTCP:8794 -sTCP:LISTEN   # only then: the old Playwright agent must own the port
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.openab.instance-mcp.pw-mcp.plist   # only if you had the old Playwright agent
 ```
+
+The 0.11 daemon does not check who owns port 8794 (that check first shipped in 0.12.0). Until the old Playwright
+agent holds the port, any local process that binds it would answer your `browser_*` calls. So start the
+Playwright agent first, confirm it is the listener, and only then start the daemon.
 
 If the old app the plist points to is gone, install the 0.11.0 package from its release page instead.
 If you ran the step 8 `tccutil` resets anyway, grant the old app its permissions again.
@@ -286,14 +314,18 @@ Linux:
 
 ```sh
 systemctl --user disable --now oab-computer.service
-systemctl --user disable --now oab-computer-pw-mcp.service   # only if the browser was installed (no --no-browser)
+systemctl --user disable --now oab-computer-pw-mcp.service   # only if the 0.12.0 installer installed the browser unit
 cp ~/oab-instance-mcp-backup/*.service ~/.config/systemd/user/
-# restore the old MCP_UPSTREAM line in the daemon unit now, before daemon-reload (the backup copy already has it)
+# the copied daemon unit already has the old MCP_UPSTREAM line; check it before daemon-reload
 systemctl --user daemon-reload
-systemctl --user enable --now oab-pw-mcp.service   # only if you used the Playwright unit; start it first
-ss -ltnp 'sport = :8794'                           # the old Playwright unit must be listening before the daemon starts
+# only if you used the Playwright unit: start it first
+systemctl --user enable --now oab-pw-mcp.service
+# wait until this shows the Playwright unit as the listener (a few seconds), then start the daemon
+ss -ltnp 'sport = :8794'
 systemctl --user enable --now oab-instance-mcp.service
 ```
+
+As on macOS, the Playwright unit goes first because the 0.11 daemon does not check who owns port 8794.
 
 The tailnet mapping on `:8444` points at `127.0.0.1:8795` in both versions, so it can stay. The old
 token file was never changed, so clients that used it keep working. Remove the new agent's files

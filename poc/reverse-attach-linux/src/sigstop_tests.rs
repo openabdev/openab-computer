@@ -15,8 +15,8 @@ const HELPER: &str = "sigstop::tests::helper_cli";
 
 fn test_systemd() -> crate::containment::Systemd {
     let mut sd = crate::containment::Systemd::new(None, false);
-    sd.selftest_prefix = "oab-l2-test-selftest".into();
-    sd.browser_prefix = "oab-l2-test-browser".into();
+    sd.selftest_prefix = format!("{}-selftest", crate::test_exec::TEST_UNIT_PREFIX);
+    sd.browser_prefix = format!("{}-browser", crate::test_exec::TEST_UNIT_PREFIX);
     sd
 }
 
@@ -60,7 +60,7 @@ fn helper_cli() {
     };
     let launcher: Box<dyn Launcher> = match mode.as_str() {
         "supervised" => Box::new(Supervised::new(Arc::new(Direct::new(Ok(SYSTEMD))))),
-        // A real transient unit (`oab-l2-test-*`), on a host with a user manager.
+        // A real transient unit (`oab-l4-test-*`), on a host with a user manager.
         "systemd" => Box::new(Supervised::new(Arc::new(test_systemd()))),
         _ => Box::new(Plain),
     };
@@ -219,10 +219,8 @@ fn sighup_and_sigterm_stop_the_cli_child_and_its_detached_grandchild() {
             let t = TempDir::new();
             let mut h = start_helper(&t, mode);
             assert!(h.child_alive() && h.grand_alive());
-            if mode == "supervised" {
-                let root = Root::open(&t.base(), false).unwrap().unwrap();
-                assert_eq!(run_record::live(&root).len(), 1, "the run record");
-            }
+            let root = Root::open(&t.base(), false).unwrap().unwrap();
+            assert_eq!(run_record::live(&root).len(), 1, "{mode}: the run record");
             h.signal(sig);
             h.wait_exit();
             assert!(h.until(|h| !h.child_alive()), "{mode} {sig}: child");
@@ -290,11 +288,47 @@ fn sigkill_of_the_cli_leaves_the_grandchild_and_the_next_start_sweeps_it() {
 
 // ---- the same, with a real transient unit (`OAB_L2_SYSTEMD=1 cargo test sigstop -- --ignored`) ----
 
+/// Whether this host starts the full base-list probe unit. Where it does not (a runner whose user
+/// manager refuses a property such as `ProtectKernelModules`), `verify` fails closed and a CLI child
+/// runs plain, which the containment tests assert; a unit-mode test has nothing to observe there.
+#[cfg(target_os = "linux")]
+fn host_starts_the_base_probe() -> bool {
+    let ok = test_systemd().verify().is_ok();
+    if !ok {
+        eprintln!("skipped: this host's user manager cannot start the full base probe; the child runs plain");
+    }
+    ok
+}
+
+/// The fallback the two unit-mode tests would otherwise skip over: where the base probe cannot
+/// start, `verify` fails closed and a CLI child runs plain (#132). Asserted instead of returned
+/// from: the child has a run record with no unit, no unit was made, and SIGTERM still ends the
+/// child and its detached grandchild through the process-tree layers.
+#[cfg(target_os = "linux")]
+fn assert_unit_mode_falls_back_to_plain() {
+    let t = TempDir::new();
+    let mut h = start_helper(&t, "systemd");
+    let root = Root::open(&t.base(), false).unwrap().unwrap();
+    let live = run_record::live(&root);
+    assert_eq!(live.len(), 1, "the run record");
+    assert_eq!(
+        live[0].unit, None,
+        "a unit was made on a host that cannot verify"
+    );
+    assert_eq!(units_left(), 0, "a unit is left");
+    assert!(h.child_alive() && h.grand_alive());
+    h.signal("TERM");
+    h.wait_exit();
+    assert!(h.until(|h| !h.child_alive()), "plain: child");
+    assert!(h.until(|h| !h.grand_alive()), "plain: detached grandchild");
+    assert!(run_record::live(&root).is_empty());
+}
+
 #[cfg(target_os = "linux")]
 fn units_left() -> usize {
     test_systemd()
         .sys
-        .list_prefixed("oab-l2-test")
+        .list_prefixed(crate::test_exec::TEST_UNIT_PREFIX)
         .map_or(usize::MAX, |v| v.len())
 }
 
@@ -305,6 +339,10 @@ fn a_cli_child_in_a_real_unit_is_stopped_by_hup_term_and_int() {
     if std::env::var_os("OAB_L2_SYSTEMD").is_none() {
         return;
     }
+    if !host_starts_the_base_probe() {
+        assert_unit_mode_falls_back_to_plain();
+        return;
+    }
     for sig in ["HUP", "TERM", "INT"] {
         let t = TempDir::new();
         let mut h = start_helper(&t, "systemd");
@@ -312,7 +350,13 @@ fn a_cli_child_in_a_real_unit_is_stopped_by_hup_term_and_int() {
         let live = run_record::live(&root);
         assert_eq!(live.len(), 1, "the run record");
         let unit = live[0].unit.clone().expect("the record names the unit");
-        assert!(unit.starts_with("oab-l2-test-browser-cli-"), "{unit}");
+        assert!(
+            unit.starts_with(&format!(
+                "{}-browser-cli-",
+                crate::test_exec::TEST_UNIT_PREFIX
+            )),
+            "{unit}"
+        );
         assert!(h.child_alive() && h.grand_alive());
         h.signal(sig);
         h.wait_exit();
@@ -328,6 +372,10 @@ fn a_cli_child_in_a_real_unit_is_stopped_by_hup_term_and_int() {
 #[ignore = "needs a systemd user manager; OAB_L2_SYSTEMD=1"]
 fn sigkill_of_a_cli_leaves_its_unit_and_the_next_starts_sweep_stops_it() {
     if std::env::var_os("OAB_L2_SYSTEMD").is_none() {
+        return;
+    }
+    if !host_starts_the_base_probe() {
+        assert_unit_mode_falls_back_to_plain();
         return;
     }
     let t = TempDir::new();
@@ -360,4 +408,35 @@ fn sigkill_of_a_cli_leaves_its_unit_and_the_next_starts_sweep_stops_it() {
         "survivors after the sweep"
     );
     assert_eq!(units_left(), 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cli_launch_that_cannot_get_the_sweep_lock_is_refused_and_spawns_nothing() {
+    // A busy sweep lock is a refusal of the launch (as in `Supervisor::start`), not a start that
+    // goes on unswept. The launch would run `touch`, so a marker file shows whether it started.
+    let t = TempDir::new();
+    let root = t.root();
+    let held = crate::state::open_named_lock(&root, crate::state::SWEEP_LOCK_NAME).unwrap();
+    rustix::fs::flock(&held, rustix::fs::FlockOperation::NonBlockingLockExclusive).unwrap();
+    let marker = t.path.join("spawned");
+    let spec = crate::proc::Spec {
+        exe: std::path::PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            format!("touch '{}'; sleep 30", marker.display()),
+        ],
+        env: vec![],
+        cwd: t.path.clone(),
+    };
+    let sup = Supervised::new(Arc::new(Direct::new(Ok(SYSTEMD))))
+        .with_sweep_wait(Duration::from_millis(100));
+    let err = sup
+        .launch(&root, &spec, &t.path)
+        .err()
+        .expect("the launch is refused");
+    assert_eq!(err.to_string(), "sweep_busy");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!marker.exists(), "a child was started without a sweep");
+    drop(held);
 }

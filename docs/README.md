@@ -2,14 +2,14 @@
 
 Start with the [project README](../README.md): what OpenAB Computer is, quick start, tools, auth, ports
 and the install and upgrade sections. This page lists every document under `docs/` with one line each
-and its status. Status is as of v0.12.0.
+and its status. Status is as of v0.12.0, except the Linux browser tier rows, which are as of `main` after it.
 
 ## Guides
 
 | Document | What it covers | Status |
 |---|---|---|
 | [Upgrading from 0.11 or earlier](upgrade-0.12.md) | Step-by-step move from `oab-instance-mcp` to `oab-computer` on macOS and Linux, with backup and rollback | Current |
-| [Browser tools](browser-tools.md) | The 32 `browser_*` tools: macOS managed and external Playwright, Linux external unit, what is planned | Current |
+| [Browser tools](browser-tools.md) | The 32 `browser_*` tools: managed and external Playwright on macOS and Linux | Current |
 | [Linux hands node setup](linux-setup.md) | Install and operate a Linux node with `install-linux.sh` | Current |
 | [Tool profiles](tool-profiles.md) | Which tools `owner` and `observe` see, per platform | Current |
 | [UI tools](ui-tools.md) | `ui_snapshot` and `ui_action` (macOS only) | Current |
@@ -29,8 +29,8 @@ Several carry the pre-0.12 names (`oab-instance-mcp`) because they are dated rec
 | [Parity checklist](parity-checklist.md) | What the conformance suite does not cover yet, for the Swift retirement gate | Tracking |
 | [ADR: Browser tools in tiers](adr/browser-tiers.md) | Playwright first, Apple Events as fallback | Accepted, partly built (Playwright tier only) |
 | [Requirement: Browser tiers](requirements/browser-tiers.md) | Tool-to-tier table, wizard states, install flows, tests | Accepted, partly built |
-| [ADR: Linux managed Playwright tier](adr/linux-browser-tier.md) | Managed browser on Linux | Accepted, not implemented |
-| [Requirement: Linux browser tier](requirements/linux-browser-tier.md) | Requirements, cutover runbook, PR split | Accepted, not implemented |
+| [ADR: Linux managed Playwright tier](adr/linux-browser-tier.md) | Managed browser on Linux | Accepted; L0 to L4 implemented (L5 release and L6 supervisor pending) |
+| [Requirement: Linux browser tier](requirements/linux-browser-tier.md) | Requirements, cutover runbook, PR split | Accepted; L0 to L4 implemented |
 | [ADR: Sandbox adapter](adr/sandbox-adapter.md) | Disposable sandboxes for an agent's toolchain, so a bot does not hold raw host access | Proposed |
 | [Requirement: Bearer-token authn](requirements/authn.md) | Shared bearer token as defence in depth | Dated record (2026-09-23) |
 | [Requirement: OpenAB Connect closed loop](requirements/connect-closed-loop.md) | An agent operates the Mac while a human watches | Dated record, not scheduled |

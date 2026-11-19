@@ -17,6 +17,7 @@ final class BrowserPageView: NSStackView {
     let cancelButton = NSButton(title: WizardCopy.browserCancel, target: nil, action: nil)
     let retryButton = NSButton(title: WizardCopy.browserRetry, target: nil, action: nil)
     let continueWithoutButton = NSButton(title: WizardCopy.browserContinueWithout, target: nil, action: nil)
+    let useChromeButton = NSButton(title: WizardCopy.browserUseChrome, target: nil, action: nil)
     let pagerLabel = NSTextField(labelWithString: "")
 
     init() {
@@ -91,7 +92,7 @@ final class BrowserPageView: NSStackView {
         pagerLabel.textColor = .secondaryLabelColor
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let footer = NSStackView(views: [pagerLabel, spacer, cancelButton, continueWithoutButton, retryButton, continueButton])
+        let footer = NSStackView(views: [pagerLabel, spacer, cancelButton, continueWithoutButton, useChromeButton, retryButton, continueButton])
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 10
@@ -109,6 +110,7 @@ final class BrowserPageView: NSStackView {
         switch model.phase {
         case .installed(let update):
             detail.stringValue = WizardCopy.browserSignInNote
+                + (model.usesInstalledChrome ? "\n\n" + WizardCopy.browserChromeInstalledNote : "")
             status.stringValue = WizardCopy.browserInstalledStatus
                 + (update ? " · an update is available, use the menu bar to update" : "")
             status.textColor = .systemGreen
@@ -141,5 +143,6 @@ final class BrowserPageView: NSStackView {
         cancelButton.isHidden = !f.showsCancel
         retryButton.isHidden = !f.showsRetry
         continueWithoutButton.isHidden = !f.showsContinueWithout
+        useChromeButton.isHidden = !f.showsUseInstalledChrome
     }
 }

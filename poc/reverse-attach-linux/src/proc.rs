@@ -24,6 +24,7 @@ use std::io::{BufRead, Read};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -69,9 +70,20 @@ pub struct Child {
     pub stdin: Option<std::process::ChildStdin>,
     pub lines: Option<Receiver<Line>>,
     ring: Arc<Mutex<Vec<u8>>>,
+    /// Set by the stderr reader thread at end of file. A classification reads the ring only after
+    /// the last line had its chance to arrive (`settle_stderr`).
+    stderr_done: Arc<AtomicBool>,
     stopped: bool,
     reaped: bool,
+    /// Live run records of *other* children, asked once per stop. A process one of them claims is
+    /// not killed by the tree walk, so two children that run from one version directory (the
+    /// daemon's and a sign-in) never end each other's grandchildren.
+    others: Option<OthersLive>,
 }
+
+/// Returns the live run records of every child but this one.
+/// `None` means the live records could not be read: the walk then does not run (fail closed).
+pub type OthersLive = Box<dyn Fn() -> Option<Vec<crate::run_record::Record>> + Send + Sync>;
 
 /// Reads one newline-terminated line of at most `cap` bytes (the newline excluded).
 fn read_line_capped<R: BufRead>(r: &mut R, cap: usize) -> std::io::Result<Line> {
@@ -186,8 +198,10 @@ impl Child {
         }
         let mut child = cmd.spawn()?;
         let ring: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let stderr_done = Arc::new(AtomicBool::new(false));
         if let Some(mut err) = child.stderr.take() {
             let ring = Arc::clone(&ring);
+            let done = Arc::clone(&stderr_done);
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
                 while let Ok(n) = err.read(&mut buf) {
@@ -202,7 +216,10 @@ impl Child {
                         }
                     }
                 }
+                done.store(true, Ordering::Release);
             });
+        } else {
+            stderr_done.store(true, Ordering::Release);
         }
         let lines = child.stdout.take().map(|out| {
             let (tx, rx) = mpsc::sync_channel(LINE_QUEUE);
@@ -236,8 +253,10 @@ impl Child {
             stdin,
             lines,
             ring,
+            stderr_done,
             stopped: false,
             reaped: false,
+            others: None,
         })
     }
 
@@ -271,8 +290,23 @@ impl Child {
         Some(st.success())
     }
 
+    /// Waits (at most 250 ms) for the stderr reader to reach end of file. A child that printed its
+    /// refusal and exited closes stdout before the reader thread has necessarily queued that last
+    /// line, so a classification made at once could read an empty ring and call a refusal a plain
+    /// failure. A child that is still running never reaches end of file, so this is a bounded delay
+    /// on a failure path, never on a success. This is production code, not a test aid: every
+    /// classification of a failed child goes through it. Pinned by
+    /// `a_child_that_prints_nothing_on_stderr_is_classified_without_waiting_for_a_timeout`.
+    fn settle_stderr(&self) {
+        let end = Instant::now() + Duration::from_millis(250);
+        while !self.stderr_done.load(Ordering::Acquire) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// A yes/no read of the stderr ring. The text never leaves.
     pub fn stderr_class(&self) -> StderrClass {
+        self.settle_stderr();
         let text = self
             .ring
             .lock()
@@ -307,12 +341,18 @@ impl Child {
     }
 
     pub fn stderr_contains_any(&self, needles: &[&str]) -> bool {
+        self.settle_stderr();
         let text = self
             .ring
             .lock()
             .map(|r| String::from_utf8_lossy(&r).to_lowercase())
             .unwrap_or_default();
         needles.iter().any(|n| text.contains(n))
+    }
+
+    /// Makes the tree walk of `stop` leave alone what another live run record claims.
+    pub fn set_others(&mut self, f: OthersLive) {
+        self.others = Some(f);
     }
 
     /// Stops the whole tree and reaps the leader. Safe to call more than once.
@@ -345,7 +385,19 @@ impl Child {
         if let Some(g) = pgid {
             let _ = rustix::process::kill_process_group(g, Signal::KILL);
         }
-        kill_under(&self.scope);
+        let scope = self.scope.clone();
+        match &self.others {
+            None => kill_under(&scope),
+            // Unknown live records: the walk could end a sibling's helpers, so it is skipped. The
+            // process group and the unit are already stopped, and the next sweep finds the rest.
+            Some(f) => {
+                if let Some(live) = f() {
+                    kill_matching(&|exe| exe.starts_with(&scope), &|pid| {
+                        crate::sweep::claimed(pid, &live)
+                    });
+                }
+            }
+        }
         let _ = self.child.wait();
     }
 }

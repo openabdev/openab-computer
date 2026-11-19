@@ -452,7 +452,9 @@ fn the_lock_excludes_a_second_holder_and_the_file_is_never_unlinked() {
         Some(Fail("lock_held"))
     );
     drop(lock);
-    let l2 = Lock::acquire(&root2, Duration::from_millis(0)).unwrap();
+    // Not at once: a `flock` is released when the last copy of the descriptor closes, and another
+    // test thread's fork can hold a copy for a moment before its exec.
+    let l2 = Lock::acquire(&root2, Duration::from_secs(5)).unwrap();
     // remove deletes everything it owns and leaves the lock file, the same inode.
     make_version(&t, "ours-1", true);
     write_record_file(&t, &record("ours-1"));
@@ -853,6 +855,9 @@ fn unlink_if_same_leaves_a_replacement_and_a_link() {
     let t = TempDir::new();
     let root = t.root();
     let id = write_new_file_id(root.fd(), "a", b"1", 0o600).unwrap();
+    // Keep the original open: an unlinked file that is still open keeps its inode number, so no
+    // replacement below can be handed the same (device, inode) and look like the original.
+    let _keep = std::fs::File::open(rootp(&t).join("a")).unwrap();
     replace_with_foreign(&rootp(&t), "a", "2");
     assert_eq!(
         unlink_if_same(root.fd(), "a", &id),
@@ -960,4 +965,139 @@ fn a_temp_record_naming_an_unmarked_version_is_left_in_place() {
         .left
         .iter()
         .any(|(n, _)| n == "install.json.tmp-0123456789abcdef"));
+}
+
+// ---- the base of the short temporary directories (#132) ---------------------------------------
+
+fn uid() -> u32 {
+    rustix::process::geteuid().as_raw()
+}
+
+fn dir_with_mode(p: &Path, mode: u32) {
+    std::fs::create_dir_all(p).unwrap();
+    std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+fn base_of(t: &TempDir, candidate: Option<&Path>) -> R<PathBuf> {
+    open_private_base_in(candidate, &t.path.join("tmp"), uid()).map(|(_, p)| p)
+}
+
+#[test]
+fn a_private_runtime_dir_is_the_base_and_the_shared_tmp_is_untouched() {
+    let t = TempDir::new();
+    dir_with_mode(&t.path.join("tmp"), 0o1777);
+    let rt = t.path.join("run");
+    dir_with_mode(&rt, 0o700);
+    assert_eq!(base_of(&t, Some(&rt)).unwrap(), rt);
+    assert_eq!(std::fs::read_dir(t.path.join("tmp")).unwrap().count(), 0);
+}
+
+#[test]
+fn a_symlinked_runtime_dir_is_not_followed() {
+    let t = TempDir::new();
+    dir_with_mode(&t.path.join("tmp"), 0o1777);
+    let real = t.path.join("real");
+    dir_with_mode(&real, 0o700);
+    let link = t.path.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let got = base_of(&t, Some(&link)).unwrap();
+    assert_eq!(got, t.path.join("tmp").join(format!("oab-{}", uid())));
+    assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0);
+}
+
+#[test]
+fn a_runtime_dir_others_can_write_or_of_another_owner_or_of_the_wrong_shape_is_refused() {
+    let t = TempDir::new();
+    dir_with_mode(&t.path.join("tmp"), 0o1777);
+    let fallback = t.path.join("tmp").join(format!("oab-{}", uid()));
+    for mode in [0o777, 0o770, 0o707, 0o720] {
+        let rt = t.path.join(format!("run-{mode:o}"));
+        dir_with_mode(&rt, mode);
+        assert_eq!(base_of(&t, Some(&rt)).unwrap(), fallback, "mode {mode:o}");
+    }
+    // Relative, over 40 bytes, and not a directory.
+    assert_eq!(base_of(&t, Some(Path::new("run"))).unwrap(), fallback);
+    let long = t.path.join("x".repeat(60));
+    dir_with_mode(&long, 0o700);
+    assert_eq!(base_of(&t, Some(&long)).unwrap(), fallback);
+    let file = t.path.join("file");
+    std::fs::write(&file, b"x").unwrap();
+    assert_eq!(base_of(&t, Some(&file)).unwrap(), fallback);
+    // A directory that is ours but is checked as another user's: the owner rule.
+    let rt = t.path.join("run-ok");
+    dir_with_mode(&rt, 0o700);
+    let other = uid().wrapping_add(1);
+    let r = open_private_base_in(Some(&rt), &t.path.join("tmp"), other);
+    assert!(r.is_err(), "a directory of another owner is never a base");
+}
+
+#[test]
+fn the_fallback_is_a_per_user_directory_created_0700_and_reused() {
+    let t = TempDir::new();
+    dir_with_mode(&t.path.join("tmp"), 0o1777);
+    let want = t.path.join("tmp").join(format!("oab-{}", uid()));
+    assert_eq!(base_of(&t, None).unwrap(), want);
+    assert_eq!(
+        std::fs::metadata(&want).unwrap().permissions().mode() & 0o7777,
+        0o700
+    );
+    assert_eq!(
+        base_of(&t, None).unwrap(),
+        want,
+        "an existing good one is reused"
+    );
+}
+
+#[test]
+fn a_planted_or_loose_fallback_directory_is_refused() {
+    let t = TempDir::new();
+    dir_with_mode(&t.path.join("tmp"), 0o1777);
+    let name = format!("oab-{}", uid());
+    // A symlink planted at the fallback name: nothing is created through it.
+    let target = t.path.join("elsewhere");
+    dir_with_mode(&target, 0o700);
+    std::os::unix::fs::symlink(&target, t.path.join("tmp").join(&name)).unwrap();
+    assert_eq!(base_of(&t, None).err(), Some(Fail("tmp_unavailable")));
+    assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    std::fs::remove_file(t.path.join("tmp").join(&name)).unwrap();
+    // A directory with a loose mode.
+    dir_with_mode(&t.path.join("tmp").join(&name), 0o755);
+    assert_eq!(base_of(&t, None).err(), Some(Fail("tmp_unavailable")));
+    // A regular file in the way.
+    std::fs::remove_dir(t.path.join("tmp").join(&name)).unwrap();
+    std::fs::write(t.path.join("tmp").join(&name), b"x").unwrap();
+    assert_eq!(base_of(&t, None).err(), Some(Fail("tmp_unavailable")));
+    // A fallback of ours checked as another user's is refused too.
+    std::fs::remove_file(t.path.join("tmp").join(&name)).unwrap();
+    let other = uid().wrapping_add(1);
+    dir_with_mode(&t.path.join("tmp").join(format!("oab-{other}")), 0o700);
+    assert!(open_private_base_in(None, &t.path.join("tmp"), other).is_err());
+}
+
+#[test]
+fn the_read_only_base_path_matches_the_one_that_creates_and_creates_nothing() {
+    let t = TempDir::new();
+    dir_with_mode(&t.path.join("tmp"), 0o1777);
+    let shared = t.path.join("tmp");
+    let rt = t.path.join("run");
+    dir_with_mode(&rt, 0o700);
+    assert_eq!(private_base_path_in(Some(&rt), &shared, uid()), rt);
+    // A group-writable candidate, a missing one and none at all fall back to `oab-<uid>`.
+    let loose = t.path.join("loose");
+    dir_with_mode(&loose, 0o770);
+    let want = shared.join(format!("oab-{}", uid()));
+    assert_eq!(private_base_path_in(Some(&loose), &shared, uid()), want);
+    assert_eq!(
+        private_base_path_in(Some(&t.path.join("no")), &shared, uid()),
+        want
+    );
+    assert_eq!(private_base_path_in(None, &shared, uid()), want);
+    assert_eq!(
+        std::fs::read_dir(&shared).unwrap().count(),
+        0,
+        "nothing created"
+    );
+    // Same answer as the creating version, for each case.
+    assert_eq!(base_of(&t, Some(&rt)).unwrap(), rt);
+    assert_eq!(base_of(&t, Some(&loose)).unwrap(), want);
 }

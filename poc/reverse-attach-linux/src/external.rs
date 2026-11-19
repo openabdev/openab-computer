@@ -71,7 +71,13 @@ pub fn parse_target(url: &str) -> Result<Target, &'static str> {
 
 /// Decides whether the owner of a connection is acceptable.
 pub trait OwnerCheck: Send + Sync {
-    fn check(&self, client: SocketAddr, server: SocketAddr) -> Result<(), &'static str>;
+    /// `end` is the request deadline: a check that is still waiting then fails as a timeout.
+    fn check(
+        &self,
+        client: SocketAddr,
+        server: SocketAddr,
+        end: Instant,
+    ) -> Result<(), &'static str>;
 }
 
 /// The real check: the server end of the connection belongs to this process's uid.
@@ -88,11 +94,39 @@ impl SameUid {
 }
 
 impl OwnerCheck for SameUid {
-    fn check(&self, client: SocketAddr, server: SocketAddr) -> Result<(), &'static str> {
-        match procnet::peer_owner_uid(&*self.source, client, server) {
-            Ok(uid) if uid == rustix::process::geteuid().as_raw() => Ok(()),
-            _ => Err(procnet::UNKNOWN),
+    fn check(
+        &self,
+        client: SocketAddr,
+        server: SocketAddr,
+        end: Instant,
+    ) -> Result<(), &'static str> {
+        // The kernel lists a connection that the server has not accepted yet with uid 0 (the owner
+        // of a socket is read from its file, which an unaccepted socket does not have), and a
+        // connection that has only just completed may not be listed at all; `/proc/net/tcp` is also
+        // produced in chunks while sockets come and go, so one read can skip a row that is there.
+        // On a loaded host the server thread can take well over a moment to accept. So the owner is
+        // read again, up to `READS` times 20 ms apart (half a second), until it is this uid. Only
+        // our own uid is accepted, and nothing is sent before it is: the retries cost time on a
+        // refusal and never widen what is accepted.
+        // This is the production check, not a test aid: the same read guards every external
+        // connection. Pinned by `a_row_that_is_not_there_yet_is_read_again_and_another_owner_is_never_accepted`.
+        const READS: u32 = 25;
+        for read in 1..=READS {
+            if procnet::peer_owner_uid(&*self.source, client, server)
+                == Ok(rustix::process::geteuid().as_raw())
+            {
+                return Ok(());
+            }
+            if read < READS {
+                // The request deadline bounds the retries and the pauses between them.
+                let left = end.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err("upstream_timeout");
+                }
+                std::thread::sleep(Duration::from_millis(20).min(left));
+            }
         }
+        Err(procnet::UNKNOWN)
     }
 }
 
@@ -102,7 +136,7 @@ pub struct AllowAll;
 
 #[cfg(test)]
 impl OwnerCheck for AllowAll {
-    fn check(&self, _: SocketAddr, _: SocketAddr) -> Result<(), &'static str> {
+    fn check(&self, _: SocketAddr, _: SocketAddr, _: Instant) -> Result<(), &'static str> {
         Ok(())
     }
 }
@@ -181,26 +215,34 @@ impl External {
     }
 
     /// One POST on a fresh connection. Every error is a fixed class.
-    fn post(&self, msg: &Value) -> Result<Reply, String> {
-        let end = Instant::now() + self.deadline;
+    /// With `limit` (the paged listing) the request ends by `limit` at the latest, and by the
+    /// client's own deadline in any case; every step waits only for what is left of that end. With
+    /// `None` (an ordinary call) each POST has the client's deadline and the timing and error classes
+    /// it always had: a 10 s connect, a 10 s write bound reported as `upstream_unreachable`.
+    fn post(&self, msg: &Value, limit: Option<Duration>) -> Result<Reply, String> {
+        let end = Instant::now() + limit.map_or(self.deadline, |l| self.deadline.min(l));
+        let connect = limit.map_or(Duration::from_secs(10), |l| {
+            Duration::from_secs(10).min(l).max(Duration::from_millis(1))
+        });
         let sid = self.session_id.lock().ok().and_then(|g| g.clone());
         let body = msg.to_string();
-        let mut stream = TcpStream::connect_timeout(&self.target.addr, Duration::from_secs(10))
-            .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::TimedOut {
-                    "upstream_timeout".to_string()
-                } else {
-                    "upstream_unreachable".to_string()
-                }
-            })?;
+        let mut stream = TcpStream::connect_timeout(&self.target.addr, connect).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                "upstream_timeout".to_string()
+            } else {
+                "upstream_unreachable".to_string()
+            }
+        })?;
         let local = stream
             .local_addr()
             .map_err(|_| "upstream_unreachable".to_string())?;
         // Before a single request byte: whose is the other end of this connection?
         self.owner
-            .check(local, self.target.addr)
+            .check(local, self.target.addr, end)
             .map_err(str::to_string)?;
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+        if limit.is_none() {
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+        }
         let host = match self.target.addr {
             SocketAddr::V4(a) => format!("127.0.0.1:{}", a.port()),
             SocketAddr::V6(a) => format!("[::1]:{}", a.port()),
@@ -216,30 +258,46 @@ impl External {
             head.push_str(&format!("Mcp-Session-Id: {s}\r\n"));
         }
         head.push_str("\r\n");
-        stream
-            .write_all(head.as_bytes())
-            .and_then(|_| stream.write_all(body.as_bytes()))
-            .map_err(|_| "upstream_unreachable".to_string())?;
+        if limit.is_some() {
+            // One absolute deadline for connect, owner check, write and read: each write waits only
+            // for what is left of `end`, so a server that stops reading cannot hold the request
+            // past it.
+            write_before(&mut stream, head.as_bytes(), end)?;
+            write_before(&mut stream, body.as_bytes(), end)?;
+        } else {
+            stream
+                .write_all(head.as_bytes())
+                .and_then(|_| stream.write_all(body.as_bytes()))
+                .map_err(|_| "upstream_unreachable".to_string())?;
+        }
         read_reply(&mut stream, end)
     }
 
-    fn initialize(&self) -> Result<(), String> {
+    fn initialize(&self, limit: Option<Duration>) -> Result<(), String> {
+        let start = Instant::now();
         // Never send a stale id on initialize: the upstream answers 404 to it.
         if let Ok(mut g) = self.session_id.lock() {
             *g = None;
         }
-        let r = self.post(&json!({
-            "jsonrpc": "2.0", "id": 0, "method": "initialize",
-            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "oab-computer-rpi", "version": AGENT_VERSION}}
-        }))?;
+        let r = self.post(
+            &json!({
+                "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                           "clientInfo": {"name": "oab-computer-rpi", "version": AGENT_VERSION}}
+            }),
+            limit,
+        )?;
+        let limit = limit.map(|l| l.saturating_sub(start.elapsed()));
         if !(200..300).contains(&r.status) {
             return Err(status_class(r.status));
         }
         if let Ok(mut g) = self.session_id.lock() {
             *g = r.session.filter(|s| header_value_ok(s));
         }
-        let _ = self.post(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+        let _ = self.post(
+            &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            limit,
+        );
         if let Ok(mut c) = self.cache.lock() {
             *c = None;
         }
@@ -247,7 +305,18 @@ impl External {
     }
 
     pub fn rpc(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
-        let r = self.rpc_inner(method, params);
+        self.rpc_within(method, params, None)
+    }
+
+    /// [`External::rpc`]; with `limit` (a page of the listing) every request, a re-initialisation
+    /// included, ends within `limit`. Without it each POST keeps its own deadline.
+    fn rpc_within(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        limit: Option<Duration>,
+    ) -> Result<Value, String> {
+        let r = self.rpc_inner(method, params, limit);
         match &r {
             Ok(_) => self.note("ok"),
             Err(e) => self.note(e),
@@ -255,19 +324,26 @@ impl External {
         r
     }
 
-    fn rpc_inner(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
+    fn rpc_inner(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        limit: Option<Duration>,
+    ) -> Result<Value, String> {
+        let start = Instant::now();
+        let left = || limit.map(|l| l.saturating_sub(start.elapsed()));
         if self.session_id.lock().ok().is_none_or(|g| g.is_none()) {
-            self.initialize()?;
+            self.initialize(left())?;
         }
         let mut msg = json!({"jsonrpc": "2.0", "id": 1, "method": method});
         if let Some(p) = &params {
             msg["params"] = p.clone();
         }
-        let mut r = self.post(&msg)?;
+        let mut r = self.post(&msg, left())?;
         if r.status == 404 || r.status == 400 {
             // The upstream lost our session (restart). One re-init, one retry.
-            self.initialize()?;
-            r = self.post(&msg)?;
+            self.initialize(left())?;
+            r = self.post(&msg, left())?;
         }
         if !(200..300).contains(&r.status) {
             return Err(status_class(r.status));
@@ -287,13 +363,26 @@ impl External {
                 }
             }
         }
-        let list = match self.rpc("tools/list", None) {
-            Ok(r) => r
-                .get("tools")
-                .and_then(|t| t.as_array())
-                .cloned()
-                .unwrap_or_default(),
-            Err(_) => {
+        // Every page, with the rules of the managed backend (`stdio_client::list_tools_paged`): the
+        // walk shares one deadline, and a failing or misbehaving page drops the whole listing.
+        let list = match crate::stdio_client::list_tools_paged(
+            self.deadline,
+            self.deadline,
+            |p, t| {
+                self.rpc_within("tools/list", Some(p), Some(t))
+                    .map_err(|_| ListFail::Rpc)
+            },
+            ListFail::Bad,
+            ListFail::Timeout,
+        ) {
+            Ok(list) => list,
+            Err(fail) => {
+                // `rpc_within` has noted its own class; the two walk failures are noted here.
+                match fail {
+                    ListFail::Rpc => {}
+                    ListFail::Bad => self.note("upstream_bad_body"),
+                    ListFail::Timeout => self.note("upstream_timeout"),
+                }
                 // Do not cache a failure: the next tools/list retries immediately.
                 if let Ok(mut c) = self.cache.lock() {
                     *c = None;
@@ -306,6 +395,14 @@ impl External {
         }
         list
     }
+}
+
+/// Why a paged listing failed: a request failed (already noted), or the pages were not acceptable.
+#[derive(Clone, Copy)]
+enum ListFail {
+    Rpc,
+    Bad,
+    Timeout,
 }
 
 fn header_value_ok(s: &str) -> bool {
@@ -321,6 +418,33 @@ fn parse_mcp_body(body: &str) -> Option<Value> {
     t.lines()
         .filter_map(|l| l.strip_prefix("data:"))
         .find_map(|d| serde_json::from_str::<Value>(d.trim()).ok())
+}
+
+/// Writes all of `data` before `end`. The write timeout is set again from the time left before every
+/// write, so partial progress does not extend the bound. Expiry is `upstream_timeout`.
+fn write_before(stream: &mut TcpStream, mut data: &[u8], end: Instant) -> Result<(), String> {
+    use std::io::ErrorKind;
+    while !data.is_empty() {
+        if timed_out(end) {
+            return Err("upstream_timeout".into());
+        }
+        let left = end
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1));
+        stream
+            .set_write_timeout(Some(left))
+            .map_err(|_| "upstream_unreachable".to_string())?;
+        match stream.write(data) {
+            Ok(0) => return Err("upstream_unreachable".into()),
+            Ok(n) => data = &data[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err("upstream_timeout".into())
+            }
+            Err(_) => return Err("upstream_unreachable".into()),
+        }
+    }
+    Ok(())
 }
 
 fn timed_out(end: Instant) -> bool {

@@ -293,7 +293,7 @@ let playwrightInstaller = PlaywrightInstaller.standard(
     stopManaged: { await playwrightBackend.shutdown() },
     // With an external provider the router serves that one, so the managed copy cannot be "serving" yet; its own
     // health check already ran before this point.
-    verifyServing: { opts.upstreams.contains(where: { $0.0 == "browser" }) ? true : await playwrightBackend.status().isReady },
+    verifyServing: { await BrowserWizardWiring.verifyServing(upstreams: opts.upstreams, managedIsReady: { await playwrightBackend.status().isReady }) },
     onRemoved: { UserDefaultsBrowserPreferenceStore(log: log).resetIfPlaywright() },
     log: log)
 let browserRouter = BrowserRouter(playwright: playwrightBackend,
@@ -493,10 +493,9 @@ if opts.menuBar {
     // The managed Playwright's install, update, removal and sign-in. With an operator-supplied external Playwright the
     // installer still manages its own folder; the page shows a note that the external provider is used first (R5.1).
     let browserTools: BrowserToolsController? = MainActor.assumeIsolated {
-        BrowserToolsController(installer: playwrightInstaller, store: BrowserToolsStore(log: log),
-                               signIn: { name, args in try await playwrightBackend.call(name, arguments: args) },
-                               externalProvider: opts.upstreams.contains(where: { $0.0 == "browser" }),
-                               log: log)
+        BrowserWizardWiring.makeController(
+            upstreams: opts.upstreams, installer: playwrightInstaller, store: BrowserToolsStore(log: log),
+            signIn: { name, args in try await playwrightBackend.call(name, arguments: args) }, log: log)
     }
     // With the exposure object the menu takes the tailnet URL from it (verified), so the base line is the local one.
     let publicURL = (exposure == nil ? opts.publicURL : nil) ?? "http://\(opts.host):\(opts.port)\(opts.path)"

@@ -106,8 +106,8 @@ pub fn launch_spec(
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum RpcError {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RpcError {
     Timeout,
     Exited,
     TooLong,
@@ -116,34 +116,72 @@ enum RpcError {
     Cancelled,
 }
 
-struct Rpc<'a> {
-    child: &'a mut Child,
-    next: u64,
+pub(crate) struct Rpc<'a> {
+    pub(crate) child: &'a mut Child,
+    pub(crate) next: u64,
+}
+
+/// Writes all of `rest` to a nonblocking sink, giving up at `end`. The deadline is checked before
+/// every write, not only after a refused one: a sink that takes a little at a time never fails.
+fn write_before(
+    sink: &mut impl std::io::Write,
+    mut rest: &[u8],
+    end: Instant,
+) -> Result<(), RpcError> {
+    use std::io::ErrorKind;
+    while !rest.is_empty() {
+        if crate::cancel::is_cancelled() {
+            return Err(RpcError::Cancelled);
+        }
+        if Instant::now() >= end {
+            return Err(RpcError::Timeout);
+        }
+        match sink.write(rest) {
+            Ok(0) => return Err(RpcError::Exited),
+            Ok(n) => rest = &rest[n..],
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(_) => return Err(RpcError::Exited),
+        }
+    }
+    Ok(())
 }
 
 impl Rpc<'_> {
-    fn send(&mut self, v: &Value) -> Result<(), RpcError> {
-        use std::io::Write;
+    /// Writes one line before `end`. The pipe is made nonblocking and polled, so a child that stops
+    /// reading its stdin cannot hold the caller past `end`, whatever the size of the line.
+    fn send(&mut self, v: &Value, end: Instant) -> Result<(), RpcError> {
         let stdin = self.child.stdin.as_mut().ok_or(RpcError::Exited)?;
         let mut line = v.to_string();
         line.push('\n');
-        stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| stdin.flush())
-            .map_err(|_| RpcError::Exited)
+        rustix::fs::fcntl_setfl(&*stdin, rustix::fs::OFlags::NONBLOCK)
+            .map_err(|_| RpcError::Exited)?;
+        write_before(stdin, line.as_bytes(), end)
     }
 
-    fn notify(&mut self, method: &str) -> Result<(), RpcError> {
-        self.send(&json!({"jsonrpc": "2.0", "method": method}))
+    pub(crate) fn notify(&mut self, method: &str) -> Result<(), RpcError> {
+        let end = Instant::now() + Duration::from_secs(5);
+        self.send(&json!({"jsonrpc": "2.0", "method": method}), end)
     }
 
     /// One request; returns `result`. Notifications and answers to other ids are skipped, with a
     /// bound on how many lines that may take.
-    fn call(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+    pub(crate) fn call(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, RpcError> {
         self.next += 1;
         let id = self.next;
-        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
+        // The deadline starts before the write: a child that stops reading must not outlast it.
         let deadline = Instant::now() + timeout;
+        self.send(
+            &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+            deadline,
+        )?;
         let mut skipped = 0;
         loop {
             if crate::cancel::is_cancelled() {
@@ -187,25 +225,22 @@ impl Rpc<'_> {
     }
 }
 
-fn identity_ok(init: &Value) -> bool {
+pub(crate) fn identity_ok(init: &Value) -> bool {
     init.get("serverInfo")
         .and_then(|s| s.get("name"))
         .and_then(Value::as_str)
         .is_some_and(|n| n.to_lowercase().contains("playwright"))
 }
 
-fn tools_ok(list: &Value) -> bool {
-    let Some(arr) = list.get("tools").and_then(Value::as_array) else {
-        return false;
-    };
-    let names: Vec<&str> = arr
+fn tools_ok(list: &[Value]) -> bool {
+    let names: Vec<&str> = list
         .iter()
         .filter_map(|t| t.get("name").and_then(Value::as_str))
         .collect();
     BROWSER_TOOLS.iter().all(|n| names.contains(n))
 }
 
-fn is_error_result(r: &Value) -> bool {
+pub(crate) fn is_error_result(r: &Value) -> bool {
     r.get("isError").and_then(Value::as_bool) == Some(true)
 }
 
@@ -233,7 +268,8 @@ pub fn check_with(
         };
         steps(&mut rpc, t)
     };
-    let refused = launched.child.stderr_class() == StderrClass::LaunchRefused;
+    // Only a failure is classified: a success must not wait for the child's stderr to end.
+    let refused = result.is_err() && launched.child.stderr_class() == StderrClass::LaunchRefused;
     launched.child.stop();
     drop(launched);
     match result {
@@ -259,7 +295,15 @@ fn steps(rpc: &mut Rpc<'_>, t: &Timeouts) -> Result<(), RpcError> {
     if !identity_ok(&init) {
         return Err(RpcError::Protocol);
     }
-    let list = rpc.call("tools/list", json!({}), t.call)?;
+    // Every page: a required tool may be listed after the first one. The walk shares the one
+    // deadline of the list step and ends on the same bounds as the runtime client.
+    let list = crate::stdio_client::list_tools_paged(
+        t.call,
+        t.call,
+        |p, d| rpc.call("tools/list", p, d),
+        RpcError::Protocol,
+        RpcError::Timeout,
+    )?;
     if !tools_ok(&list) {
         return Err(RpcError::Protocol);
     }

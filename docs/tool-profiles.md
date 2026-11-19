@@ -34,7 +34,7 @@ They are named after the one boundary that is real: shell-equivalent or not.
 > `observe` holding anything but `observe` tools (macOS `ProfileBoundaryTests`, Linux
 > `profile_tests`). Upstream `browser_*` tools are classified by profile: on macOS
 > `owner` gets the 32 names in the catalog (a tool the upstream adds later is filtered out), and on Linux
-> it gets every tool the upstream offers. `observe` gets none on both. Both platforms check
+> the managed backend (after 0.12.0) does the same, while the external one passes every tool the upstream offers. `observe` gets none on both. Both platforms check
 > this against the same 32-tool fixture in `conformance/profile_vectors.json` (`BrowserProfileTests`,
 > `profile_conformance`).
 
@@ -47,7 +47,7 @@ They are named after the one boundary that is real: shell-equivalent or not.
 
 The counts include the 32 browser tools (`browser_*`), which exist only when the computer is
 configured with a Playwright (an installed managed Playwright or `--upstream browser=…` on macOS,
-`MCP_UPSTREAM` on Linux). Without it, `owner` has 12 tools on macOS and 9 on Linux, and `observe` is unchanged.
+a managed install or `MCP_UPSTREAM` on Linux). Without it, `owner` has 12 tools on macOS and 9 on Linux, and `observe` is unchanged.
 
 ## 2. Complete tool lists per profile
 
@@ -81,21 +81,24 @@ stdio, no listener; the app downloads it only when you ask, see the README's "Wh
 downloads"; the wizard's Browser tools page and the menu bar install, update and remove it, and **Open Playwright window to sign in…** opens its headed window once to sign in) or an external one (`--upstream browser=URL`; the URL host must be the literal
 `127.0.0.1` or `::1`, redirects are refused, and the listener's owner uid must equal the daemon's).
 A tool Playwright adds later is filtered out until the catalog, `profile_vectors.json` and the
-tests are updated together (R1.5). Linux still passes every upstream tool through. Other
+tests are updated together (R1.5). The Linux managed backend filters the same way (D15); the Linux external path still passes every upstream tool through. Other
 `--upstream name=URL` upstreams keep the old rule: `owner` gets every tool they offer. The browser runs with the computer's **persistent profile**, including
 cookies for sites it is logged in to, and it reaches whatever network the computer reaches,
-localhost and the tailnet included. `browser_evaluate` and `browser_run_code_unsafe` run arbitrary
-JavaScript in that profile. In the managed Playwright the user signs in to sites once in its own
+localhost and the tailnet included. `browser_evaluate` runs arbitrary
+JavaScript in the page, and `browser_run_code_unsafe` runs arbitrary Node code with access to that profile. In the managed Playwright the user signs in to sites once in its own
 window, and an agent acts as the user on those sites; some sites may refuse an automated browser.
 Profile and cookies live in `~/Library/Application Support/oab-computer/playwright/profile/`
 and are deleted with the install.
 Direct `/mcp` callers can send an `OAB-Browser-Backend` header (`auto`, `playwright` or `appleEvents`;
 switchboard and reverse-attach callers use the stored preference, or `auto`); only the
 Playwright backend exists in 0.12.0, so `appleEvents` answers "not set up".
-On Linux, Playwright is only the external unit on loopback `127.0.0.1:8794`, and that listener has no
-authentication: any local user on the node can call every browser tool there, including
-`browser_run_code_unsafe`. Use `--no-browser` on a shared host. A managed Linux tier is designed and not
-built ([ADR](adr/linux-browser-tier.md)).
+On Linux after 0.12.0, Playwright is a managed child of the daemon with no port (`oab-computer browser
+install`; [ADR](adr/linux-browser-tier.md)). In 0.12.0 and earlier, and on a host that still runs the
+old unit, it is an external listener on loopback `127.0.0.1:8794` with no authentication: any local
+user on the node can call every browser tool there, including `browser_run_code_unsafe`. The
+installer warns about that unit and never touches it; use `--browser none` on a shared host that has
+not moved off it, and see
+[Upgrading a host that already has a browser unit](linux-setup.md#upgrading-a-host-that-already-has-a-browser-unit).
 
 ### `observe`
 

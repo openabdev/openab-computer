@@ -10,7 +10,12 @@ fn args(a: &[&str]) -> Vec<String> {
 #[test]
 fn arguments_parse_and_everything_else_is_a_usage_error() {
     assert_eq!(parse(&args(&["plan"])), Ok(Cmd::Plan));
-    assert_eq!(parse(&args(&["preflight"])), Ok(Cmd::Preflight));
+    assert_eq!(
+        parse(&args(&["preflight"])),
+        Ok(Cmd::Preflight {
+            root_actions: false
+        })
+    );
     assert_eq!(
         parse(&args(&["install"])),
         Ok(Cmd::Install { from_dir: None })
@@ -59,17 +64,110 @@ fn arguments_parse_and_everything_else_is_a_usage_error() {
         vec!["install", "--from-dir", "a", "--from-dir", "b"],
         vec!["remove", "--json"],
         vec!["status", "--from-dir", "x"],
-        vec!["signin"],
+        vec!["signin", "--yes"],
+        vec!["signin", "--url"],
+        vec!["signin", "--url", "a", "--url", "b"],
+        vec!["preflight", "--json"],
         vec!["install", "--apply-system-changes"],
         vec!["install", "--use-system-chromium"],
         vec!["update", "extra"],
     ] {
         assert!(parse(&args(&bad)).is_err(), "{bad:?}");
     }
-    assert!(parse(&args(&["signin"]))
+    assert_eq!(parse(&args(&["signin"])), Ok(Cmd::Signin { url: None }));
+    assert_eq!(
+        parse(&args(&["signin", "--url", "https://example.com/"])),
+        Ok(Cmd::Signin {
+            url: Some("https://example.com/".into())
+        })
+    );
+    assert_eq!(
+        parse(&args(&["preflight", "--root-actions"])),
+        Ok(Cmd::Preflight { root_actions: true })
+    );
+    // The root actions belong to the installer script, and the message says so.
+    let m = parse(&args(&["install", "--apply-system-changes"]))
+        .unwrap_err()
+        .0;
+    assert!(m.contains("install-linux.sh") && m.contains("never runs a root action"));
+    assert!(parse(&args(&["install", "--use-system-chromium"]))
         .unwrap_err()
         .0
         .contains("not available"));
+}
+
+#[test]
+fn a_blocker_prints_the_fixed_stderr_line_and_root_actions_print_one_tab_line_each() {
+    let e = Env::new(Tw::default());
+    let m = e.manifest("test-id-1");
+    let mut bad = good_facts();
+    bad.libc = Libc::Musl;
+    let r = exec(
+        &e,
+        &m,
+        &Cmd::Preflight {
+            root_actions: false,
+        },
+        None,
+        bad,
+        None,
+    );
+    assert_eq!(r.code, 1);
+    assert!(
+        r.err
+            .lines()
+            .any(|l| l == "browser: preflight_failed class=musl"),
+        "{}",
+        r.err
+    );
+    let mut old = good_facts();
+    old.free_disk = Some(1);
+    let r = exec(
+        &e,
+        &m,
+        &Cmd::Preflight {
+            root_actions: false,
+        },
+        None,
+        old,
+        None,
+    );
+    assert!(
+        r.err.contains("preflight_failed class=disk_full"),
+        "{}",
+        r.err
+    );
+
+    // --root-actions: only `command<TAB>reason`, exit 0 whatever else is blocked.
+    let mut f = good_facts();
+    f.userns.apparmor_restricted = Some(true);
+    f.data_base = PathBuf::from("/home/u/.local/share");
+    f.libc = Libc::Musl;
+    let r = exec(
+        &e,
+        &m,
+        &Cmd::Preflight { root_actions: true },
+        None,
+        f,
+        None,
+    );
+    assert_eq!(r.code, 0);
+    assert!(r.err.is_empty(), "{}", r.err);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let (cmd, why) = lines[0].split_once('\t').expect("one tab");
+    assert!(cmd.starts_with("printf ") && cmd.contains("sudo apparmor_parser -r"));
+    assert!(!why.is_empty() && !why.contains('\t'));
+    // Nothing else is printed when there is no root action.
+    let r = exec(
+        &e,
+        &m,
+        &Cmd::Preflight { root_actions: true },
+        None,
+        good_facts(),
+        None,
+    );
+    assert_eq!((r.code, r.out.as_str()), (0, ""));
 }
 
 struct Run {
@@ -120,12 +218,30 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
     assert!(!e.t.base().exists());
 
     // preflight: ok, then blocked.
-    let r = exec(&e, &m, &Cmd::Preflight, None, good_facts(), None);
+    let r = exec(
+        &e,
+        &m,
+        &Cmd::Preflight {
+            root_actions: false,
+        },
+        None,
+        good_facts(),
+        None,
+    );
     assert_eq!(r.code, 0);
     assert!(r.out.contains("preflight: ok"));
     let mut bad = good_facts();
     bad.libc = Libc::Musl;
-    let r = exec(&e, &m, &Cmd::Preflight, None, bad, None);
+    let r = exec(
+        &e,
+        &m,
+        &Cmd::Preflight {
+            root_actions: false,
+        },
+        None,
+        bad,
+        None,
+    );
     assert_eq!(r.code, 1);
     assert!(r.out.contains("musl"));
     assert!(!e.t.base().exists(), "preflight creates nothing");
@@ -180,7 +296,7 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
         good_facts(),
         None,
     );
-    assert_eq!(r.out.lines().count(), 14);
+    assert_eq!(r.out.lines().count(), 21);
     assert!(r.out.lines().all(|l| l.contains(": ")));
     assert!(r.out.contains("state: installed") && r.out.contains("installed_id: test-id-1"));
     let r = exec(
@@ -199,7 +315,7 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
     assert_eq!(v["update_available"], false);
     assert_eq!(v["pins_match"], true);
     assert_eq!(v["previous"], Value::Null);
-    assert_eq!(v.as_object().unwrap().len(), 14);
+    assert_eq!(v.as_object().unwrap().len(), 21);
 
     // update without a yes, then declined, then confirmed.
     let u = Cmd::Update {
@@ -315,6 +431,33 @@ fn failures_print_one_fixed_line_and_a_hint_and_nothing_else() {
 }
 
 #[test]
+fn status_fails_on_a_v2_failure_or_an_unreadable_listener_table() {
+    let mut x = crate::probe::Extras::none();
+    for (word, blocks) in [
+        ("none", false),
+        ("not_running", false),
+        (
+            "tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass",
+            false,
+        ),
+        (
+            "tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=fail",
+            true,
+        ),
+        (
+            "tcp=1 udp=0 unix=0 unix_outside=0 tmpdir=ok result=fail",
+            true,
+        ),
+        ("unknown", true),
+    ] {
+        x.listeners = word.into();
+        assert_eq!(x.listeners_blocks(), blocks, "{word}");
+    }
+    assert!(xdg_hint(false).is_some_and(|h| h.contains("XDG_RUNTIME_DIR")));
+    assert!(xdg_hint(true).is_none());
+}
+
+#[test]
 fn an_unsupported_platform_is_reported() {
     let e = Env::new(Tw::default());
     let m = e.manifest("test-id-1");
@@ -339,7 +482,12 @@ fn an_unsupported_platform_is_reported() {
         launcher: &crate::sigstop::Plain,
         extras: &|_: &Path, _: bool| crate::probe::Extras::none(),
     };
-    for cmd in [Cmd::Plan, Cmd::Preflight] {
+    for cmd in [
+        Cmd::Plan,
+        Cmd::Preflight {
+            root_actions: false,
+        },
+    ] {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = execute(
             &cmd,

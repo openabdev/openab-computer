@@ -23,7 +23,6 @@ PW_LABEL=dev.openab.computer.pw-mcp
 PKG_ID=dev.openab.computer.installer
 PAYLOAD_DIR='Library/Application Support/OpenAB/computer'
 UNIT=oab-computer.service
-PW_UNIT=oab-computer-pw-mcp.service
 
 FAIL=0
 fail() { echo "FAIL: $*" >&2; FAIL=1; }
@@ -142,13 +141,14 @@ fi
 
 # ------------------------------------------------------------------ Linux: run the installer, parse the units
 PKG="$T/pkg"; mkdir -p "$PKG"
-cp "$HERE/install-linux.sh" "$ROOT/poc/reverse-attach-linux/pw-mcp.sh" "$PKG/"
+cp "$HERE/install-linux.sh" "$PKG/"
 printf '#!/bin/sh\nexit 0\n' >"$PKG/$NAME"
-chmod 755 "$PKG/install-linux.sh" "$PKG/pw-mcp.sh" "$PKG/$NAME"
+chmod 755 "$PKG/install-linux.sh" "$PKG/$NAME"
 STUBS="$T/stubs"; mkdir -p "$STUBS"
 LOG="$T/calls.log"
 stub() { printf '#!/bin/bash\necho "%s $*" >>"%s"\n%s\n' "$1" "$LOG" "${2:-exit 0}" >"$STUBS/$1"; chmod 755 "$STUBS/$1"; }
-for c in grim wlrctl wtype sway loginctl curl node npm npx chromium; do stub "$c"; done
+# No wlrctl stub: nothing uses it (#130). No node, npm or chromium: the installer needs none of them.
+for c in grim wtype sway loginctl curl; do stub "$c"; done
 # systemctl: the is-active / is-enabled queries answer "no" (no old unit present); everything else succeeds.
 stub systemctl 'case "$2" in is-active|is-enabled) exit 1;; esac; exit 0'
 stub sudo 'exit 1'
@@ -158,8 +158,7 @@ exit 0'
 REAL_LS="$(command -v ls)"
 stub ls 'case "$1" in /run/user/*) printf "wayland-0\n";; *) exec '"$REAL_LS"' "$@";; esac'
 LH="$T/lin-home"
-mkdir -p "$LH/.local/$NAME/pw-mcp/node_modules/.bin"
-printf '#!/bin/sh\n' >"$LH/.local/$NAME/pw-mcp/node_modules/.bin/playwright-mcp"; chmod 755 "$LH/.local/$NAME/pw-mcp/node_modules/.bin/playwright-mcp"
+mkdir -p "$LH"
 : >"$LOG"
 if ! (cd "$PKG" && HOME="$LH" USER="${USER:-$(id -un)}" PATH="$STUBS:$PATH" ./install-linux.sh) </dev/null >"$T/lin.out" 2>"$T/lin.err"; then
   cat "$T/lin.err" >&2; fail "install-linux.sh failed in the fake HOME"
@@ -177,14 +176,9 @@ else
   [ -s "$TOK" ] && ok "the token file named by the unit exists" || fail "the token file named by the unit does not exist"
   if [ "$(uname)" = Linux ]; then eq "token mode" "$(stat -c %a "$TOK")" 600; else eq "token mode" "$(stat -f %Lp "$TOK")" 600; fi
 fi
-if [ ! -f "$UD/$PW_UNIT" ]; then
-  fail "Linux unit $PW_UNIT not written"
-else
-  ok "Linux pw-mcp unit file is named $PW_UNIT"
-  PWEXEC=$(sed -n 's|^ExecStart=||p' "$UD/$PW_UNIT")
-  eq "pw-mcp unit ExecStart" "$PWEXEC" "$LH/.local/$NAME/pw-mcp.sh"
-  [ -x "$PWEXEC" ] && ok "the pw-mcp ExecStart file exists and is executable" || fail "the pw-mcp ExecStart file does not exist"
-fi
+# The installer writes no browser unit: the managed browser is a transient unit of the daemon.
+[ ! -e "$UD/oab-computer-pw-mcp.service" ] && ok "no browser unit written" || fail "a browser unit was written"
+if grep -rqE 'MCP_UPSTREAM|8794|pw-mcp' "$UD"; then fail "a unit mentions MCP_UPSTREAM, 8794 or pw-mcp"; else ok "no unit mentions MCP_UPSTREAM, 8794 or pw-mcp"; fi
 # The Rust package builds the binary under the shipped name (the release workflow copies it as is).
 CARGO_NAME=$(sed -n '/^\[package\]/,/^\[/{s/^name = "\(.*\)"/\1/p;}' "$ROOT/poc/reverse-attach-linux/Cargo.toml" | head -1)
 eq "Cargo package (binary) name" "$CARGO_NAME" "$NAME"
@@ -195,12 +189,9 @@ has "smoke.sh runs target/release/$NAME" "$ROOT/poc/reverse-attach-linux/smoke.s
 # (The read-only is-active / is-enabled queries of the warn-only old-unit check are not installs.)
 CALLS="$T/calls.nonquery"; grep -vE '^systemctl --user is-(active|enabled) ' "$LOG" >"$CALLS" || true
 while IFS= read -r u; do
-  case "$u" in "$UNIT"|"$PW_UNIT"|oab-seat.service) ok "systemctl names $u";; *) fail "systemctl names a unit the installer does not write: $u";; esac
+  case "$u" in "$UNIT"|oab-seat.service) ok "systemctl names $u";; *) fail "systemctl names a unit the installer does not write: $u";; esac
 done < <(grep -oE '[A-Za-z0-9_.-]+\.service' "$CALLS" | sort -u)
-for u in "$UNIT" "$PW_UNIT"; do
-  has "installer enables $u" "$CALLS" "systemctl --user enable --now $u"
-done
-[ -f "$LH/.local/$NAME/pw-mcp.sh" ] && ok "pw-mcp.sh installed under .local/$NAME" || fail "pw-mcp.sh not installed under .local/$NAME"
+has "installer enables $UNIT" "$CALLS" "systemctl --user enable --now $UNIT"
 
 # ------------------------------------------------------------------ nothing generated carries the old name
 OLD_HITS=$(grep -rlE 'instance-mcp|oab-pw-mcp' "$LH/.config" "$LH/.local" 2>/dev/null | head -5)
@@ -209,10 +200,13 @@ OLD_HITS=$(grep -rlE 'instance-mcp|oab-pw-mcp' "$LH/.config" "$LH/.local" 2>/dev
 
 # ------------------------------------------------------------------ repo-wide: old names only where allowed
 # Allowed leftovers in code, scripts and CI: the copy-source token path (and the test fixtures that
-# seed it), issue links, and the warn-only legacy detection (the two installers and their tests).
+# seed it), issue links, and the warn-only legacy detection (the two installers and their tests, including test-install-linux.sh,
+# and the Linux CLI's legacy listing in `browser status`: legacy.rs, its tests, and the fixtures that seed a legacy unit).
 LEFT=$(cd "$ROOT" && grep -rnE --exclude-dir=target --exclude-dir=.build 'oab-instance-mcp|instance-mcp|INSTANCE_MCP|oab-pw-mcp|dev\.openab\.instance' \
     Sources Tests poc scripts .github images Package.swift 2>/dev/null \
-  | grep -vE '^scripts/test-(legacy-agent|name-consistency)\.sh:' \
+  | grep -vE '^scripts/test-(legacy-agent|name-consistency|install-linux|cutover-guide)\.sh:' \
+  | grep -vE '^poc/reverse-attach-linux/src/legacy(_tests)?\.rs:' \
+  | grep -vE '^poc/reverse-attach-linux/src/(probe|install)_tests\.rs:[0-9]+:.*oab-pw-mcp\.service' \
   | grep -vE '\.config/oab-instance-mcp/token|instance-mcp(#[0-9]|/issues/)' \
   | grep -vE '^scripts/test-packaging\.sh:[0-9]+:mkdir -p .*oab-instance-mcp' \
   | grep -vE '^Tests/InstanceMCPCoreTests/FirstRunSetupTests\.swift:[0-9]+:.*contains\("instance-mcp"\)' \

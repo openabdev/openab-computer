@@ -20,18 +20,22 @@ mod catalog;
 mod child;
 mod consent;
 mod containment;
+#[cfg(test)]
+mod docs_table;
 mod download;
 #[cfg(test)]
 mod e2e_tests;
 mod elf;
 mod external;
 mod extract;
+mod hardening;
 mod health;
 mod http;
 #[cfg(test)]
 mod http_conformance;
 mod install;
 mod jobs;
+mod legacy;
 mod manifest;
 #[cfg(test)]
 mod manifest_conformance;
@@ -46,10 +50,13 @@ mod procnet;
 mod profile_conformance;
 mod run_record;
 mod schema_shape;
+mod signin;
 mod sigstop;
 mod state;
 mod stdio_client;
 mod sweep;
+#[cfg(test)]
+mod test_exec;
 #[cfg(test)]
 mod tool_schema_shape_tests;
 mod tools;

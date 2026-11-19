@@ -2,7 +2,8 @@
 
 - **Status:** Accepted. Partly implemented in 0.12.0.
   - **Shipped in 0.12.0:** the macOS router (`BrowserRouter`, `OAB-Browser-Backend` header) and the managed Playwright (on-demand install, supervision, removal, wizard page, menu items; #121, #123, #126, #127).
-  - **Not implemented:** the Apple Events tier (Tier A), the CDP tier (Tier C), the "use my installed Chrome" fallback ([#128](https://github.com/openabdev/openab-computer/issues/128)) and the menu preference pin. The router has only the Playwright slot, so `appleEvents` answers "not set up".
+  - **After 0.12.0:** the "use my installed Chrome" fallback ([#128](https://github.com/openabdev/openab-computer/issues/128)): offered only after macOS refuses the downloaded Chromium, with a consent step, a check of Google LLC's signature on every start, and no version pin or digest (Q3, Q5). It applies from the next release.
+  - **Not implemented:** the Apple Events tier (Tier A), the CDP tier (Tier C) and the menu preference pin. The router has only the Playwright slot, so `appleEvents` answers "not set up".
 - **Issue:** [#118](https://github.com/openabdev/openab-computer/issues/118)
 - **Requirement:** [`docs/requirements/browser-tiers.md`](../requirements/browser-tiers.md) (tool-to-tier table, wizard states, install flows, test plan)
 - **Related:** [`reverse-attach.md`](reverse-attach.md) (profiles and the shell-equivalence of `owner`), [`docs/tool-profiles.md`](../tool-profiles.md), [#119](https://github.com/openabdev/openab-computer/issues/119) (Linux installer; designed in [`linux-browser-tier.md`](linux-browser-tier.md))

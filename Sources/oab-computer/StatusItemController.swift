@@ -153,10 +153,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if snapshot.allGranted {
             store.hasShown = true
             // Permissions are done, but the Browser tools page is offered until it has been completed once (R5.1).
-            let offerBrowser = BrowserWizardPolicy.showsBrowserPageOnAutoSetup(
-                allGranted: true, browserOffered: browserTools != nil,
-                pageCompleted: browserTools?.pageIsCompleted ?? true)
-            if offerBrowser { openPermissionSetup(page: .browser) }
+            if let page = BrowserWizardPolicy.pageOnAutoSetup(allGranted: true, browserTools: browserTools) {
+                openPermissionSetup(page: page)
+            }
             return
         }
         if PermissionSetupPolicy.shouldAutoShow(hasShown: store.hasShown, snapshot: snapshot) {
@@ -454,7 +453,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }()
         let items = MenuModel.playwrightMenu(state: browserTools.installState, plan: browserTools.plan,
                                              installing: installing, lastFailed: browserTools.lastFailed,
-                                             externalProvider: browserTools.model.externalProvider)
+                                             externalProvider: browserTools.model.externalProvider,
+                                             chromeOffered: browserTools.model.footer.showsUseInstalledChrome,
+                                             engine: browserTools.installer.selectedEngine(),
+                                             chromeVersion: browserTools.installer.installedChromeLiveVersion())
         for entry in items {
             let action: Selector?
             switch entry.kind {
@@ -465,6 +467,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             case .remove: action = #selector(removePlaywright)
             case .signIn: action = #selector(signInPlaywright)
             case .cancelInstall: action = #selector(cancelPlaywrightInstall)
+            case .useChrome: action = #selector(useInstalledChrome)
+            case .useDownloaded: action = #selector(useDownloadedChromium)
             }
             menu.addItem(label(entry.title, action: action, tip: entry.tip))
         }
@@ -483,8 +487,54 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// The update prompt (R7.7): never silent. It names the change and what is downloaded.
     @objc private func updatePlaywright() {
         guard let browserTools, case .installed(let id, _, _) = browserTools.installState else { return }
-        confirmAndInstall(browserTools, title: WizardCopy.installSheetTitle(update: true),
-                          text: WizardCopy.updatePrompt(installed: id, plan: browserTools.plan))
+        // An update keeps the chosen browser: with the installed Chrome it downloads no Chromium and says so.
+        let text = browserTools.installer.selectedEngine() == .installedChrome
+            ? WizardCopy.updatePromptChrome(installed: id, plan: browserTools.plan)
+            : WizardCopy.updatePrompt(installed: id, plan: browserTools.plan)
+        confirmAndInstall(browserTools, title: WizardCopy.installSheetTitle(update: true), text: text)
+    }
+
+    /// **Use my installed Google Chrome…**: the same consent step as the wizard page. Nothing happens before the button.
+    @objc private func useInstalledChrome() {
+        guard let browserTools, let offer = browserTools.requestChromeConsent() else { return }
+        switch offer {
+        case .problem(let problem):
+            showAlert(WizardCopy.chromeConsentTitle, WizardCopy.chromeProblem(problem))
+        case .consent(let title, let text, _):
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = text
+            alert.addButton(withTitle: WizardCopy.chromeConsentConfirm)
+            alert.addButton(withTitle: WizardCopy.browserCancel)
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { browserTools.cancelChromeConsent(); return }
+            browserTools.confirmChromeConsent { [weak self] result, _ in
+                switch result {
+                case .success: self?.showAlert("Playwright", WizardCopy.installReady)
+                case .failure(.cancelled): break
+                case .failure(let f): self?.showAlert("Playwright", WizardCopy.installFailure(f))
+                }
+            }
+        }
+    }
+
+    /// Back to the downloaded Chromium. It asks first; the installed Chrome keeps working until the download succeeds.
+    @objc private func useDownloadedChromium() {
+        guard let browserTools, !browserTools.model.isInstalling else { return }
+        let alert = NSAlert()
+        alert.messageText = WizardCopy.chromeSwitchBackTitle
+        alert.informativeText = WizardCopy.switchBackConsent + " " + WizardCopy.playwrightConsent(plan: browserTools.plan)
+        alert.addButton(withTitle: WizardCopy.chromeSwitchBackConfirm)
+        alert.addButton(withTitle: WizardCopy.browserCancel)
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        browserTools.useDownloadedChromium { [weak self] result, _ in
+            switch result {
+            case .success: self?.showAlert("Playwright", WizardCopy.installReady)
+            case .failure(.cancelled): break
+            case .failure(let f): self?.showAlert("Playwright", WizardCopy.installFailure(f))
+            }
+        }
     }
 
     private func confirmAndInstall(_ tools: BrowserToolsController, title: String, text: String) {

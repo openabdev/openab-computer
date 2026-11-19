@@ -36,6 +36,27 @@ if [ -d "$BROWSER_DIR" ] && grep -rIil tailscale "$BROWSER_DIR" >/dev/null; then
 fi
 echo "guard ok: no tailscale under Sources/InstanceMCPCore/Browser"
 
+# Req 3.2 (L3): nothing the Linux build starts Playwright with names a listener flag. Scanned: the
+# installer script, and the two functions that build a launch vector (the daemon's child and the
+# health check's). poc/reverse-attach-linux/pw-mcp.sh is left out on purpose: it is the deprecated
+# external launcher (D14) and it does pass --port.
+RS="$ROOT/poc/reverse-attach-linux/src"
+body() { # body FILE FN: the lines of `fn FN` up to its closing brace at column 0
+  awk -v fn="$2" '$0 ~ "^pub fn " fn "\\(" { on = 1 } on { print } on && /^}/ { exit }' "$1"
+}
+for pair in "$RS/child.rs:launch_vector" "$RS/health.rs:launch_spec"; do
+  src="${pair%%:*}"; fn="${pair##*:}"
+  text="$(body "$src" "$fn")"
+  [ -n "$text" ] || { echo "FAIL: could not find fn $fn in $src" >&2; exit 1; }
+  if printf '%s\n' "$text" | grep -vE '^[[:space:]]*(//|///)' | grep -qE -- '"--(port|host|allowed-hosts|no-sandbox)"'; then
+    echo "FAIL: $fn in $src passes a listener or sandbox flag (Req 3.2)" >&2; exit 1
+  fi
+done
+if grep -nE -- '--(port|host|allowed-hosts)' "$ROOT/scripts/install-linux.sh" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -E 'playwright|cli\.js' >/dev/null; then
+  echo "FAIL: scripts/install-linux.sh starts Playwright with a listener flag (Req 3.2)" >&2; exit 1
+fi
+echo "guard ok: no listener flag in the launch vectors or the Linux installer"
+
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir "$T/bin"
 stub() { # $1 = mode

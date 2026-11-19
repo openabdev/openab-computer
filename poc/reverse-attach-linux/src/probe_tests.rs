@@ -1,5 +1,6 @@
 use super::*;
 use crate::containment::{SYSTEMD, UNVERIFIED};
+use crate::hardening::{MountTier, Val};
 use crate::state::tests::TempDir;
 use std::collections::HashMap;
 
@@ -27,6 +28,35 @@ fn by_default_nothing_runs_and_the_vocabulary_is_fixed() {
     assert_eq!(x.external_configured, "no");
     assert_eq!(x.listeners, "not_running");
     assert_eq!(x.refusal, "none");
+    // L4: nothing was probed, and there is no install root yet.
+    assert_eq!(x.hardening_base, "not_checked");
+    assert_eq!(x.hardening_mount, "not_checked");
+    assert_eq!(x.hardening_unverified, "not_checked");
+    assert_eq!(x.run_records, "unavailable");
+    // L5: `gather` does not look at the home directory, so the legacy fields stay `none`.
+    assert_eq!(
+        (
+            x.legacy_units.as_str(),
+            x.legacy.as_str(),
+            x.legacy_listener.as_str()
+        ),
+        ("none", "none", "none")
+    );
+    assert!(!x.legacy_present());
+}
+
+#[test]
+fn the_legacy_fields_are_set_apart_from_the_probe() {
+    let mut x = Extras::none();
+    x.set_legacy(crate::legacy::Legacy {
+        units: "oab-pw-mcp.service".into(),
+        paths: "~/.cache/ms-playwright:1 MiB".into(),
+        listener: "8794".into(),
+    });
+    assert!(x.legacy_present());
+    assert_eq!(x.legacy_units, "oab-pw-mcp.service");
+    assert_eq!(x.legacy, "~/.cache/ms-playwright:1 MiB");
+    assert_eq!(x.legacy_listener, "8794");
 }
 
 #[test]
@@ -87,4 +117,158 @@ fn a_tree_that_listens_is_reported_by_kind_and_a_silent_one_as_none() {
     assert_eq!(x.listeners, "unknown");
     c.kill().unwrap();
     c.wait().unwrap();
+}
+
+fn tiers_all(v: Val) -> Tiers {
+    Tiers {
+        base: Some([v; 8]),
+        mount: MountTier::Applied([v; 4]),
+    }
+}
+
+fn mode_with(tiers: Tiers) -> Mode {
+    Mode {
+        name: "systemd+mount",
+        mount_tier: true,
+        tiers,
+    }
+}
+
+#[test]
+fn a_retry_fills_the_hardening_fields_from_what_the_probes_found() {
+    let t = TempDir::new();
+    let _root = crate::run_record::tests::root_with_run(&t);
+    let none = Tables(HashMap::new());
+    let x = gather(&t.base(), true, None, &none, &|| {
+        Ok(mode_with(tiers_all(Val::One)))
+    });
+    assert_eq!(
+        (
+            x.hardening_base.as_str(),
+            x.hardening_mount.as_str(),
+            x.hardening_unverified.as_str(),
+            x.run_records.as_str()
+        ),
+        ("verified", "verified", "none", "ok")
+    );
+    // One token not shown: partial, and the token is named from the fixed vocabulary.
+    let mut tiers = tiers_all(Val::One);
+    if let Some(b) = tiers.base.as_mut() {
+        b[3] = Val::Na;
+    }
+    tiers.mount = MountTier::Dropped;
+    let x = gather(&t.base(), true, None, &none, &|| Ok(mode_with(tiers)));
+    assert_eq!(x.hardening_base, "partial");
+    assert_eq!(x.hardening_mount, "dropped");
+    assert_eq!(x.hardening_unverified, "memory_max");
+    // A failed self-test or base probe: unverified, and nothing else is claimed.
+    let x = gather(&t.base(), true, None, &none, &|| Err(UNVERIFIED));
+    assert_eq!(x.hardening_base, "unverified");
+    assert_eq!(x.hardening_mount, "unverified");
+    assert_eq!(x.hardening_unverified, "unverified");
+    // Without --retry the CLI never reports a tier it did not probe.
+    let x = gather(&t.base(), false, None, &none, &nothing);
+    assert_eq!(x.hardening_base, "not_checked");
+}
+
+#[test]
+fn a_full_run_directory_is_named_in_the_status() {
+    let t = TempDir::new();
+    let root = crate::run_record::tests::root_with_run(&t);
+    let none = Tables(HashMap::new());
+    assert_eq!(
+        gather(&t.base(), false, None, &none, &nothing).run_records,
+        "ok"
+    );
+    let me = std::process::id();
+    let start = crate::state::proc_start_time(me).unwrap();
+    for i in 0..crate::run_record::MAX_RECORDS {
+        std::fs::write(
+            root.abs_path().join(format!("run/cli-{}.json", 1000 + i)),
+            format!("{{\"pid\":{me},\"start\":{start},\"kind\":\"cli\"}}"),
+        )
+        .unwrap();
+    }
+    assert_eq!(
+        gather(&t.base(), false, None, &none, &nothing).run_records,
+        "full"
+    );
+}
+
+#[test]
+fn the_listeners_word_carries_the_v2_verdict() {
+    use crate::procnet::{Listeners, TmpState};
+    let w = |l: Listeners, t| listeners_word(Ok(l), t);
+    assert_eq!(w(Listeners::default(), TmpState::Missing), "none");
+    let two = Listeners {
+        unix: 2,
+        ..Default::default()
+    };
+    assert_eq!(
+        w(two, TmpState::Ok),
+        "tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass"
+    );
+    let out = Listeners {
+        unix: 2,
+        unix_outside: 1,
+        ..Default::default()
+    };
+    assert!(w(out, TmpState::Ok).ends_with("unix_outside=1 tmpdir=ok result=fail"));
+    let all_out = Listeners {
+        unix: 2,
+        unix_outside: 2,
+        ..Default::default()
+    };
+    assert_eq!(
+        w(all_out, TmpState::Mode),
+        "tcp=0 udp=0 unix=2 unix_outside=2 tmpdir=mode result=fail"
+    );
+    let tcp = Listeners {
+        tcp: 1,
+        ..Default::default()
+    };
+    assert!(w(tcp, TmpState::Ok).ends_with("result=fail"));
+    assert_eq!(listeners_word(Err("x"), TmpState::Ok), "unknown");
+}
+
+/// With no tree running, a stale TMPDIR that is not private fails V2 too (decided V2 rule). Before
+/// this fix `listeners` was `not_running` whatever the directory held, and `browser status` exited 0.
+#[test]
+fn a_stale_tmpdir_fails_v2_even_when_no_tree_runs() {
+    use crate::procnet::TmpState;
+    assert_eq!(idle_listeners_word(TmpState::Missing), "not_running");
+    assert_eq!(idle_listeners_word(TmpState::Ok), "not_running");
+    assert_eq!(
+        idle_listeners_word(TmpState::Mode),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=fail"
+    );
+    assert_eq!(
+        idle_listeners_word(TmpState::Owner),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=owner result=fail"
+    );
+}
+
+/// A running tree that listens on nothing still fails V2 when its TMPDIR is not the verified private
+/// directory (decided V2 rule: the status self-check fails on a TMPDIR that is not 0700 or not the
+/// daemon's uid). Before the fix this printed `none` and exited 0.
+#[test]
+fn a_zero_listener_tree_fails_v2_when_its_tmpdir_is_not_private() {
+    use crate::procnet::{Listeners, TmpState};
+    let silent = || Listeners::default();
+    let w = |t| listeners_word(Ok(silent()), t);
+    assert_eq!(
+        w(TmpState::Mode),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=fail"
+    );
+    assert_eq!(
+        w(TmpState::Owner),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=owner result=fail"
+    );
+    assert_eq!(
+        w(TmpState::NotDir),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=not_dir result=fail"
+    );
+    // The clean states still read `none`: the verified directory, or no child running yet.
+    assert_eq!(w(TmpState::Ok), "none");
+    assert_eq!(w(TmpState::Missing), "none");
 }

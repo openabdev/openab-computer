@@ -12,22 +12,32 @@
 //! The ADR says a mechanism must have "succeeded in a self-test on the host" and says nothing about
 //! the fixture, so the design here is this module's own, derived from the layer table.
 //!
-//! The fixture is two transient units, each with `KillMode=control-group`, `--collect` and a
-//! `RuntimeMaxSec`, so systemd ends them even if the daemon dies mid-test. Neither is a process of
-//! the daemon, so the daemon exiting cannot orphan them.
+//! The fixture is two transient units with `--collect` and a `RuntimeMaxSec`, so systemd ends them
+//! even if the daemon dies mid-test. Neither is a process of the daemon, so the daemon exiting
+//! cannot orphan them.
 //!
-//! - **parent**: `Restart=always` (the shape of `oab-computer.service`), main process a sleeper.
-//! - **child**: `BindsTo=<parent>`, `After=<parent>`; runs a shell that starts a detached grandchild
-//!   (own session, as Chromium helpers are) and then a sleeper of its own.
+//! - **parent** (the daemon's shape): `Restart=always` and `KillMode=process`, like
+//!   `oab-computer.service`, whose apps survive a daemon restart. Its main process is a sleeper, and
+//!   a straggler is started in the same cgroup that outlives that main process, so a pass shows the
+//!   fixture really had the `KillMode=process` shape.
+//! - **child**: `BindsTo=<parent>`, `After=<parent>`, `KillMode=control-group`; runs a shell that
+//!   starts a detached grandchild (own session, as Chromium helpers are) and then a sleeper.
 //!
 //! The test requires, before killing anything, that the child's cgroup holds at least two processes
-//! (so a pass cannot come from a fixture that never started), kills the parent's main process with
-//! `SIGKILL`, and requires within 5 s that the child unit is inactive and that every process that
-//! was in its cgroup is gone (compared by PID and start time). It then watches the parent restart
-//! and requires that the child is not revived (V4). Both units are stopped afterwards on every path,
-//! and units left by a crashed earlier run (`<prefix>-*`) are stopped before the next test starts.
-//! If the cleanup itself does not leave nothing behind, the test fails. Only pass or fail and the
-//! elapsed milliseconds are recorded.
+//! and the parent's cgroup at least two (so a pass cannot come from a fixture that never started),
+//! kills the parent's main process with `SIGKILL`, and requires within 5 s that the child unit is
+//! inactive, that every process that was in its cgroup is gone (compared by PID and start time) and
+//! that the parent's straggler is still alive. It then watches the parent restart and requires that
+//! the child is not revived (V4).
+//!
+//! Cleanup proves itself. Child first, each unit gets `kill --kill-whom=all` (needed because
+//! `KillMode=process` leaves stragglers; unit-scoped, never a numeric pid), then `stop` and
+//! `reset-failed`, and the test fails unless every unit reads `inactive` or `failed`, no unit with the
+//! fixture's name is listed, and no recorded process (by pid and start time) exists. Units left by a
+//! crashed earlier run (`<prefix>-*`, probe units included) are killed and stopped before the next
+//! test starts. Only pass or fail and the elapsed milliseconds are recorded.
+//!
+//! After the self-test, the hardening probes of `hardening.rs` check the tiers by their effect.
 //!
 //! The mechanism is also refused unless the daemon is the main process of its own unit
 //! (`daemon_not_unit_main`): otherwise `BindsTo` could pull in a second daemon and leave the browser
@@ -39,6 +49,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::hardening::{self, MountTier, Tiers};
 use crate::proc::{self, Child, Spec, UnitCtl};
 use crate::run_record::is_unit_name;
 use crate::unit::{self, Kind, Req};
@@ -52,15 +63,23 @@ pub struct Mode {
     pub name: &'static str,
     /// The mount namespace tier (`PrivateTmp`, `ProtectHome`, `ProtectSystem`) works on this host.
     pub mount_tier: bool,
+    /// What the hardening probes found. `Tiers::NONE` when they did not run.
+    pub tiers: Tiers,
 }
 
+/// Test doubles' answers: no probe results (`Tiers::NONE`). The real mechanism builds its `Mode`
+/// from what the probes found (`mode_for`).
+#[cfg(test)]
 pub const SYSTEMD: Mode = Mode {
     name: "systemd",
     mount_tier: false,
+    tiers: Tiers::NONE,
 };
+#[cfg(test)]
 pub const SYSTEMD_MOUNT: Mode = Mode {
     name: "systemd+mount",
     mount_tier: true,
+    tiers: Tiers::NONE,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,7 +219,12 @@ impl Sys {
 
     /// Runs `program args` with a deadline and returns `(success, stdout)`. stdout is capped at
     /// 64 KiB, stderr is discarded, stdin is empty. `None` when it could not start or timed out.
-    fn run(&self, program: &str, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
+    pub(crate) fn run(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Option<(bool, String)> {
         let exe = self.find(program)?;
         let mut cmd = Command::new(exe);
         cmd.args(args)
@@ -235,26 +259,41 @@ impl Sys {
         Some((status.success(), text))
     }
 
-    fn systemctl(&self, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
+    pub(crate) fn systemctl(&self, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
         let mut a = vec!["--user", "--no-pager"];
         a.extend_from_slice(args);
         self.run("systemctl", &a, timeout)
     }
 
+    /// One property of a unit. `None` when `systemctl` could not start, timed out or exited
+    /// non-zero: a failed query is not an empty answer (#132).
     fn show(&self, unit: &str, prop: &str) -> Option<String> {
-        let (_, t) = self.systemctl(
+        let (ok, t) = self.systemctl(
             &["show", "--value", "-p", prop, unit],
             Duration::from_secs(5),
         )?;
-        Some(t.trim().to_string())
+        ok.then(|| t.trim().to_string())
     }
 
-    fn active_state(&self, unit: &str) -> Option<String> {
+    pub(crate) fn active_state(&self, unit: &str) -> Option<String> {
         self.show(unit, "ActiveState")
     }
 
+    /// `SIGKILL` to every process of the unit, not only the main one. Only for a name that passes
+    /// `is_unit_name`; never a numeric pid. `true` when `systemctl` accepted it.
+    pub(crate) fn kill_all(&self, unit: &str) -> bool {
+        if !is_unit_name(unit) {
+            return false;
+        }
+        self.systemctl(
+            &["kill", "--kill-whom=all", "--signal=SIGKILL", unit],
+            Duration::from_secs(10),
+        )
+        .is_some_and(|(ok, _)| ok)
+    }
+
     /// `true` once the unit is stopped (or never existed).
-    fn stop(&self, unit: &str) -> bool {
+    pub(crate) fn stop(&self, unit: &str) -> bool {
         if !is_unit_name(unit) {
             return false;
         }
@@ -289,7 +328,7 @@ impl Sys {
     }
 
     /// The pids in a unit's cgroup.
-    fn cgroup_pids(&self, unit: &str) -> Option<Vec<u32>> {
+    pub(crate) fn cgroup_pids(&self, unit: &str) -> Option<Vec<u32>> {
         let cg = self.show(unit, "ControlGroup")?;
         if !cg.starts_with('/') || cg.split('/').any(|c| c == "..") || cg.contains('\0') {
             return None;
@@ -325,14 +364,14 @@ fn own_unit(sys: &Sys) -> Option<String> {
 
 pub struct Systemd {
     pub sys: Sys,
-    /// Prefix of the self-test units. Tests use `oab-l2-test-selftest`.
+    /// Prefix of the self-test and probe units. Tests use `oab-l4-test-selftest`.
     pub selftest_prefix: String,
-    /// Prefix of the browser units. Tests use `oab-l2-test-browser`.
+    /// Prefix of the browser units. Tests use `oab-l4-test-browser`.
     pub browser_prefix: String,
     /// Refuse unless this process is the main process of its own unit. The daemon sets it; the
     /// `browser status --retry` CLI, which starts no managed child, does not.
     pub require_unit_main: bool,
-    /// The data root, for the mount tier probe.
+    /// The data root, for the mount tier probe. `None` or a missing directory: `not_applicable`.
     pub data_root: Option<PathBuf>,
 }
 
@@ -390,25 +429,38 @@ impl Systemd {
     }
 
     fn selftest(&self) -> Result<(), &'static str> {
+        let daemon_unit = if self.require_unit_main {
+            own_unit(&self.sys)
+        } else {
+            None
+        };
+        self.selftest_for(daemon_unit, true)
+    }
+
+    /// The self-test against a given daemon unit. `bind_child` is `false` only in the negative
+    /// control, which starts the child without `BindsTo` and must see the test fail.
+    fn selftest_for(
+        &self,
+        daemon_unit: Option<String>,
+        bind_child: bool,
+    ) -> Result<(), &'static str> {
         let s = &self.sys;
         let fail = Err(UNVERIFIED);
-        // Leftovers of a crashed earlier run.
+        // Leftovers of a crashed earlier run: fixture and probe units. A parent with
+        // `KillMode=process` leaves stragglers, so each is killed whole before it is stopped.
         let Some(old) = s.list_prefixed(&self.selftest_prefix) else {
             return fail;
         };
         for u in old {
+            s.kill_all(&u);
             if !s.stop(&u) {
                 return fail;
             }
         }
-        let daemon_unit = if self.require_unit_main {
-            own_unit(s)
-        } else {
-            None
-        };
         // The fixture is bound to the daemon's unit, so that unit must be one that ends with its
         // main process: not `RemainAfterExit`, not `ExitType=cgroup`, and a plain `simple`/`exec`
-        // service. Anything else would keep the binding alive after the daemon is gone.
+        // service. Anything else would keep the binding alive after the daemon is gone. A failed
+        // query is "not ok", never an empty answer.
         if let Some(u) = &daemon_unit {
             let shape_ok = s.show(u, "RemainAfterExit").as_deref() == Some("no")
                 && s.show(u, "ExitType")
@@ -423,9 +475,11 @@ impl Systemd {
         let mut fx = Fixture {
             sys: s,
             units: Vec::new(),
+            recorded: Vec::new(),
             // The daemon's own unit: the fixture parent is bound to it, so a daemon that dies
             // during the test takes the fixture with it at once, not at `RuntimeMaxSec`.
             daemon_unit,
+            bind_child,
         };
         let r = fx.run(&base);
         let clean = fx.cleanup();
@@ -437,61 +491,76 @@ impl Systemd {
         }
     }
 
-    /// Does the mount namespace tier work for a transient user unit here? (V11)
-    fn mount_probe(&self) -> bool {
-        let (Some(root), Some(_)) = (&self.data_root, self.sys.find("systemd-run")) else {
-            return false;
+    /// The hardening probes (L4): the base tier, then the mount tier. The base tier gates the
+    /// answer (its unit must start: the managed child carries a superset of its properties and
+    /// would fail the same way); the effects it finds are reported, never blocking. The mount tier
+    /// is applied only where the child can write what it needs (V11).
+    fn probe_tiers(&self) -> Result<Mode, &'static str> {
+        let memory_max = crate::child::memory_max_for(crate::child::host_memory_kib());
+        let tasks_max = crate::child::TASKS_MAX;
+        let base_props = unit::base_props(memory_max, tasks_max);
+        let Some(base) = hardening::probe_base(
+            &self.sys,
+            &self.selftest_prefix,
+            &base_props,
+            memory_max,
+            tasks_max,
+        ) else {
+            return Err(UNVERIFIED);
         };
-        let Some(rw) = root
-            .to_str()
-            .filter(|r| r.starts_with('/') && !r.contains(char::is_whitespace))
-        else {
-            return false;
+        let mount = self.probe_mount_tier(&base_props);
+        let mode = mode_for(Tiers {
+            base: Some(base),
+            mount,
+        });
+        eprintln!("{}", mode.tiers.log_line());
+        Ok(mode)
+    }
+
+    /// Does the mount namespace tier work for a transient user unit here, for the paths the child
+    /// needs? (V11)
+    fn probe_mount_tier(&self, base_props: &[String]) -> MountTier {
+        let Some(root) = self.data_root.as_ref().filter(|r| r.is_dir()) else {
+            return MountTier::NotApplicable;
         };
-        let rw_prop = format!("ReadWritePaths={rw}");
-        // Named under the self-test prefix so a leftover is found by the next sweep of leftovers,
-        // and bounded so it cannot outlive its probe.
-        let name = format!(
-            "{}-mount-{}",
-            self.selftest_prefix,
-            crate::state::random_hex(4)
-        );
-        let unit_arg = format!("--unit={name}");
-        let probe = self.sys.run(
-            "systemd-run",
-            &[
-                "--user",
-                "--quiet",
-                "--collect",
-                "--wait",
-                &unit_arg,
-                "-p",
-                "RuntimeMaxSec=20",
-                "-p",
-                "PrivateTmp=yes",
-                "-p",
-                "ProtectHome=read-only",
-                "-p",
-                "ProtectSystem=full",
-                "-p",
-                &rw_prop,
-                "--",
-                "/usr/bin/env",
-                "test",
-                "-w",
-                rw,
-            ],
-            Duration::from_secs(15),
-        );
-        let gone = self.sys.stop(&format!("{name}.service"));
-        probe.is_some_and(|(ok, _)| ok) && gone
+        // The child's own `TMPDIR`, made the way the child makes it, so the probe tests what the
+        // child will need to write under `ProtectHome=read-only`. Removed when this drops.
+        let Ok(tmp) = crate::child::RuntimeTmp::create_named(root, "oab-pr") else {
+            return MountTier::Dropped;
+        };
+        let rw = vec![root.clone(), tmp.path.clone()];
+        if rw.iter().any(|p| !unit::path_ok(p)) {
+            return MountTier::Dropped;
+        }
+        let mut props = base_props.to_vec();
+        props.extend(unit::mount_props(&rw));
+        match hardening::probe_mount(&self.sys, &self.selftest_prefix, &props, &rw) {
+            // The child must be able to write its root and its `TMPDIR`, and V11 must not have
+            // answered "no effect here". The other results are reported, not gating.
+            Some(v) if hardening::mount_applies(&v) => MountTier::Applied(v),
+            _ => MountTier::Dropped,
+        }
+    }
+}
+
+/// The mode the probes' findings make: the mount tier is in force exactly when it was applied.
+fn mode_for(tiers: Tiers) -> Mode {
+    let applied = matches!(tiers.mount, MountTier::Applied(_));
+    Mode {
+        name: if applied { "systemd+mount" } else { "systemd" },
+        mount_tier: applied,
+        tiers,
     }
 }
 
 struct Fixture<'a> {
     sys: &'a Sys,
     units: Vec<String>,
+    /// Every process the fixture was seen to start, by `(pid, start time)`: cleanup requires them
+    /// all gone.
+    recorded: Vec<(u32, u64)>,
     daemon_unit: Option<String>,
+    bind_child: bool,
 }
 
 impl Fixture<'_> {
@@ -523,6 +592,16 @@ impl Fixture<'_> {
         }
     }
 
+    /// The `(pid, start time)` of every process in a unit's cgroup.
+    fn inside(&self, unit: &str) -> Vec<(u32, u64)> {
+        self.sys
+            .cgroup_pids(unit)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| crate::state::proc_start_time(p).map(|t| (p, t)))
+            .collect()
+    }
+
     fn run(&mut self, base: &str) -> bool {
         let started = Instant::now();
         let ok = self.run_inner(base);
@@ -539,10 +618,12 @@ impl Fixture<'_> {
         let (parent_u, child_u) = (format!("{parent}.service"), format!("{child}.service"));
         let sleep = s.find("sleep").unwrap_or_default();
         let sleep = sleep.to_string_lossy().into_owned();
-        // The parent plays the daemon: it restarts after a kill, like `oab-computer.service`. The
-        // start limit and `RuntimeMaxSec` bound it if this process dies before cleanup.
+        // The parent plays the daemon: it restarts after a kill, like `oab-computer.service`, and
+        // like that unit it has `KillMode=process`, so a process it started outlives a restart of
+        // its main process. The start limit and `RuntimeMaxSec` bound it if this process dies
+        // before cleanup.
         let mut parent_props: Vec<String> = [
-            "KillMode=control-group",
+            "KillMode=process",
             "Restart=always",
             "RestartSec=1",
             "StartLimitIntervalSec=30",
@@ -556,40 +637,62 @@ impl Fixture<'_> {
             parent_props.push(format!("After={d}"));
         }
         let parent_props: Vec<&str> = parent_props.iter().map(String::as_str).collect();
-        if !self.start(&parent, &parent_props, &["/usr/bin/env", "-i", &sleep, "8"]) {
+        // The straggler is bounded by its own duration (25 s) and the main sleeper by 8 s, so
+        // nothing outlives about half a minute even if cleanup never runs.
+        let parent_script = hardening::escape(&format!(
+            "{sleep} 25 </dev/null >/dev/null 2>&1 & exec {sleep} 8"
+        ));
+        if !self.start(
+            &parent,
+            &parent_props,
+            &["/usr/bin/env", "-i", "/bin/sh", "-c", &parent_script],
+        ) {
             return false;
         }
-        if !self.wait(Duration::from_secs(3), || {
-            s.active_state(&parent_u).as_deref() == Some("active")
-        }) {
+        // The parent holds the main process and the straggler before anything is killed.
+        let mut parent_inside: Vec<(u32, u64)> = Vec::new();
+        let up = self.wait(Duration::from_secs(3), || {
+            parent_inside = self.inside(&parent_u);
+            parent_inside.len() >= 2 && s.active_state(&parent_u).as_deref() == Some("active")
+        });
+        self.recorded.extend(parent_inside.iter().copied());
+        if !up {
+            return false;
+        }
+        let main_pid: Option<u32> = s.show(&parent_u, "MainPID").and_then(|p| p.parse().ok());
+        let stragglers: Vec<(u32, u64)> = parent_inside
+            .iter()
+            .copied()
+            .filter(|(p, _)| Some(*p) != main_pid)
+            .collect();
+        if stragglers.is_empty() {
             return false;
         }
         let bind = format!("BindsTo={parent_u}");
         let after = format!("After={parent_u}");
-        let child_props = [
-            "KillMode=control-group",
-            "RuntimeMaxSec=20",
-            bind.as_str(),
-            after.as_str(),
-        ];
-        let script = format!(
+        let mut child_props = vec!["KillMode=control-group", "RuntimeMaxSec=20"];
+        if self.bind_child {
+            child_props.push(bind.as_str());
+            child_props.push(after.as_str());
+        }
+        let script = hardening::escape(&format!(
             "if command -v setsid >/dev/null 2>&1; then setsid {sleep} 30 </dev/null >/dev/null 2>&1 & \
              else ( {sleep} 30 </dev/null >/dev/null 2>&1 & ); fi; exec {sleep} 30"
-        );
-        if !self.start(&child, &child_props, &["/bin/sh", "-c", &script]) {
+        ));
+        if !self.start(
+            &child,
+            &child_props,
+            &["/usr/bin/env", "-i", "/bin/sh", "-c", &script],
+        ) {
             return false;
         }
         // The fixture must really hold a detached grandchild, or a pass would mean nothing.
         let mut inside: Vec<(u32, u64)> = Vec::new();
         let ready = self.wait(Duration::from_secs(3), || {
-            inside = s
-                .cgroup_pids(&child_u)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|p| crate::state::proc_start_time(p).map(|t| (p, t)))
-                .collect();
+            inside = self.inside(&child_u);
             inside.len() >= 2 && s.active_state(&child_u).as_deref() == Some("active")
         });
+        self.recorded.extend(inside.iter().copied());
         if !ready {
             return false;
         }
@@ -603,15 +706,19 @@ impl Fixture<'_> {
         {
             return false;
         }
+        let alive = |(p, t): &(u32, u64)| crate::state::proc_start_time(*p) == Some(*t);
         let gone = self.wait(Duration::from_secs(5), || {
             matches!(
                 s.active_state(&child_u).as_deref(),
                 Some("inactive" | "failed")
-            ) && inside
-                .iter()
-                .all(|(p, t)| crate::state::proc_start_time(*p) != Some(*t))
+            ) && !inside.iter().any(alive)
         });
         if !gone {
+            return false;
+        }
+        // `KillMode=process`: the parent's straggler survived the kill of its main process. If it
+        // did not, the fixture did not have the daemon's shape and a pass would prove nothing.
+        if !stragglers.iter().any(alive) {
             return false;
         }
         // The parent restarts (Restart=always). The child must stay down.
@@ -635,13 +742,36 @@ impl Fixture<'_> {
         )
     }
 
-    /// Stops every unit that was started, child first. True when none is left active.
+    /// Kills, stops and verifies every unit that was started, child first. True only when every
+    /// unit reads `inactive` or `failed` and none of the recorded processes exists any more.
     fn cleanup(&mut self) -> bool {
         let mut all = true;
-        for u in self.units.iter().rev() {
+        let units = std::mem::take(&mut self.units);
+        for u in units.iter().rev() {
+            // A parent with `Restart=always` has a new main process and a new straggler after a
+            // restart, which no earlier look recorded. Record what is in the unit now, before the
+            // kill, so that cleanup cannot pass while one of them lives (#132).
+            let now = self.inside(u);
+            self.recorded.extend(now);
+            self.sys.kill_all(u);
             all &= self.sys.stop(u);
         }
-        self.units.clear();
+        let recorded = std::mem::take(&mut self.recorded);
+        // SIGKILL is asynchronous: give the kernel a moment to reap.
+        let end = Instant::now() + Duration::from_secs(3);
+        loop {
+            let left = recorded
+                .iter()
+                .any(|(p, t)| crate::state::proc_start_time(*p) == Some(*t));
+            if !left {
+                break;
+            }
+            if Instant::now() >= end {
+                all = false;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         all
     }
 }
@@ -664,11 +794,7 @@ impl Mechanism for Systemd {
             return Err(NOT_UNIT_MAIN);
         }
         self.selftest()?;
-        Ok(if self.mount_probe() {
-            SYSTEMD_MOUNT
-        } else {
-            SYSTEMD
-        })
+        self.probe_tiers()
     }
 
     fn spawn(&self, mode: Mode, kind: SpawnKind, l: &Launch) -> std::io::Result<Spawned> {

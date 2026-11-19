@@ -59,6 +59,8 @@ public actor PlaywrightBackend: BrowserBackend {
 
     public var mode: String? { external == nil ? "managed" : "external" }
 
+    public var engineSummary: BrowserEngineSummary? { managed?.locator.systemChromeSummary() }
+
     /// Process name and uid of the external listener, names only (R7.5.5).
     public var ownerSummary: String? { lastOwner.map { "\($0.name) (uid \($0.uid))" } }
 

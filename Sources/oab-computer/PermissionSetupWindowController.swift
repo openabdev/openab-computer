@@ -525,6 +525,8 @@ final class PermissionSetupWindowController: NSWindowController {
         browserPage.cancelButton.action = #selector(browserCancelTapped)
         browserPage.retryButton.target = self
         browserPage.retryButton.action = #selector(browserRetryTapped)
+        browserPage.useChromeButton.target = self
+        browserPage.useChromeButton.action = #selector(browserUseChromeTapped)
         browserPage.continueWithoutButton.target = self
         browserPage.continueWithoutButton.action = #selector(browserContinueWithoutTapped)
         browserPage.signInButton.target = self
@@ -578,6 +580,36 @@ final class PermissionSetupWindowController: NSWindowController {
     }
 
     @objc private func browserCancelTapped() { browserTools?.cancelInstall() }
+
+    /// **Use my installed Google Chrome**: checks Chrome read-only, shows the consent text, and installs and records
+    /// nothing until the user confirms. Cancel leaves the failure as it was.
+    @objc private func browserUseChromeTapped() {
+        guard let browserTools, let offer = browserTools.requestChromeConsent() else { return }
+        let alert = NSAlert()
+        switch offer {
+        case .problem(let problem):
+            alert.messageText = WizardCopy.chromeConsentTitle
+            alert.informativeText = WizardCopy.chromeProblem(problem)
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            renderBrowserPage()
+        case .consent(let title, let text, _):
+            alert.messageText = title
+            alert.informativeText = text
+            alert.addButton(withTitle: WizardCopy.chromeConsentConfirm)
+            alert.addButton(withTitle: WizardCopy.browserCancel)
+            NSApp.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else {
+                browserTools.cancelChromeConsent()
+                renderBrowserPage()
+                return
+            }
+            browserTools.confirmChromeConsent { [weak self] _, outcome in
+                guard let self, self.isWindowVisible, self.page == .browser else { return }
+                if case .complete(let completion) = outcome { self.completeBrowserPage(completion) }
+            }
+        }
+    }
 
     /// The page's Continue and Retry start the install on the page (R5.6). A completed step moves the wizard on.
     private func handleBrowserStep(_ step: BrowserPageStep) {

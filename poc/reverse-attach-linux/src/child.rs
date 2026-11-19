@@ -35,9 +35,16 @@ use sha2::{Digest, Sha256};
 use crate::containment::{Availability, Launch, SpawnKind, Spawned};
 use crate::proc::{Child, StderrClass};
 use crate::run_record::{self, Handle};
-use crate::state::{self, InstallRecord, Root, State, MARKER_TEXT, OWNED_DATA};
+use crate::state::{self, Fail, InstallRecord, Root, State, MARKER_TEXT, OWNED_DATA};
 use crate::stdio_client::{Class, Client, MAX_LINE};
 use crate::sweep;
+
+/// How long a start waits for `.install.lock` (an `install`, `update` or `remove` holds it
+/// exclusive) before it answers `install_busy`.
+const INSTALL_LOCK_WAIT: Duration = Duration::from_secs(2);
+/// How long a start waits for the sweep lock that another start holds, before it answers
+/// `sweep_busy`.
+const SWEEP_WAIT: Duration = Duration::from_secs(10);
 
 pub const PASSWORD_STORE: &str = "--password-store=basic";
 
@@ -278,29 +285,41 @@ impl Default for Spawner {
 
 /// A private directory with a short path for the child's `TMPDIR` (Chromium puts a Unix socket
 /// below it, and a socket path over about 100 bytes is refused). One fixed name per install root,
-/// so a directory a killed child left behind is found, and removed, by the next start.
-struct RuntimeTmp {
+/// so a directory a killed child left behind is found, and removed, by the next start. The base is
+/// `XDG_RUNTIME_DIR` when that is a private directory of ours and `/tmp/oab-<euid>` (0700, ours)
+/// otherwise; see `state::open_private_base`.
+pub(crate) struct RuntimeTmp {
     parent: OwnedFd,
     name: String,
-    path: PathBuf,
+    pub(crate) path: PathBuf,
 }
 
 impl RuntimeTmp {
-    fn create(root_abs: &Path) -> Result<RuntimeTmp, &'static str> {
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute() && p.as_os_str().len() <= 40 && p.is_dir());
-        let base = runtime.unwrap_or_else(|| PathBuf::from("/tmp"));
-        let parent = rustix::fs::open(
-            &base,
-            rustix::fs::OFlags::RDONLY
-                | rustix::fs::OFlags::DIRECTORY
-                | rustix::fs::OFlags::CLOEXEC,
-            rustix::fs::Mode::empty(),
-        )
-        .map_err(|_| "tmp_unavailable")?;
+    pub(crate) fn create(root_abs: &Path) -> Result<RuntimeTmp, &'static str> {
+        RuntimeTmp::create_named(root_abs, "oab-pw")
+    }
+
+    fn dir_name(root_abs: &Path, prefix: &str) -> String {
         let h = Sha256::digest(root_abs.as_os_str().as_encoded_bytes());
-        let name = format!("oab-pw-{}", crate::manifest::hex(&h[..4]));
+        format!("{prefix}-{}", crate::manifest::hex(&h[..4]))
+    }
+
+    /// Where the managed child's `TMPDIR` is for this install root, decided without creating
+    /// anything (`browser status` checks it, V2). Uses this process's `XDG_RUNTIME_DIR`, so it
+    /// matches the daemon's only when both run in the same user session.
+    pub(crate) fn expected_path(root_abs: &Path) -> PathBuf {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        state::private_base_path(runtime.as_deref()).join(RuntimeTmp::dir_name(root_abs, "oab-pw"))
+    }
+
+    /// Same, under another fixed prefix of the same length. `browser signin` uses its own so that
+    /// starting it never removes the directory of a managed child that started a moment earlier:
+    /// the profile lock decides who may run, and each side only ever touches its own directory.
+    pub(crate) fn create_named(root_abs: &Path, prefix: &str) -> Result<RuntimeTmp, &'static str> {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        let (parent, base) =
+            state::open_private_base(runtime.as_deref()).map_err(|_| "tmp_unavailable")?;
+        let name = RuntimeTmp::dir_name(root_abs, prefix);
         let mut rep = state::Report::default();
         // A directory of ours that an earlier child left: marker-gated removal.
         let _ = state::remove_marked_tree(&parent, &name, OWNED_DATA, &mut rep);
@@ -332,7 +351,7 @@ pub fn memory_max_for(mem_total_kib: Option<u64>) -> u64 {
     }
 }
 
-fn host_memory_kib() -> Option<u64> {
+pub(crate) fn host_memory_kib() -> Option<u64> {
     let t = std::fs::read_to_string("/proc/meminfo").ok()?;
     t.lines()
         .find_map(|l| l.strip_prefix("MemTotal:"))?
@@ -358,6 +377,8 @@ pub struct Config {
     pub ping_timeout: Duration,
     /// A child that has said nothing for this long is pinged before a call is sent to it.
     pub idle_ping_after: Duration,
+    /// How long a start waits for the sweep lock (`SWEEP_WAIT`; tests shorten it).
+    pub sweep_wait: Duration,
 }
 
 impl Config {
@@ -370,6 +391,7 @@ impl Config {
             init_timeout: Duration::from_secs(15),
             ping_timeout: Duration::from_secs(2),
             idle_ping_after: Duration::from_secs(30),
+            sweep_wait: SWEEP_WAIT,
         }
     }
 }
@@ -527,6 +549,12 @@ impl Supervisor {
             }
         };
         let root = self.root()?;
+        // A start is not a moment: it reads the install, sweeps, spawns and only then records the
+        // child. Hold `.install.lock` shared across all of it, so `remove`, `update` and `install`
+        // (exclusive) cannot run in between and delete what the new child executes from (#132). Not
+        // a failure of the child, so it is not counted and not latched.
+        let install_lock =
+            state::SharedLock::try_acquire(&root, INSTALL_LOCK_WAIT).map_err(|_| "install_busy")?;
         let rec = match state::read_state(&root) {
             Ok(State::Installed(r)) => r,
             Ok(State::NotInstalled) => return Err("not_installed"),
@@ -534,7 +562,21 @@ impl Supervisor {
             Err(_) => return Err("state_unavailable"),
         };
         let mech = Arc::clone(self.avail.mechanism());
-        let _ = sweep::sweep_before_start(&root, &|u| mech.stop_unit(u));
+        // Wait for the sweep lock rather than skip it, and keep it until this child's record is
+        // written: a second start's sweep would otherwise kill this child while no record claims it.
+        // Fail closed (#132): a start that did not sweep and holds no guard would spawn a child that
+        // neither the lock nor a record protects, so every outcome but a held guard is a refusal. A
+        // run directory too full to list makes the sweep refuse (`run_records_full`: no child is
+        // started that the next sweep could not tell from a stray); a lock still held when the wait
+        // ends is `sweep_busy`; any other sweep error (the lock file cannot be opened) is
+        // `sweep_unavailable`. None of them is a failure of the child: nothing is counted or latched.
+        let sweep_guard =
+            match sweep::sweep_holding(&root, &|u| mech.stop_unit(u), self.cfg.sweep_wait) {
+                Ok((_, Some(guard))) => guard,
+                Ok((_, None)) => return Err("sweep_busy"),
+                Err(Fail("run_records_full")) => return Err("run_records_full"),
+                Err(_) => return Err("sweep_unavailable"),
+            };
         let tmp = RuntimeTmp::create(root.abs_path())?;
         let seat = (self.cfg.seat)();
         let v = launch_vector(&rec, root.abs_path(), &tmp.path, seat.as_ref());
@@ -570,6 +612,10 @@ impl Supervisor {
                 return Err("run_record_failed");
             }
         };
+        // The child has its record: a sweep or a `remove` now sees it and leaves it alone.
+        drop(sweep_guard);
+        drop(install_lock);
+        child.set_others(sweep::others_live(&root, child.pid()));
         let (Some(stdin), Some(lines)) = (child.stdin.take(), child.lines.take()) else {
             child.stop();
             return Err("spawn_failed");

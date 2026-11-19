@@ -9,19 +9,19 @@ details are in the README sections
 [Browser tools](../README.md#browser-tools) and
 [What the app downloads](../README.md#what-the-app-downloads), and the designs are in
 [`adr/browser-tiers.md`](adr/browser-tiers.md) (macOS) and
-[`adr/linux-browser-tier.md`](adr/linux-browser-tier.md) (Linux, planned).
+[`adr/linux-browser-tier.md`](adr/linux-browser-tier.md) (Linux).
 
 ## At a glance
 
 | | macOS | Linux |
 |---|---|---|
-| Who runs Playwright | The app, as a child process over stdio (**managed**), or an operator-run listener you point it at (**external**) | An operator-style unit, `oab-computer-pw-mcp.service`, that `install-linux.sh` creates (**external**) |
-| Listening port | Managed: none. External: `127.0.0.1:8794` | `127.0.0.1:8794`, no authentication |
-| How you install it | Setup wizard page or menu item | `install-linux.sh` (skip with `--no-browser`) |
-| Browser | A pinned Chromium (Chrome for Testing) the app downloads | The distro `chromium` if present, otherwise Playwright's own Chromium |
-| Update and remove | Menu items | By hand, see [Linux update and remove](#linux-update-and-remove) below |
-| Sign-in window | Menu item **Open Playwright window to sign in…** | The browser window is on the node's desktop seat |
-| Who can call the tools | Through oab-computer, the `owner` profile only. With an external listener, anyone who can reach its port directly bypasses that check | Through oab-computer, the `owner` profile only. Port `8794` itself is open to every local user, see the warning below |
+| Who runs Playwright | The app, as a child process over stdio (**managed**), or an operator-run listener you point it at (**external**) | After 0.12.0: the daemon, as a child over stdio in its own systemd user unit (**managed**). In 0.12.0 and earlier, and on a host that still has the old unit: `oab-computer-pw-mcp.service` (**external**) |
+| Listening port | Managed: none. External: `127.0.0.1:8794` | Managed: none. External: `127.0.0.1:8794`, no authentication |
+| How you install it | Setup wizard page or menu item | After 0.12.0: `install-linux.sh` asks (`--browser managed` or `--yes` to agree, `--browser none` or `--no-browser` to skip), or `oab-computer browser install` |
+| Browser | A pinned Chromium (Chrome for Testing) the app downloads | A pinned Chromium (Chrome for Testing) the install downloads, with a pinned Node.js |
+| Update and remove | Menu items | `oab-computer browser update` and `remove` |
+| Sign-in window | Menu item **Open Playwright window to sign in…** | `oab-computer browser signin`, run over `ssh -t`; the window is on the node's seat |
+| Who can call the tools | Through oab-computer, the `owner` profile only. With an external listener, anyone who can reach its port directly bypasses that check | Through oab-computer, the `owner` profile only. A host that still runs the old unit has port `8794` open to every local user, see the warning below |
 
 Every `browser_*` call acts as the user on the sites the browser is signed in to, and
 `browser_evaluate` and `browser_run_code_unsafe` run arbitrary code in the page or in Node. Treat
@@ -34,10 +34,10 @@ only the first slot exists.
 
 | Tier | What it is | Status in 0.12.0 |
 |---|---|---|
-| Playwright (Tier P) | `@playwright/mcp` driving Chromium. Managed or external. | Built on macOS. Linux has the external form only |
+| Playwright (Tier P) | `@playwright/mcp` driving Chromium. Managed or external. | Built on macOS. Linux has both forms after 0.12.0, and the external form only before |
 | Apple Events (Tier A) | Drive Safari or Chrome through Apple Events, no download | Not built. A call that asks for `appleEvents` answers "not set up" |
 | CDP (Tier C) | Attach to a browser over the DevTools protocol | Not built |
-| Installed-Chrome fallback | Use your own Chrome when macOS refuses the downloaded Chromium | Not built ([#128](https://github.com/openabdev/openab-computer/issues/128)) |
+| Installed-Chrome fallback | Use your own Chrome when macOS refuses the downloaded Chromium | Not in 0.12.0. Applies from the next release ([#128](https://github.com/openabdev/openab-computer/issues/128)) |
 
 A caller can send an `OAB-Browser-Backend` request header with `auto`, `playwright` or `appleEvents`.
 Only direct `/mcp` requests are read for it; switchboard and reverse-attach callers use the stored
@@ -82,6 +82,42 @@ full list of what the app fetches and never does is in the README
 
 An install takes effect on the next `browser_*` call with no restart. With nothing installed the
 browser tools are not listed, and a call says Playwright is not installed.
+
+### If macOS refuses the downloaded Chromium (after 0.12.0)
+
+This applies from the next release after 0.12.0. In 0.12.0 the install stops with the message
+"macOS would not run the downloaded browser" and offers Retry only.
+
+When the install stops for that reason and Google Chrome is installed, the page offers **Retry**,
+**Continue without** and **Use my installed Google Chrome**. The menu offers **Use my installed
+Google Chrome…** next to **Install Playwright…**. With any other failure (offline, a digest
+mismatch, not enough disk) or without Chrome, it is never offered.
+
+It asks first. The text says what changes, and nothing is installed or recorded until you confirm;
+Cancel leaves the page as it was.
+
+- Playwright drives your Chrome program, but with this app's own profile folder
+  (`~/Library/Application Support/oab-computer/playwright/profile`), never your Chrome profile. A
+  Chrome you have open keeps running on its own profile.
+- **Your Chrome is not version-pinned and no digest of it is checked by the app.** Whatever version is
+  installed is what agents drive, including after Chrome updates itself.
+- Only Node.js and the Playwright MCP server are downloaded, checked against the values built into the
+  app as for a normal install. Chromium is not downloaded.
+- At install and on every start the app checks that it is `Google Chrome.app` in `/Applications` or
+  `~/Applications` (not a link, not Chromium, Chrome Beta or another fork), signed by Google LLC (a
+  Developer ID Application certificate with team `EQHXZ8M8AV`, checked with the Security framework,
+  nested code included), and version 120 or newer. A failed check stops the browser tools and the menu
+  says why (`chrome_missing`, `chrome_not_google`, `chrome_invalid_signature`, `chrome_too_old`,
+  `chrome_unreadable`); they work again once Chrome passes. The check runs in full each time the managed
+  child is started, and a Chrome update is picked up then; it is never skipped.
+- The choice is stored in `install.json`, so it survives a restart. The menu then shows
+  **Browser: your installed Google Chrome <version> (not pinned, no digest checked)**, and `sys_info`
+  shows `chrome: system <version>` for the backend. **Use the downloaded Chromium instead…** downloads
+  and checks the pinned Chromium and switches to it; if that fails, your Chrome choice keeps working.
+- An update keeps the chosen browser and downloads no Chromium.
+- **Remove Playwright…** removes the choice as a setting along with `install.json`. The app never
+  copies, moves, changes or deletes Chrome, never touches its profile, and still never adds or removes
+  `com.apple.quarantine`.
 
 ### Update
 
@@ -133,111 +169,76 @@ files. It starts nothing.
 
 ## Linux
 
-### Today: an external unit on 8794
+### Managed (after 0.12.0)
 
-`install-linux.sh` sets up, unless you pass `--no-browser`:
+`oab-computer browser install` downloads the pinned Node.js, `@playwright/mcp` and Chromium into
+`${XDG_DATA_HOME:-$HOME/.local/share}/oab-computer/playwright/`, checks every file against sizes and
+SHA-256 digests built into the binary, and runs a headless health check. The daemon then starts the
+browser on the first `browser_*` call, as a child over stdio in a transient systemd user unit that
+ends with the daemon. It has no port and no `MCP_UPSTREAM` line. What is downloaded, how big it is,
+the root actions an install may ask for, offline install, sign-in and what `remove` deletes are in
+[Linux setup](linux-setup.md#4-browser-tools-playwrightmcp); the figures are the same ones the
+[macOS table](../README.md#what-the-app-downloads) uses, for the Linux builds (about 259 MB to
+download, about 632 MB on disk (629 MB on arm64), about 891 MB of free space while it runs (888 MB on arm64)).
 
-- `@playwright/mcp` 0.0.82, installed with `npm` under `~/.local/oab-computer/pw-mcp` (the installer
-  needs `node` and `npm`; without them it skips the browser tools),
-- a Chromium: the distro `chromium` when present, otherwise Playwright's own build downloaded into
-  `~/.cache/ms-playwright` (this download has no size or hash pinned by this project),
-- a user unit `oab-computer-pw-mcp.service` listening on `127.0.0.1:8794`, with a persistent profile
-  in `~/.local/oab-computer/pw-profile`,
-- the `MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp` line in `oab-computer.service`, and a Chromium
-  policy file `/etc/chromium/policies/managed/oab-computer.json` (when `sudo` allows it) that blocks
-  camera, microphone, notification and location prompts,
-- on Ubuntu with `apparmor_restrict_unprivileged_userns` set (and `sudo` allowed), an AppArmor profile
-  `/etc/apparmor.d/playwright-chromium` that lets Playwright's own Chromium create its sandbox,
-- the font packages `fonts-dejavu-core`, `fonts-liberation`, `fonts-noto-cjk` and
-  `fonts-noto-color-emoji` (when no DejaVu, Liberation or Noto font is present and `sudo` allows it), so pages do not render as boxes.
+- `install-linux.sh` shows what an install downloads and asks first. With no terminal it downloads
+  nothing unless you pass `--browser managed` or `--yes`.
+- The browser is headed when the seat's Wayland socket exists, else headless. It uses one persistent
+  profile with `--password-store=basic`: saved passwords are obfuscated, not strongly encrypted.
+- For a login the browser should keep, run `ssh -t <node> '~/.local/oab-computer/oab-computer browser signin'`
+  and use the window ([Sign in](linux-setup.md#sign-in)). A node with no monitor is driven through the
+  `screenshot`, `mouse` and `key` tools.
+- `oab-computer browser update` is prompted, never silent, and keeps the old version if the new one
+  fails its health check. `oab-computer browser remove` deletes only what carries the installer's
+  marker and prints what it left.
+- A migrated host starts with a fresh profile; the old profile stays and holds the old cookies
+  ([Upgrading a host that already has a browser unit](linux-setup.md#upgrading-a-host-that-already-has-a-browser-unit)).
+
+### External, on 8794 (0.12.0 and earlier, or by choice)
+
+0.12.0 and earlier set up a user unit `oab-computer-pw-mcp.service` listening on `127.0.0.1:8794`
+(with `@playwright/mcp` 0.0.82 installed by `npm`, a distro or Playwright-downloaded Chromium, the
+`MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp` line in `oab-computer.service`, a Chromium policy file
+and, on Ubuntu 24.04, an AppArmor profile). The current installer writes none of it. A host that
+still runs that unit, or one where you set `MCP_BROWSER_BACKEND=external` on purpose, keeps this
+behavior:
 
 **Port 8794 is unauthenticated.** Any local user on the node can call every browser tool, including
-`browser_run_code_unsafe` (arbitrary Node code). On a shared host use `--no-browser`. The installer
-creates no `tailscale serve` mapping for 8794.
-
-The browser is headed and appears on the node's desktop seat (a real desktop, or the headless sway
-seat from `--headless-seat`). Sign in to sites by using that window through the `screenshot` and
-`mouse` tools or at the node itself. Linux has no wizard, no menu bar and no update or remove
-commands for the browser: use `systemctl --user` and the steps in [Linux setup](linux-setup.md#4-browser-tools-playwrightmcp).
-
-### Linux update and remove
-
-There is no command for these. Re-running `install-linux.sh` without `--no-browser` does neither: it
-recreates the unit and the `MCP_UPSTREAM` line, and it skips `npm install` when `playwright-mcp`
-already exists, so it neither updates the browser nor keeps it removed.
-
-To update, stop the daemon first, then the unit, change the version, and start the unit before the
-daemon. The running daemon keeps its `MCP_UPSTREAM` setting until it stops, so stopping only the
-unit would leave a freed port 8794 that any local user could bind:
-
-```sh
-systemctl --user stop oab-computer.service
-systemctl --user stop oab-computer-pw-mcp.service
-cd ~/.local/oab-computer/pw-mcp && npm install --save-exact @playwright/mcp@NEW_VERSION
-```
-
-When the installer downloaded Playwright's own Chromium, the new `@playwright/mcp` may need a
-matching build: run `npx playwright install chromium` in `~/.local/oab-computer/pw-mcp`, then update
-the `Environment=PW_CHROMIUM=` line in `~/.config/systemd/user/oab-computer-pw-mcp.service` to the
-new binary path and run `systemctl --user daemon-reload`. A unit that uses the distro `chromium`
-needs neither step. Then start the unit, check that it listens, and start the daemon:
-
-```sh
-systemctl --user start oab-computer-pw-mcp.service
-ss -ltnp 'sport = :8794'
-systemctl --user start oab-computer.service
-```
-
-To remove the browser tools, stop the daemon first and edit `oab-computer.service` so it no longer
-points at port 8794 (a freed port could be bound by any local user, who would then answer
-`browser_*` calls):
-
-```sh
-systemctl --user stop oab-computer.service
-sed -i '/^Environment=MCP_UPSTREAM=browser=/d' ~/.config/systemd/user/oab-computer.service
-systemctl --user disable --now oab-computer-pw-mcp.service
-rm ~/.config/systemd/user/oab-computer-pw-mcp.service
-rm -r ~/.local/oab-computer/pw-mcp ~/.local/oab-computer/pw-profile   # the profile holds your sign-ins
-systemctl --user daemon-reload
-systemctl --user start oab-computer.service
-```
-
-Leftovers you may also delete: `/etc/apparmor.d/playwright-chromium`, the Chromium policy file
-`/etc/chromium/policies/managed/oab-computer.json`, and the unit's output and config files if
-present. Leave `~/.cache/ms-playwright` alone: it is Playwright's shared cache, and other
-Playwright installs of yours may keep browsers there.
-
-### Planned: a managed Linux tier
-
-A managed tier that installs a pinned Playwright on demand, like macOS, is designed and accepted but
-**not implemented** as of v0.12.0 (no `oab-computer browser` command exists). See
-[`adr/linux-browser-tier.md`](adr/linux-browser-tier.md), its
-[requirements](requirements/linux-browser-tier.md), and issues
-[#119](https://github.com/openabdev/openab-computer/issues/119) and
-[#132](https://github.com/openabdev/openab-computer/issues/132).
+`browser_run_code_unsafe` (arbitrary Node code). The installer creates no `tailscale serve` mapping
+for 8794. A managed install wins over the old line unless `MCP_BROWSER_BACKEND=external` is set, and
+the installer only warns about the old unit, with the exact `systemctl --user disable --now <unit>`
+command. The steps to turn it off and to remove what is left are in
+[Linux setup](linux-setup.md#upgrading-a-host-that-already-has-a-browser-unit).
 
 ## What differs by platform
 
 | | macOS only | Linux only | Both |
 |---|---|---|---|
 | Managed Playwright (wizard and menu install, update, remove, sign-in window) | yes | | |
+| Managed Playwright (`oab-computer browser install`, `update`, `remove`, `signin`, no port) | | yes, after 0.12.0 | |
 | The router and the `OAB-Browser-Backend` header | yes | | |
 | Profile filtering of upstream tools against the built-in catalog | yes (a tool Playwright adds later stays hidden until the catalog is updated) | | |
-| Pass-through of whatever the upstream lists | | yes | |
-| `--no-browser` installer option and the 8794 caveat | | yes | |
-| External Playwright on loopback 8794 | | | yes, on Linux by default |
+| Pass-through of whatever the external upstream lists (the managed backend filters to the catalog) | | yes | |
+| After 0.12.0: `--browser managed\|none`, `--yes` and `--apply-system-changes` installer options; the 8794 caveat of an old unit | | yes | |
+| External Playwright on loopback 8794 | | | yes, on Linux only for an old install or `MCP_BROWSER_BACKEND=external` |
 | `owner`-only access, persistent profile with cookies | | | yes |
 
-The Linux pass-through is described in [Tool profiles](tool-profiles.md).
+The Linux external pass-through is described in [Tool profiles](tool-profiles.md).
 
 ## Troubleshooting
 
 - **"Browser tools are not set up"** (macOS): install Playwright from the wizard, or pass
   `--upstream browser=…`. The menu row names the state.
 - **macOS refuses to run the downloaded Chromium:** the install stops with that message. The app never
-  adds or removes the `com.apple.quarantine` attribute, and the installed-Chrome fallback is not built
-  ([#128](https://github.com/openabdev/openab-computer/issues/128)).
-- **No `browser_*` tools on Linux:** the upstream is down. Check
-  `systemctl --user status oab-computer-pw-mcp.service`; the tools come back when it answers.
-- **A site shows a login wall or a captcha:** use the sign-in window (macOS) or the node's desktop
-  (Linux) to sign in once. Some sites refuse automated browsers.
+  adds or removes the `com.apple.quarantine` attribute. From the next release after 0.12.0 it also
+  offers **Use my installed Google Chrome** ([#128](https://github.com/openabdev/openab-computer/issues/128),
+  [above](#if-macos-refuses-the-downloaded-chromium-after-0120)); 0.12.0 offers Retry only.
+- **The browser tools stopped and the menu names a `chrome_…` code** (after 0.12.0): the installed
+  Chrome you chose no longer passes its check. Reinstall or update Google Chrome, or choose **Use the
+  downloaded Chromium instead…**.
+- **No `browser_*` tools on Linux:** run `~/.local/oab-computer/oab-computer browser status` (the binary is not on `PATH`; later `oab-computer` commands here mean that path) and read `sys_info.browser`. `not_installed` means run
+  `oab-computer browser install`; `containment_unverified` means this host has no working user
+  manager, and the managed browser will not start without one; `off` means `OAB_BROWSER=off`. On an
+  old external install, check `systemctl --user status oab-computer-pw-mcp.service`.
+- **A site shows a login wall or a captcha:** use the sign-in window (macOS) or
+  `oab-computer browser signin` (Linux) to sign in once. Some sites refuse automated browsers.

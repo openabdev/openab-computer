@@ -111,7 +111,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: ShellCheck
-        run: shellcheck scripts/install-linux.sh scripts/test-install-linux.sh scripts/test-name-consistency.sh scripts/test-legacy-agent.sh
+        run: shellcheck scripts/install-linux.sh scripts/test-install-linux.sh scripts/test-name-consistency.sh scripts/test-legacy-agent.sh scripts/release-smoke-linux.sh scripts/test-release-smoke-linux.sh scripts/check-release-record.sh scripts/test-cutover-guide.sh poc/reverse-attach-linux/pw-mcp.sh scripts/test-pw-mcp-deprecated.sh
       - name: Generated units (fake HOME, stubbed systemctl/tailscale/loginctl)
         # Diffs each written unit against its expected text and runs systemd-analyze verify (#90).
         run: bash scripts/test-install-linux.sh
@@ -119,6 +119,16 @@ jobs:
         run: |
           bash scripts/test-name-consistency.sh
           bash scripts/test-legacy-agent.sh
+      - name: Release smoke gates and the release-record check (fixtures, no network, no systemd)
+        # The pure parts of scripts/release-smoke-linux.sh and scripts/check-release-record.sh. The
+        # smoke itself runs in .github/workflows/linux-release-smoke.yml (dispatch and release only).
+        run: bash scripts/test-release-smoke-linux.sh
+      - name: "Cutover guide: its shell blocks parse, its drop-in removal block and grep match the fixtures"
+        # Runs the guide's own text against fixtures under a temporary HOME. Touches no unit or port.
+        run: bash scripts/test-cutover-guide.sh
+      - name: pw-mcp.sh is marked deprecated and still launches unchanged (D14)
+        # A stub stands in for playwright-mcp; nothing real starts and no port opens.
+        run: bash scripts/test-pw-mcp-deprecated.sh
 
   linux-hands-node:
     name: Linux hands node (${{ matrix.arch }})

@@ -29,6 +29,43 @@ done
     )
 }
 
+/// Names `BROWSER_TOOLS[from..to]` as a JSON array.
+fn tools_between(from: usize, to: usize) -> String {
+    let items: Vec<String> = BROWSER_TOOLS[from..to]
+        .iter()
+        .map(|t| format!("{{\"name\":\"{t}\"}}"))
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+/// A stub that passes identity and navigation, and whose `tools/list` answer is picked by the
+/// request cursor: `arms` are shell `case` arms over `$cur` that set `r` to the result, or to `ERR`
+/// for a JSON-RPC error.
+fn paged_server(arms: &str) -> String {
+    format!(
+        r#"n=0
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"serverInfo":{{"name":"Playwright","version":"1"}},"capabilities":{{}}}}}}\n' "$id";;
+    *'"method":"tools/list"'*)
+      n=$((n+1))
+      cur=$(printf '%s' "$line" | sed -n 's/.*"cursor":"\([^"]*\)".*/\1/p')
+      case "$cur" in
+{arms}
+      esac
+      if [ "$r" = ERR ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32000,"message":"no"}}}}\n' "$id"
+      else
+        printf '{{"jsonrpc":"2.0","id":%s,"result":%s}}\n' "$id" "$r"
+      fi;;
+    *'"method":"tools/call"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"content":[],"isError":false}}}}\n' "$id";;
+  esac
+done
+"#
+    )
+}
+
 fn spec(script: &str, cwd: &Path) -> Spec {
     Spec {
         exe: PathBuf::from("/bin/sh"),
@@ -167,13 +204,11 @@ fn the_launch_vector_has_no_listener_and_no_sandbox_bypass() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_detached_grandchild_under_staging_does_not_outlive_the_check() {
-    use std::os::unix::fs::PermissionsExt;
     let t = TempDir::new();
     let scope = t.path.join("staging");
     std::fs::create_dir_all(&scope).unwrap();
     let bin = scope.join("bleeper");
-    std::fs::copy("/bin/sleep", &bin).unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_exec::copy_exec(std::path::Path::new("/bin/sleep"), &bin);
     let pidfile = t.path.join("pid");
     let script = format!(
         "setsid {} 300 & echo $! > {}; exit 1",
@@ -195,4 +230,127 @@ fn a_detached_grandchild_under_staging_does_not_outlive_the_check() {
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(dead, "the grandchild is still running");
+}
+
+#[test]
+fn a_required_tool_on_a_later_page_is_found() {
+    let first = tools_between(0, 20);
+    let rest = tools_between(20, 32);
+    let arms = format!(
+        r#"      "") r='{{"tools":{first},"nextCursor":"p2"}}';;
+      p2) r='{{"tools":{rest}}}';;"#
+    );
+    assert_eq!(run(&paged_server(&arms)), Ok(()));
+}
+
+#[test]
+fn a_missing_tool_is_still_missing_after_every_page() {
+    let first = tools_between(0, 20);
+    let rest = tools_between(20, 31);
+    let arms = format!(
+        r#"      "") r='{{"tools":{first},"nextCursor":"p2"}}';;
+      p2) r='{{"tools":{rest}}}';;"#
+    );
+    assert_eq!(run(&paged_server(&arms)), Err(Failure::Check));
+}
+
+#[test]
+fn an_empty_page_with_a_cursor_does_not_end_the_list() {
+    let all = tools_between(0, 32);
+    let arms = format!(
+        r#"      "") r='{{"tools":[],"nextCursor":"p2"}}';;
+      p2) r='{{"tools":{all}}}';;"#
+    );
+    assert_eq!(run(&paged_server(&arms)), Ok(()));
+}
+
+#[test]
+fn an_empty_string_cursor_ends_the_list() {
+    let all = tools_between(0, 32);
+    let arms = format!(r#"      *) r='{{"tools":{all},"nextCursor":""}}';;"#);
+    assert_eq!(run(&paged_server(&arms)), Ok(()));
+}
+
+#[test]
+fn a_cursor_that_never_ends_or_repeats_fails_the_check() {
+    let all = tools_between(0, 32);
+    // Every page names a new cursor: the walk stops at the page cap.
+    let endless = format!(r#"      *) r='{{"tools":{all},"nextCursor":"n'"$n"'"}}';;"#);
+    assert_eq!(run(&paged_server(&endless)), Err(Failure::Check));
+    // The cursor of page two points back at page one.
+    let cycle = format!(
+        r#"      "") r='{{"tools":{all},"nextCursor":"a"}}';;
+      a) r='{{"tools":[],"nextCursor":"b"}}';;
+      b) r='{{"tools":[],"nextCursor":"a"}}';;"#
+    );
+    assert_eq!(run(&paged_server(&cycle)), Err(Failure::Check));
+}
+
+#[test]
+fn a_failing_later_page_fails_the_check() {
+    let all = tools_between(0, 32);
+    let arms = format!(
+        r#"      "") r='{{"tools":{all},"nextCursor":"p2"}}';;
+      *) r=ERR;;"#
+    );
+    assert_eq!(run(&paged_server(&arms)), Err(Failure::Check));
+}
+
+#[test]
+fn a_child_that_stops_reading_ends_the_check_by_the_deadline() {
+    // Page one names a cursor larger than the pipe; the child then reads nothing more, so the
+    // request for page two cannot be written. The call deadline must still end the check.
+    let script = r#"IFS= read -r line
+printf '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"Playwright"},"capabilities":{}}}\n'
+IFS= read -r line
+IFS= read -r line
+printf '{"jsonrpc":"2.0","id":2,"result":{"tools":[],"nextCursor":"'
+head -c 1048576 /dev/zero | tr '\0' a
+printf '"}}\n'
+exec sleep 30
+"#;
+    let started = Instant::now();
+    assert_eq!(run(script), Err(Failure::Check));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn a_sink_that_drains_slowly_is_not_written_to_after_the_deadline() {
+    // Each write accepts one byte and takes 20 ms, never returning WouldBlock. The write loop must
+    // still stop at the deadline instead of draining the whole line.
+    struct Slow {
+        end: Instant,
+        late: usize,
+        writes: usize,
+    }
+    impl std::io::Write for Slow {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            if Instant::now() >= self.end {
+                self.late += 1;
+            }
+            self.writes += 1;
+            std::thread::sleep(Duration::from_millis(20));
+            Ok(b.len().min(1))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let end = Instant::now() + Duration::from_millis(100);
+    let mut sink = Slow {
+        end,
+        late: 0,
+        writes: 0,
+    };
+    let line = vec![b'a'; 1000];
+    assert!(matches!(
+        super::write_before(&mut sink, &line, end),
+        Err(super::RpcError::Timeout)
+    ));
+    assert_eq!(sink.late, 0);
+    assert!(sink.writes < 20, "{}", sink.writes);
 }
