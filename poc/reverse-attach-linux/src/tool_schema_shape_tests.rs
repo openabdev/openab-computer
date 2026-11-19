@@ -187,7 +187,9 @@ fn walks_if_then_and_else() {
         let branch = with_property_keyword(keyword, json!({ "description": "no type" }));
         assert_eq!(
             problems(&branch, "t"),
-            vec![format!("t.properties.a.{keyword} has no single string type")]
+            vec![format!(
+                "t.properties.a.{keyword} has no single string type"
+            )]
         );
     }
 }
@@ -481,7 +483,11 @@ fn emulate_media_null_override_is_refused_before_the_upstream_call() {
         err.1,
         "Invalid params: browser_emulate_media: colorScheme cannot be null; omit it or send one of its enum values"
     );
-    assert_eq!(upstream.calls.load(Ordering::SeqCst), 0, "a refused call reached the upstream");
+    assert_eq!(
+        upstream.calls.load(Ordering::SeqCst),
+        0,
+        "a refused call reached the upstream"
+    );
 }
 
 /// The enum values still reach the upstream, so the refusal is only for null.
