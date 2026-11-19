@@ -30,7 +30,7 @@ Acts on a `ui_snapshot` node by ref through the Accessibility API, without movin
 - **Arguments.** `snapshot_id` + `ref` + `action`.
 - **Actions.**
   - `press` (AXPress).
-  - `set_value` (AXValue, with `value`, advertised and passed as a string, e.g. `"3"` or `"true"`; existing callers' native JSON number or bool are still accepted; replaces the whole value). A string the control refuses (AX error -25201) is retried once as the native number or boolean it spells, and only if that also refuses does the call fail with the value-type error. A refused write changes nothing.
+  - `set_value` (AXValue, with `value`, advertised and passed as a string, e.g. `"3"` or `"true"`; existing callers' native JSON number or bool are still accepted; replaces the whole value). A string the control refuses (AX error -25201) is retried once as the native number or boolean it spells (surrounding whitespace ignored, so `" 3 "` retries as 3), and only if that also refuses does the call fail with the value-type error. A refused write changes nothing.
   - `focus` (sets AXFocused; never raises a window; refused where AXFocused is not settable).
   - `show_menu`, `confirm`, `cancel`, `increment`, `decrement`.
 - **Unsupported actions.** An action the element does not support is refused before anything is

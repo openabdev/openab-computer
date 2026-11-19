@@ -351,6 +351,26 @@ final class UIActionToolTests: XCTestCase {
         XCTAssertEqual(f.textArea.sets.map(\.1), [.bool(true)])
     }
 
+    func testPaddedNumberStringIsRetriedAsNumber() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.refusesStrings = true
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": " 3 "])
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(f.textArea.sets.map(\.1), [.number(3)])
+    }
+
+    func testNativeFormIgnoresSurroundingWhitespaceOnly() {
+        XCTAssertEqual(UIActionEngine.nativeValue(.string(" 3 ")), .number(3))
+        XCTAssertEqual(UIActionEngine.nativeValue(.string("\ttrue\n")), .bool(true))
+        XCTAssertEqual(UIActionEngine.nativeValue(.string("  false")), .bool(false))
+        XCTAssertNil(UIActionEngine.nativeValue(.string("   ")))
+        XCTAssertNil(UIActionEngine.nativeValue(.string("3 x")))
+        XCTAssertNil(UIActionEngine.nativeValue(.string("nan")))
+        XCTAssertNil(UIActionEngine.nativeValue(.number(3)))
+    }
+
     func testValueTypeRefusalIsNotReportedAsUnsupported() async {
         let f = Fixture()
         let id = await f.snapshot()
@@ -361,36 +381,37 @@ final class UIActionToolTests: XCTestCase {
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "hello"])
         XCTAssertTrue(r.isToolError)
         XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", sent: .string("hello"), retried: false))
-        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's type (AX error -25201). The `value` is text with no number or boolean form, and this control cannot take text. Take a new ui_snapshot to check the control's current value")
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property as text (AX error -25201, a generic illegal-argument error). The text has no number or boolean form to retry as. The likely cause is that this control does not take a text value. Take a new ui_snapshot to check the control's current value type")
         XCTAssertFalse(r.text.contains("JSON"), r.text)
         XCTAssertFalse(r.text.contains("does not support"), r.text)
         XCTAssertFalse(r.text.contains("Supported on it"), r.text)
         assertNothingDone(f)
     }
 
-    func testValueTypeRefusedForNativeNumberSaysTheControlRefusesNumbers() async {
+    func testValueTypeRefusedForNativeNumberGivesTheGenericMessage() async {
         let f = Fixture()
         let id = await f.snapshot()
         f.textArea.settable = ["AXValue"]
         f.textArea.setError = .other(UIAXError.illegalArgumentCode)
-        // The caller sent a native number, so there is no string form to retry and the message must not
-        // say the value has no number form.
+        // The caller sent a native number, which has no string form to retry. -25201 is generic, so the
+        // message names the likely cause without claiming the control refuses numbers.
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": .number(3)])
         XCTAssertTrue(r.isToolError)
-        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's number type (AX error -25201). This control does not accept a number `value`. Take a new ui_snapshot to check the control's current value")
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property (AX error -25201, a generic illegal-argument error). The likely cause is a value type this control does not take. Take a new ui_snapshot to check the control's current value type")
         XCTAssertFalse(r.text.contains("no number or boolean form"), r.text)
+        XCTAssertFalse(r.text.contains("does not accept"), r.text)
         XCTAssertFalse(r.text.contains("3"), "the value is never echoed: \(r.text)")
         assertNothingDone(f)
     }
 
-    func testValueTypeRefusedForNativeBoolSaysTheControlRefusesBooleans() async {
+    func testValueTypeRefusedForNativeBoolGivesTheGenericMessage() async {
         let f = Fixture()
         let id = await f.snapshot()
         f.textArea.settable = ["AXValue"]
         f.textArea.setError = .other(UIAXError.illegalArgumentCode)
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": .bool(true)])
         XCTAssertTrue(r.isToolError)
-        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's boolean type (AX error -25201). This control does not accept a boolean `value`. Take a new ui_snapshot to check the control's current value")
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property (AX error -25201, a generic illegal-argument error). The likely cause is a value type this control does not take. Take a new ui_snapshot to check the control's current value type")
         XCTAssertFalse(r.text.contains("no number or boolean form"), r.text)
         assertNothingDone(f)
     }

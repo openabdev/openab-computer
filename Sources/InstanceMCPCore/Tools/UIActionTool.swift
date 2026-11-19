@@ -72,22 +72,25 @@ public struct UIActionTool: Tool {
                 (supported.isEmpty ? "No ui_action action is supported on it; use screenshot + mouse"
                                    : "Supported on it: \(supported.joined(separator: ", "))")
         }
-        /// AX refused the value's type (kAXErrorIllegalArgument) on `set_value`. Not an
-        /// unsupported action, so the supported list is not shown. `sent` is the value the caller
-        /// sent: the text names its type, and a native number or boolean is never described as
-        /// having no number or boolean form.
+        /// AX refused the value's type (kAXErrorIllegalArgument) on `set_value`. Not an unsupported action,
+        /// so the supported list is not shown. -25201 is a generic error, so the cause named here is the
+        /// likely one, not a confirmed one. `sent` selects the wording: text says whether it has a number
+        /// or boolean form, and a native number or boolean gets the generic wording. The value is never
+        /// echoed.
         public static func valueTypeRejected(ref: String, role: String, sent: UIAttrValue, retried: Bool) -> String {
+            let code = "AX error -25201, a generic illegal-argument error"
+            let likely = "The likely cause is a value type this control does not take."
             if retried {
-                return "\(ref) (\(role)) rejected the `value` property as text and as a number or boolean (AX error -25201). Take a new ui_snapshot to check the control's current value type"
+                return "\(ref) (\(role)) rejected the `value` property as text and as a number or boolean (\(code)). "
+                    + "\(likely) Take a new ui_snapshot to check the control's current value type"
             }
-            switch sent {
-            case .number:
-                return "\(ref) (\(role)) rejected the `value` property's number type (AX error -25201). This control does not accept a number `value`. Take a new ui_snapshot to check the control's current value"
-            case .bool:
-                return "\(ref) (\(role)) rejected the `value` property's boolean type (AX error -25201). This control does not accept a boolean `value`. Take a new ui_snapshot to check the control's current value"
-            default:
-                return "\(ref) (\(role)) rejected the `value` property's type (AX error -25201). The `value` is text with no number or boolean form, and this control cannot take text. Take a new ui_snapshot to check the control's current value"
+            if case .string = sent {
+                return "\(ref) (\(role)) rejected the `value` property as text (\(code)). The text has no number "
+                    + "or boolean form to retry as. The likely cause is that this control does not take a text value. "
+                    + "Take a new ui_snapshot to check the control's current value type"
             }
+            return "\(ref) (\(role)) rejected the `value` property (\(code)). \(likely) "
+                + "Take a new ui_snapshot to check the control's current value type"
         }
         public static func unconfirmed(action: String, ref: String, app: String) -> String {
             "ui_action \(action) [\(ref)]: \(app) did not confirm in time. The action may have happened (a press that opens a dialog or menu often answers late); take a new ui_snapshot to check, and do not repeat it blindly"

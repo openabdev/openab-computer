@@ -287,9 +287,11 @@ struct UIActionEngine {
         return ToolResult(content: [.text(text)], structured: .object(o))
     }
 
-    /// The native number or boolean a string spells (`"3"`, `"true"`), or nil.
+    /// The native number or boolean a string spells (`"3"`, `"true"`), or nil. Surrounding
+    /// whitespace is ignored, so `" 3 "` retries as the number 3.
     static func nativeValue(_ v: UIAttrValue) -> UIAttrValue? {
-        guard case .string(let s) = v else { return nil }
+        guard case .string(let raw) = v else { return nil }
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if s == "true" { return .bool(true) }
         if s == "false" { return .bool(false) }
         if let d = Double(s), d.isFinite { return .number(d) }
