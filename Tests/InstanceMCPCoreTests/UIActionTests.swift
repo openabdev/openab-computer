@@ -361,7 +361,7 @@ final class UIActionToolTests: XCTestCase {
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "hello"])
         XCTAssertTrue(r.isToolError)
         XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: false))
-        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the value's type (AX error -25201). The value has no number or boolean form, so it does not fit this control. Take a new ui_snapshot to check the control's value type, then send a value of that type")
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's type (AX error -25201). The `value` has no number or boolean form, so it does not fit this control. Take a new ui_snapshot to check the control's value type, then send a `value` of that type")
         XCTAssertFalse(r.text.contains("JSON"), r.text)
         XCTAssertFalse(r.text.contains("does not support"), r.text)
         XCTAssertFalse(r.text.contains("Supported on it"), r.text)
@@ -377,6 +377,23 @@ final class UIActionToolTests: XCTestCase {
         XCTAssertTrue(r.isToolError)
         XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: true))
         XCTAssertFalse(r.text.contains("3"), "the value is never echoed: \(r.text)")
+        assertNothingDone(f)
+    }
+
+    func testValueTypeRejectedNamesTheValueField() {
+        for retried in [false, true] {
+            let text = UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: retried)
+            XCTAssertTrue(text.contains("the `value` property"), text)
+        }
+    }
+
+    func testValueParseErrorNamesOnlyTheSchemaType() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        // The schema declares `value` as a string only, so the error names that type alone.
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": ["a"]])
+        XCTAssertEqual(r.error?.code, JSONRPCError.invalidParams)
+        XCTAssertEqual(r.error?.message, "Invalid params: value must be a string")
         assertNothingDone(f)
     }
 
@@ -790,7 +807,7 @@ final class UIActionToolTests: XCTestCase {
              "action must be one of press, set_value, focus, show_menu, confirm, cancel, increment, decrement"),
             (["snapshot_id": sid, "ref": "e2", "action": "set_value"], "value is required for set_value"),
             (["snapshot_id": sid, "ref": "e3", "action": "press", "value": "x"], "value is only accepted with set_value"),
-            (["snapshot_id": sid, "ref": "e2", "action": "set_value", "value": ["a"]], "value must be a string, number or boolean"),
+            (["snapshot_id": sid, "ref": "e2", "action": "set_value", "value": ["a"]], "value must be a string"),
             (["snapshot_id": sid, "ref": "e2", "action": "set_value", "value": .string(String(repeating: "x", count: 65_537))],
              "value is longer than 65536 characters"),
             (["snapshot_id": sid, "ref": "e3", "action": "press", "activate": "yes"], "activate must be a boolean"),

@@ -76,9 +76,9 @@ public struct UIActionTool: Tool {
         /// unsupported action, so the supported list is not shown.
         public static func valueTypeRejected(ref: String, role: String, retried: Bool) -> String {
             if retried {
-                return "\(ref) (\(role)) rejected the value as text and as a number or boolean (AX error -25201). Take a new ui_snapshot to check the control's current value type"
+                return "\(ref) (\(role)) rejected the `value` property as text and as a number or boolean (AX error -25201). Take a new ui_snapshot to check the control's current value type"
             }
-            return "\(ref) (\(role)) rejected the value's type (AX error -25201). The value has no number or boolean form, so it does not fit this control. Take a new ui_snapshot to check the control's value type, then send a value of that type"
+            return "\(ref) (\(role)) rejected the `value` property's type (AX error -25201). The `value` has no number or boolean form, so it does not fit this control. Take a new ui_snapshot to check the control's value type, then send a `value` of that type"
         }
         public static func unconfirmed(action: String, ref: String, app: String) -> String {
             "ui_action \(action) [\(ref)]: \(app) did not confirm in time. The action may have happened (a press that opens a dialog or menu often answers late); take a new ui_snapshot to check, and do not repeat it blindly"
@@ -170,7 +170,7 @@ public struct UIActionTool: Tool {
                 r.value = .string(s)
             case .number(let d) where d.isFinite: r.value = .number(d)
             case .bool(let b): r.value = .bool(b)
-            default: throw JSONRPCError.invalidParams("value must be a string, number or boolean")
+            default: throw JSONRPCError.invalidParams("value must be a string")
             }
         } else if kind == .setValue {
             throw JSONRPCError.invalidParams("value is required for set_value")
