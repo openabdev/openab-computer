@@ -352,6 +352,11 @@ Rejected:
   paths that have no marker.
 - *Automatic removal after some days of managed use.* Deletes unmarked data with nobody present.
 
+**Note, drop-in removal (owner decision A).** A person may remove an `MCP_UPSTREAM` drop-in by its
+content, not by who wrote it. The rule and the exact accepted shape are in
+[docs/linux-cutover.md](../linux-cutover.md) step 5.2. The installer still never removes a drop-in. The
+decision came up in [PR #171](https://github.com/openabdev/openab-computer/pull/171).
+
 #### D11. Which Chromium password store holds cookie encryption on Linux?
 
 **Chosen: always `--password-store=basic`.** Headed and headless runs then read the same key,
