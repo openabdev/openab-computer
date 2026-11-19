@@ -1,7 +1,9 @@
 # Requirements: Linux managed Playwright tier
 
-> **Status:** accepted design, implemented through L4 (the installer, `browser signin`, the docs and
-> the hardening tiers with their probes are in; L5, L6 and the cutover are not). The 0.12.0 release does not contain it. The operator guide
+> **Status:** accepted design, implemented through L5 (the installer, `browser signin`, the docs, the
+> hardening tiers with their probes, the release smoke, provenance, the deprecated `pw-mcp.sh`, the
+> legacy listing and the cutover guide [`docs/linux-cutover.md`](../linux-cutover.md) are in; L6 and the
+> cutover itself, which a person performs, are not). V2 and D7 are decided (below). The 0.12.0 release does not contain it. The operator guide
 > is [`docs/linux-setup.md`](../linux-setup.md).
 
 - **Issues:** [#119](https://github.com/openabdev/openab-computer/issues/119), [#118](https://github.com/openabdev/openab-computer/issues/118)
@@ -13,9 +15,10 @@
 ### R1. Managed child
 
 - R1.1 `@playwright/mcp` runs as a stdio child of the daemon. No TCP or UDP listener exists in the
-  managed tree. Port 8794 is not used by the managed path. Target: no Unix listener either. **Unmet
-  by the L2 build**, which holds two private Unix listening sockets (V2, #132); the docs claim only
-  "no TCP or UDP port".
+  managed tree. Port 8794 is not used by the managed path. **Decided (V2):** any Unix listener in the managed tree is inside the child's private per-run `0700` `TMPDIR`, owned by the daemon's uid. Inside is judged on the resolved path of the socket's directory: a link that leads outside that directory does not make a socket inside. The
+  Playwright browser socket and Chromium's `SingletonSocket` are the two expected ones. `browser status`
+  and the release smoke fail on a TCP or UDP listener, on a Unix listener outside that directory, and
+  on a `TMPDIR` that is not mode `0700` or not the daemon's. A process of the same user can still connect to those sockets and drive the managed browser, including its signed-in profile; that user can already read the profile directory, so this adds a second control path and no data access. Another local user is refused (the `0700` directory and the socket file mode; `EACCES` in a measurement), and a web page cannot reach a Unix socket path.
 - R1.2 The child is started only under a kernel-enforced whole-tree stop mechanism that succeeded in a
   self-test on the host (D4). Otherwise the backend is `unavailable: containment_unverified` and no
   child is started.
@@ -97,7 +100,8 @@
 - R6.3 An upgrade never touches an existing old browser unit. If one is enabled or active, the
   installer prints a warning with the exact `systemctl --user disable --now <unit>` command. A plain
   stop is not enough, because those units restart at login or boot.
-- R6.4 `browser status` reports `legacy_units`, `legacy` paths with sizes, `listeners`,
+- R6.4 `browser status` reports `legacy_units`, `legacy` paths with sizes, `legacy_listener` (`8794`,
+  `none` or `unknown`: the old unit's own port, which is not part of the managed tree), `listeners`,
   `containment`, `external_configured` (yes or no, no URL), and the manifest and install ids. It
   contains no URL, token or page data, and `--json` emits only fixed fields.
 
@@ -127,7 +131,7 @@ person, not a PR. Hosts fall into two classes:
 Facts such as which unit is enabled, which profile is in use and how large the old directories are
 are collected in step 0, not assumed.
 
-The order of the steps in section 2.2 is below. The managed tier is built through L4 and not released, so this is the
+The order of the steps in section 2.2 is below. The managed tier is built through L5 and not released, so this is the
 procedure for when it ships. A failed check at any point leads to the rollback in section 2.4.
 
 ```mermaid
@@ -189,7 +193,7 @@ together after one week of normal use on the class N host with no browser incide
 5. **Cutover, in one short window.**
    1. Stop and disable the old browser unit with `systemctl --user disable --now <old unit>`. A plain
       stop would bring the unauthenticated listener back at the next login or boot.
-   2. Remove the `MCP_UPSTREAM` line (class N) or the drop-in file (class O). Edit after the backup
+   2. Remove the `MCP_UPSTREAM` line (class N) or the drop-in (class O), as `docs/linux-cutover.md` step 5.2 describes. Edit after the backup
       of step 1, and do not delete anything else. A unit written before the installer's ownership
       marker existed is never updated by the installer. If an installer run left
       `oab-computer.service.proposed`, review it and adopt it only after checking that its `BIND`
@@ -217,7 +221,8 @@ together after one week of normal use on the class N host with no browser incide
 
 Differences for class N: the unit to disable is the one the installer wrote, the `MCP_UPSTREAM` line
 sits inside the daemon unit (edited, with the backup), and its profile and output directories are
-under `~/.local/oab-computer`. Differences for class O: the thing to remove is the drop-in, the old
+under `~/.local/oab-computer`. Differences for class O: the thing to remove is the drop-in (the rule is in
+`docs/linux-cutover.md` step 5.2), the old
 unit has its own name, and the legacy tree may hold a `node_modules`, a profile with cookies and an
 output directory.
 
@@ -226,7 +231,9 @@ output directory.
 The installer never deletes these. A person does, from the list that `browser status` prints with
 sizes. Each command is documented in `docs/linux-setup.md` and marked if it needs root.
 
-1. Disable and delete the old unit files, delete the drop-in, run `daemon-reload`.
+1. Disable and delete the old unit files. Remove the drop-in only by the content rule in
+   `docs/linux-cutover.md` step 5.2, which keeps any file that differs from the dedicated shape. Then run
+   `daemon-reload`.
 2. Delete the legacy directories. The old profile holds cookies, so check it first.
 3. Delete the old AppArmor profile (root) and the stale `pw-config.json`.
 
@@ -241,7 +248,7 @@ flowchart TB
     r2["2 Optional, oab-computer browser remove to free disk, it restores nothing"]
     r3["3 Restore the backed up daemon unit and drop-in, put oab-computer.prev back as the binary, daemon-reload"]
     r4["4 Enable and start the old browser unit, then start oab-computer.service"]
-    r5["5 Verify as in step 6, expecting a listener on 8794 and backend external"]
+    r5["5 Verify as in step 6, expecting a listener on 8794 (the previous binary has no browser object in sys_info)"]
     start --> r1 --> r2 --> r3 --> r4 --> r5
 ```
 
@@ -252,7 +259,7 @@ flowchart TB
    run `daemon-reload`.
 4. Enable and start the old browser unit with `systemctl --user enable --now`, then start
    `oab-computer.service`.
-5. Verify as in step 6, expecting the old behaviour: a listener on 8794 and `backend: external`.
+5. Verify as in step 6, expecting the old behaviour: a listener on 8794 (the previous binary, 0.12.0, has no `browser` object in `sys_info`).
 
 If the new binary stays but the managed tier misbehaves, set `OAB_BROWSER=off` in a drop-in and
 restart. With a managed install that means no `browser_*` tools at all: the router ignores a stale
@@ -301,7 +308,8 @@ unit, and restart the daemon.
    - With a test double whose self-test fails, the backend is `unavailable: containment_unverified`
      and nothing is spawned. With one that succeeds, the child starts.
    - A production start waits up to 10 s for `.sweep.lock` and holds it until its run record exists,
-     so another start's sweep cannot kill it in between; the sweep itself, run without a start, takes
+     so another start's sweep cannot kill it in between. A start that cannot get the lock in that time
+     is refused (`sweep_busy`), never run unswept; the sweep itself, run without a start, takes
      the lock without blocking and is skipped while another sweep holds it.
 8. **Environment in unit mode.** The unit vector begins with `/usr/bin/env -i`, contains no `-E` or
    `--setenv`, and lists exactly the allow-list.
@@ -312,7 +320,8 @@ unit, and restart the daemon.
 10. **Secrets and logs.** Canary strings in tool arguments, stub stderr, stub stdout and `install.json`
     inputs are absent from captured daemon stderr, the data directory and every returned error.
 11. **No listener.** With a stub standing in for Playwright, the self-check reports none. A stub that
-    binds a TCP, a UDP and a Unix listener makes the check report each.
+    binds a TCP, a UDP and a Unix listener makes the check report each. A Unix listener outside the
+    private directory, a `0755` directory and a directory of another uid each make it fail.
 12. **Router.** Managed beats a stale `MCP_UPSTREAM` unless `MCP_BROWSER_BACKEND=external`. External
     requires a literal loopback host, including `http://[::1]:<port>/mcp`. A 301, 302, 307 or 308 is
     refused and a second listener sees no connection. Errors use fixed classes with a canary in the
@@ -372,7 +381,7 @@ A person records each result against its check.
 | M6 | `browser update` with a deliberately broken pin (debug build) keeps the old version. |
 | M7 | `browser remove` with an unrelated directory inside the data root: it stays and is reported. |
 | M8 | Cutover rehearsal on a spare account for each host class, then rollback. |
-| M9 | No TCP/UDP listener (and, once V2 closes, no Unix listener): `ss -ltnup` and `ss -lxp` during a browser call. |
+| M9 | No TCP/UDP listener, and any Unix listener inside the private per-run `TMPDIR` (V2): `ss -ltnup` and `ss -lxp` during a browser call. |
 | M10 | The hosts' real network: the downloads work through each host's actual egress. |
 
 ### 3.5 Facts to verify before release
@@ -382,7 +391,7 @@ These are expected, not yet measured. A failed check has the stated consequence.
 | ID | Question | If it fails |
 | --- | --- | --- |
 | V1 | Does the generator find a pinned-version Chromium source for each platform? | Pin the Playwright CDN build for that platform. The release is blocked until each platform has a source. |
-| V2 | With the pinned `@playwright/mcp` and no `--port`, does the whole tree hold no TCP, UDP or Unix listener, on both architectures? | Release blocker. |
+| V2 | With the pinned `@playwright/mcp` and no `--port`, does the whole tree hold no TCP or UDP listener, and every Unix listener inside the child's private `0700` `TMPDIR`, on both architectures? | Release blocker. **Decided:** R1.1 states the narrowed rule; each release's smoke measures it on both architectures (`GATE V2`). |
 | V3 | Does node exit on stdin EOF, does Chromium exit when node dies, and how long after daemon `SIGKILL`? | Informational. The stop guarantee does not depend on it. |
 | V4 | Do `systemd-run --user --pipe`, `BindsTo` on a transient unit and `NoNewPrivileges` work with the AppArmor user-namespace profile, and does `BindsTo` fire when the daemon unit auto-restarts? | If `BindsTo` does not fire, the self-test fails and the tier is unavailable until another mechanism verifies. `NoNewPrivileges` is dropped where it conflicts. |
 | V5 | Is the measured `minGlibc` below the oldest supported OS? | Narrow the supported matrix. |

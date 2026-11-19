@@ -294,7 +294,9 @@ impl Child {
     /// refusal and exited closes stdout before the reader thread has necessarily queued that last
     /// line, so a classification made at once could read an empty ring and call a refusal a plain
     /// failure. A child that is still running never reaches end of file, so this is a bounded delay
-    /// on a failure path, never on a success.
+    /// on a failure path, never on a success. This is production code, not a test aid: every
+    /// classification of a failed child goes through it. Pinned by
+    /// `a_child_that_prints_nothing_on_stderr_is_classified_without_waiting_for_a_timeout`.
     fn settle_stderr(&self) {
         let end = Instant::now() + Duration::from_millis(250);
         while !self.stderr_done.load(Ordering::Acquire) && Instant::now() < end {

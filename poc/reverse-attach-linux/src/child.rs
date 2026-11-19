@@ -42,7 +42,8 @@ use crate::sweep;
 /// How long a start waits for `.install.lock` (an `install`, `update` or `remove` holds it
 /// exclusive) before it answers `install_busy`.
 const INSTALL_LOCK_WAIT: Duration = Duration::from_secs(2);
-/// How long a start waits for the sweep lock that another start holds.
+/// How long a start waits for the sweep lock that another start holds, before it answers
+/// `sweep_busy`.
 const SWEEP_WAIT: Duration = Duration::from_secs(10);
 
 pub const PASSWORD_STORE: &str = "--password-store=basic";
@@ -298,6 +299,19 @@ impl RuntimeTmp {
         RuntimeTmp::create_named(root_abs, "oab-pw")
     }
 
+    fn dir_name(root_abs: &Path, prefix: &str) -> String {
+        let h = Sha256::digest(root_abs.as_os_str().as_encoded_bytes());
+        format!("{prefix}-{}", crate::manifest::hex(&h[..4]))
+    }
+
+    /// Where the managed child's `TMPDIR` is for this install root, decided without creating
+    /// anything (`browser status` checks it, V2). Uses this process's `XDG_RUNTIME_DIR`, so it
+    /// matches the daemon's only when both run in the same user session.
+    pub(crate) fn expected_path(root_abs: &Path) -> PathBuf {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        state::private_base_path(runtime.as_deref()).join(RuntimeTmp::dir_name(root_abs, "oab-pw"))
+    }
+
     /// Same, under another fixed prefix of the same length. `browser signin` uses its own so that
     /// starting it never removes the directory of a managed child that started a moment earlier:
     /// the profile lock decides who may run, and each side only ever touches its own directory.
@@ -305,8 +319,7 @@ impl RuntimeTmp {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
         let (parent, base) =
             state::open_private_base(runtime.as_deref()).map_err(|_| "tmp_unavailable")?;
-        let h = Sha256::digest(root_abs.as_os_str().as_encoded_bytes());
-        let name = format!("{prefix}-{}", crate::manifest::hex(&h[..4]));
+        let name = RuntimeTmp::dir_name(root_abs, prefix);
         let mut rep = state::Report::default();
         // A directory of ours that an earlier child left: marker-gated removal.
         let _ = state::remove_marked_tree(&parent, &name, OWNED_DATA, &mut rep);
@@ -364,6 +377,8 @@ pub struct Config {
     pub ping_timeout: Duration,
     /// A child that has said nothing for this long is pinged before a call is sent to it.
     pub idle_ping_after: Duration,
+    /// How long a start waits for the sweep lock (`SWEEP_WAIT`; tests shorten it).
+    pub sweep_wait: Duration,
 }
 
 impl Config {
@@ -376,6 +391,7 @@ impl Config {
             init_timeout: Duration::from_secs(15),
             ping_timeout: Duration::from_secs(2),
             idle_ping_after: Duration::from_secs(30),
+            sweep_wait: SWEEP_WAIT,
         }
     }
 }
@@ -548,14 +564,19 @@ impl Supervisor {
         let mech = Arc::clone(self.avail.mechanism());
         // Wait for the sweep lock rather than skip it, and keep it until this child's record is
         // written: a second start's sweep would otherwise kill this child while no record claims it.
-        // A run directory too full to list makes the sweep refuse; that is its own class, and no
-        // child is started that the next sweep could not tell from a stray. Any other sweep error
-        // (the lock file cannot be opened) leaves the start as it was: unswept.
-        let sweep_guard = match sweep::sweep_holding(&root, &|u| mech.stop_unit(u), SWEEP_WAIT) {
-            Ok((_, guard)) => guard,
-            Err(Fail("run_records_full")) => return Err("run_records_full"),
-            Err(_) => None,
-        };
+        // Fail closed (#132): a start that did not sweep and holds no guard would spawn a child that
+        // neither the lock nor a record protects, so every outcome but a held guard is a refusal. A
+        // run directory too full to list makes the sweep refuse (`run_records_full`: no child is
+        // started that the next sweep could not tell from a stray); a lock still held when the wait
+        // ends is `sweep_busy`; any other sweep error (the lock file cannot be opened) is
+        // `sweep_unavailable`. None of them is a failure of the child: nothing is counted or latched.
+        let sweep_guard =
+            match sweep::sweep_holding(&root, &|u| mech.stop_unit(u), self.cfg.sweep_wait) {
+                Ok((_, Some(guard))) => guard,
+                Ok((_, None)) => return Err("sweep_busy"),
+                Err(Fail("run_records_full")) => return Err("run_records_full"),
+                Err(_) => return Err("sweep_unavailable"),
+            };
         let tmp = RuntimeTmp::create(root.abs_path())?;
         let seat = (self.cfg.seat)();
         let v = launch_vector(&rec, root.abs_path(), &tmp.path, seat.as_ref());

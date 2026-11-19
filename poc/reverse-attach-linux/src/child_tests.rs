@@ -81,6 +81,10 @@ pub(crate) struct Sup {
 }
 
 pub(crate) fn sup(fx: &Fx, verify: Result<Mode, &'static str>) -> Sup {
+    sup_with(fx, verify, |_| {})
+}
+
+fn sup_with(fx: &Fx, verify: Result<Mode, &'static str>, tweak: impl FnOnce(&mut Config)) -> Sup {
     let mech = Arc::new(Direct::new(verify));
     let ms = Arc::new(AtomicU64::new(1_000));
     let clock = Arc::clone(&ms);
@@ -88,6 +92,7 @@ pub(crate) fn sup(fx: &Fx, verify: Result<Mode, &'static str>) -> Sup {
     cfg.clock = Arc::new(move || Duration::from_millis(clock.load(Ordering::SeqCst)));
     cfg.seat = Arc::new(|| None);
     cfg.init_timeout = Duration::from_secs(5);
+    tweak(&mut cfg);
     let m: Arc<dyn Mechanism> = mech.clone();
     Sup {
         sup: Supervisor::new(cfg, Arc::new(Availability::new(m))),
@@ -746,6 +751,49 @@ fn remove_cannot_run_between_the_spawn_and_the_record_and_a_second_sweep_cannot_
     drop(_g);
     assert!(state::Lock::acquire(&fx.root(), Duration::from_secs(2)).is_ok());
     sup.stop();
+}
+
+/// A start with a short sweep wait.
+fn sup_with_sweep_wait(fx: &Fx, wait: Duration) -> Sup {
+    sup_with(fx, Ok(SYSTEMD), |cfg| cfg.sweep_wait = wait)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_start_that_cannot_get_the_sweep_lock_is_refused_not_started_unswept() {
+    let fx = Fx::new(GOOD);
+    let s = sup_with_sweep_wait(&fx, Duration::from_millis(300));
+    // Another start (or a CLI child's launch) holds the sweep lock for longer than the wait.
+    let (_, held) =
+        sweep::sweep_holding(&fx.root(), &|_: &str| {}, Duration::from_secs(5)).unwrap();
+    let held = held.expect("the test takes the lock");
+    let t = Instant::now();
+    assert_eq!(s.sup.ensure().err(), Some("sweep_busy"));
+    assert!(t.elapsed() >= Duration::from_millis(250), "it did not wait");
+    assert_eq!(spawned(&s), 0, "no child was started without a sweep");
+    // Not a failure of the child: nothing is latched, and the next call starts it once the lock is free.
+    assert!(!run_record::latch_is_set(&fx.root()));
+    drop(held);
+    assert!(s.sup.ensure().is_ok());
+    assert_eq!(spawned(&s), 1);
+    s.sup.stop();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sweep_that_fails_for_another_reason_refuses_the_start_too() {
+    let fx = Fx::new(GOOD);
+    let s = sup_with_sweep_wait(&fx, Duration::from_millis(300));
+    // The lock file cannot be opened (a link in its place; the open does not follow links).
+    let lock = fx.root().abs_path().join(state::SWEEP_LOCK_NAME);
+    let _ = std::fs::remove_file(&lock);
+    std::os::unix::fs::symlink("/nonexistent", &lock).unwrap();
+    assert_eq!(s.sup.ensure().err(), Some("sweep_unavailable"));
+    assert_eq!(spawned(&s), 0);
+    assert!(!run_record::latch_is_set(&fx.root()));
+    std::fs::remove_file(&lock).unwrap();
+    assert!(s.sup.ensure().is_ok());
+    s.sup.stop();
 }
 
 #[test]

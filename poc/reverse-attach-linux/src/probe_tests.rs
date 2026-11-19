@@ -33,6 +33,30 @@ fn by_default_nothing_runs_and_the_vocabulary_is_fixed() {
     assert_eq!(x.hardening_mount, "not_checked");
     assert_eq!(x.hardening_unverified, "not_checked");
     assert_eq!(x.run_records, "unavailable");
+    // L5: `gather` does not look at the home directory, so the legacy fields stay `none`.
+    assert_eq!(
+        (
+            x.legacy_units.as_str(),
+            x.legacy.as_str(),
+            x.legacy_listener.as_str()
+        ),
+        ("none", "none", "none")
+    );
+    assert!(!x.legacy_present());
+}
+
+#[test]
+fn the_legacy_fields_are_set_apart_from_the_probe() {
+    let mut x = Extras::none();
+    x.set_legacy(crate::legacy::Legacy {
+        units: "oab-pw-mcp.service".into(),
+        paths: "~/.cache/ms-playwright:1 MiB".into(),
+        listener: "8794".into(),
+    });
+    assert!(x.legacy_present());
+    assert_eq!(x.legacy_units, "oab-pw-mcp.service");
+    assert_eq!(x.legacy, "~/.cache/ms-playwright:1 MiB");
+    assert_eq!(x.legacy_listener, "8794");
 }
 
 #[test]
@@ -169,4 +193,82 @@ fn a_full_run_directory_is_named_in_the_status() {
         gather(&t.base(), false, None, &none, &nothing).run_records,
         "full"
     );
+}
+
+#[test]
+fn the_listeners_word_carries_the_v2_verdict() {
+    use crate::procnet::{Listeners, TmpState};
+    let w = |l: Listeners, t| listeners_word(Ok(l), t);
+    assert_eq!(w(Listeners::default(), TmpState::Missing), "none");
+    let two = Listeners {
+        unix: 2,
+        ..Default::default()
+    };
+    assert_eq!(
+        w(two, TmpState::Ok),
+        "tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass"
+    );
+    let out = Listeners {
+        unix: 2,
+        unix_outside: 1,
+        ..Default::default()
+    };
+    assert!(w(out, TmpState::Ok).ends_with("unix_outside=1 tmpdir=ok result=fail"));
+    let all_out = Listeners {
+        unix: 2,
+        unix_outside: 2,
+        ..Default::default()
+    };
+    assert_eq!(
+        w(all_out, TmpState::Mode),
+        "tcp=0 udp=0 unix=2 unix_outside=2 tmpdir=mode result=fail"
+    );
+    let tcp = Listeners {
+        tcp: 1,
+        ..Default::default()
+    };
+    assert!(w(tcp, TmpState::Ok).ends_with("result=fail"));
+    assert_eq!(listeners_word(Err("x"), TmpState::Ok), "unknown");
+}
+
+/// With no tree running, a stale TMPDIR that is not private fails V2 too (decided V2 rule). Before
+/// this fix `listeners` was `not_running` whatever the directory held, and `browser status` exited 0.
+#[test]
+fn a_stale_tmpdir_fails_v2_even_when_no_tree_runs() {
+    use crate::procnet::TmpState;
+    assert_eq!(idle_listeners_word(TmpState::Missing), "not_running");
+    assert_eq!(idle_listeners_word(TmpState::Ok), "not_running");
+    assert_eq!(
+        idle_listeners_word(TmpState::Mode),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=fail"
+    );
+    assert_eq!(
+        idle_listeners_word(TmpState::Owner),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=owner result=fail"
+    );
+}
+
+/// A running tree that listens on nothing still fails V2 when its TMPDIR is not the verified private
+/// directory (decided V2 rule: the status self-check fails on a TMPDIR that is not 0700 or not the
+/// daemon's uid). Before the fix this printed `none` and exited 0.
+#[test]
+fn a_zero_listener_tree_fails_v2_when_its_tmpdir_is_not_private() {
+    use crate::procnet::{Listeners, TmpState};
+    let silent = || Listeners::default();
+    let w = |t| listeners_word(Ok(silent()), t);
+    assert_eq!(
+        w(TmpState::Mode),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=mode result=fail"
+    );
+    assert_eq!(
+        w(TmpState::Owner),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=owner result=fail"
+    );
+    assert_eq!(
+        w(TmpState::NotDir),
+        "tcp=0 udp=0 unix=0 unix_outside=0 tmpdir=not_dir result=fail"
+    );
+    // The clean states still read `none`: the verified directory, or no child running yet.
+    assert_eq!(w(TmpState::Ok), "none");
+    assert_eq!(w(TmpState::Missing), "none");
 }

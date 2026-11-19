@@ -108,6 +108,8 @@ impl OwnerCheck for SameUid {
         // read again, up to `READS` times 20 ms apart (half a second), until it is this uid. Only
         // our own uid is accepted, and nothing is sent before it is: the retries cost time on a
         // refusal and never widen what is accepted.
+        // This is the production check, not a test aid: the same read guards every external
+        // connection. Pinned by `a_row_that_is_not_there_yet_is_read_again_and_another_owner_is_never_accepted`.
         const READS: u32 = 25;
         for read in 1..=READS {
             if procnet::peer_owner_uid(&*self.source, client, server)

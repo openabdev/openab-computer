@@ -200,10 +200,13 @@ OLD_HITS=$(grep -rlE 'instance-mcp|oab-pw-mcp' "$LH/.config" "$LH/.local" 2>/dev
 
 # ------------------------------------------------------------------ repo-wide: old names only where allowed
 # Allowed leftovers in code, scripts and CI: the copy-source token path (and the test fixtures that
-# seed it), issue links, and the warn-only legacy detection (the two installers and their tests, including test-install-linux.sh).
+# seed it), issue links, and the warn-only legacy detection (the two installers and their tests, including test-install-linux.sh,
+# and the Linux CLI's legacy listing in `browser status`: legacy.rs, its tests, and the fixtures that seed a legacy unit).
 LEFT=$(cd "$ROOT" && grep -rnE --exclude-dir=target --exclude-dir=.build 'oab-instance-mcp|instance-mcp|INSTANCE_MCP|oab-pw-mcp|dev\.openab\.instance' \
     Sources Tests poc scripts .github images Package.swift 2>/dev/null \
-  | grep -vE '^scripts/test-(legacy-agent|name-consistency|install-linux)\.sh:' \
+  | grep -vE '^scripts/test-(legacy-agent|name-consistency|install-linux|cutover-guide)\.sh:' \
+  | grep -vE '^poc/reverse-attach-linux/src/legacy(_tests)?\.rs:' \
+  | grep -vE '^poc/reverse-attach-linux/src/(probe|install)_tests\.rs:[0-9]+:.*oab-pw-mcp\.service' \
   | grep -vE '\.config/oab-instance-mcp/token|instance-mcp(#[0-9]|/issues/)' \
   | grep -vE '^scripts/test-packaging\.sh:[0-9]+:mkdir -p .*oab-instance-mcp' \
   | grep -vE '^Tests/InstanceMCPCoreTests/FirstRunSetupTests\.swift:[0-9]+:.*contains\("instance-mcp"\)' \

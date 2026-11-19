@@ -296,7 +296,7 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
         good_facts(),
         None,
     );
-    assert_eq!(r.out.lines().count(), 18);
+    assert_eq!(r.out.lines().count(), 21);
     assert!(r.out.lines().all(|l| l.contains(": ")));
     assert!(r.out.contains("state: installed") && r.out.contains("installed_id: test-id-1"));
     let r = exec(
@@ -315,7 +315,7 @@ fn the_commands_end_to_end_with_exit_codes_and_fixed_messages() {
     assert_eq!(v["update_available"], false);
     assert_eq!(v["pins_match"], true);
     assert_eq!(v["previous"], Value::Null);
-    assert_eq!(v.as_object().unwrap().len(), 18);
+    assert_eq!(v.as_object().unwrap().len(), 21);
 
     // update without a yes, then declined, then confirmed.
     let u = Cmd::Update {
@@ -428,6 +428,33 @@ fn failures_print_one_fixed_line_and_a_hint_and_nothing_else() {
         None,
     );
     assert!(r.out.contains("foreign_install"));
+}
+
+#[test]
+fn status_fails_on_a_v2_failure_or_an_unreadable_listener_table() {
+    let mut x = crate::probe::Extras::none();
+    for (word, blocks) in [
+        ("none", false),
+        ("not_running", false),
+        (
+            "tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok result=pass",
+            false,
+        ),
+        (
+            "tcp=0 udp=0 unix=2 unix_outside=1 tmpdir=ok result=fail",
+            true,
+        ),
+        (
+            "tcp=1 udp=0 unix=0 unix_outside=0 tmpdir=ok result=fail",
+            true,
+        ),
+        ("unknown", true),
+    ] {
+        x.listeners = word.into();
+        assert_eq!(x.listeners_blocks(), blocks, "{word}");
+    }
+    assert!(xdg_hint(false).is_some_and(|h| h.contains("XDG_RUNTIME_DIR")));
+    assert!(xdg_hint(true).is_none());
 }
 
 #[test]

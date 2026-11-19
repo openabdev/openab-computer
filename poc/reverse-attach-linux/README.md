@@ -125,6 +125,9 @@ config. Verified from the laptop: click into a field → `type` → screenshot s
 Same pattern as the Mac: `@playwright/mcp` runs beside the daemon on loopback and the daemon
 re-serves its tools under its own `tools/list`, filtered by the connection's profile.
 
+- **Deprecated (D14, R7.1).** `pw-mcp.sh` ships for one more minor release and is then removed; it
+  prints a deprecation notice to stderr when it starts (the tarball copy only). Cutover and rollback:
+  [`docs/linux-cutover.md`](../../docs/linux-cutover.md).
 - `pw-mcp.sh` + systemd user unit `oab-computer-pw-mcp.service`: `@playwright/mcp@0.0.82` pinned (same
   as `poc/pw-mcp`), **headed** Chromium launched into the labwc seat (`WAYLAND_DISPLAY`,
   `XDG_RUNTIME_DIR`, `DISPLAY=:0` for labwc's Xwayland), using the distro Chromium
@@ -194,7 +197,7 @@ comment).
 | `install [--from-dir DIR]` | Installs the pinned Node.js, Playwright MCP and Chromium below `${XDG_DATA_HOME:-~/.local/share}/oab-computer/playwright/`. `--from-dir` installs from pre-fetched files in `DIR` (the basenames of the pinned URLs and of the lockfile's `resolved` URLs), hash-checked the same way, with `npm ci --offline` and no network. |
 | `update [--yes] [--from-dir DIR]` | Prompted, never silent (no terminal and no `--yes` is a refusal). Installs the new version beside the old one and keeps the old one if anything fails. |
 | `remove` | Deletes only what carries the installer's marker and prints `left in place:` for everything else. |
-| `status [--json] [--retry]` | Install state, ids, platform, whether an update is available, and (L2) `containment`, `external_configured`, `listeners` and `refusal`, and (L4) `hardening_base`, `hardening_mount`, `hardening_unverified` and `run_records`. `--json` has a fixed set of keys. `--retry` removes the unavailable latch and re-runs the containment self-test in this process. |
+| `status [--json] [--retry]` | Install state, ids, platform, whether an update is available, and (L2) `containment`, `external_configured`, `listeners` and `refusal`, and (L4) `hardening_base`, `hardening_mount`, `hardening_unverified` and `run_records`, and (from the first release that contains L5) `legacy_units`, `legacy` and `legacy_listener`, which list what an install from before the managed browser left behind and never change it. `--json` has a fixed set of keys. `--retry` removes the unavailable latch and re-runs the containment self-test in this process. |
 
 Exit codes: `0` success (including a no-op), `1` the operation failed or the preflight found a
 blocker (one `browser: <command>_failed class=<token>` line on stderr), `2` a usage error. A usage
@@ -290,11 +293,24 @@ is outside this control.
 `unverified`, `not_applicable`), `display` (`headed`, `headless`, `not_applicable`) and
 `external_upstream_ignored`. It carries no URL, path, token or page data.
 
-Known limit (V2): with the pinned Playwright and Chromium the managed tree opens no TCP or UDP
-socket, but it does hold two listening Unix sockets inside its private `0700` `TMPDIR`
-(Playwright's browser socket and Chromium's `SingletonSocket`). `browser status` reports them as
-`listeners: tcp=0 udp=0 unix=2`. The target "no Unix listener" is therefore unmet (the ADR and R1.1 say so
-and the docs claim only "no TCP or UDP port").
+V2 (decided): the managed tree opens no TCP or UDP socket, and holds two listening Unix sockets inside its
+private `0700` `TMPDIR` (Playwright's browser socket and Chromium's `SingletonSocket`). The rule: any Unix
+listener must be inside that directory, which must be a real directory of the daemon's uid with mode
+exactly `0700`. Inside is judged on the resolved path of the socket's directory, so a link that leads outside does not count. `browser status` reports `listeners: tcp=0 udp=0 unix=2 unix_outside=0 tmpdir=ok
+result=pass`, or `result=fail` for a TCP or UDP listener, a Unix listener outside the directory or a
+directory that is not `0700` or not the daemon's (`tmpdir=mode|owner|missing|not_dir|unreadable`). The
+release smoke recomputes it on both architectures.
+
+### Release gates, provenance and cutover (L5)
+
+From the first release that contains L5: a release is gated by `.github/workflows/linux-release-smoke.yml`
+(Ubuntu 22.04 and 24.04 on amd64 and arm64, plus a Debian 12 container job on both architectures;
+[Releasing](../../docs/releasing.md#linux-release-gates)), by the per-release manual record
+(`docs/release-records/linux-VERSION.md`), and by the Playwright pins check for all four platforms. The
+Linux tarballs carry a build-provenance attestation; `gh attestation verify "oab-computer-$V-linux-$A.tar.gz"
+--repo openabdev/openab-computer` checks it, and does not make the download safe. `pw-mcp.sh` is
+deprecated, and `status` lists what the old external setup left behind. Moving a host over, and back, is
+in [the cutover guide](../../docs/linux-cutover.md).
 
 The tests: the pure parts run anywhere; process, `/proc` and `systemd` tests are Linux-only. The
 tests that need a user manager are `#[ignore]`d and run with `OAB_L2_SYSTEMD=1 cargo test --release
@@ -356,7 +372,7 @@ Design: `docs/adr/linux-browser-tier.md` ("Process containment", V4, V11) and
   until the child's run record is written, and the sweep lock (waited for, up to 10 s) across the
   spawn, so `remove`, `update` and a second start cannot act between the spawn and the record.
   Run records that are not records (junk `.json` files) are pruned, and a full `run/` is its own
-  class, `run_records_full`.
+  class, `run_records_full`. A start that cannot take the sweep lock within that wait is refused with `sweep_busy`, and one whose sweep fails for any other reason with `sweep_unavailable`: no child is started that neither the lock nor a run record protects. Neither counts as a failure of the child.
 - `src/state.rs`: `open_private_base` is the base of the short temporary directories. `XDG_RUNTIME_DIR`
   is used only when it opens without following a link and is a directory of ours that others cannot
   write; otherwise `/tmp/oab-<euid>` (0700, ours), never `/tmp` itself.

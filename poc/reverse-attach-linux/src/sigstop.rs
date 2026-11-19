@@ -159,6 +159,7 @@ impl Launcher for Plain {
 pub struct Supervised {
     avail: Arc<Availability>,
     runtime_max: Duration,
+    sweep_wait: Duration,
 }
 
 impl Supervised {
@@ -166,7 +167,16 @@ impl Supervised {
         Supervised {
             avail: Arc::new(Availability::new(mech)),
             runtime_max: CLI_RUNTIME_MAX,
+            sweep_wait: Duration::from_secs(10),
         }
+    }
+
+    /// How long a start waits for another start's sweep lock before it is refused (`sweep_busy`).
+    /// The production wait is the 10 s default; the test shortens it.
+    #[cfg(test)]
+    pub fn with_sweep_wait(mut self, d: Duration) -> Supervised {
+        self.sweep_wait = d;
+        self
     }
 
     /// A longer (or shorter) bound on the unit's life than the health check's.
@@ -183,13 +193,14 @@ impl Launcher for Supervised {
         // and keeps the sweep lock until this child's record is written, so a second start cannot
         // kill the new child while no record claims it. `.install.lock` is not taken here: `install`
         // and `update` call this launcher while holding it exclusively, in this same process.
-        let sweep_guard = crate::sweep::sweep_holding(
-            root,
-            &|u| mech.stop_unit(u),
-            std::time::Duration::from_secs(10),
-        )
-        .ok()
-        .and_then(|(_, guard)| guard);
+        // Fail closed, as `Supervisor::start` does (#132): a start that did not sweep and holds no
+        // guard is refused, so no CLI child runs that neither the lock nor a record protects.
+        let sweep_guard =
+            match crate::sweep::sweep_holding(root, &|u| mech.stop_unit(u), self.sweep_wait) {
+                Ok((_, Some(guard))) => guard,
+                Ok((_, None)) => return Err(std::io::Error::other("sweep_busy")),
+                Err(_) => return Err(std::io::Error::other("sweep_unavailable")),
+            };
         let Ok(mode) = self.avail.get() else {
             eprintln!("browser: cli_child containment=none");
             return Plain.launch(root, spec, scope);
