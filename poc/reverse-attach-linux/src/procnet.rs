@@ -285,6 +285,11 @@ pub fn socket_inodes(pid: u32) -> Result<HashSet<u64>, &'static str> {
 /// [`socket_inodes`] for the fd directory at `dir`. An unreadable directory, an unreadable entry, an
 /// unreadable link, or more than `FD_LIMIT` entries is `UNKNOWN`: a listener could be among the
 /// descriptors that were not read.
+///
+/// A PID or fd that disappears during the scan is `UNKNOWN` as well, by design. A `read_link` that fails
+/// with ENOENT (the process closed the fd after `read_dir` listed it) is not special-cased, and neither is
+/// a PID that exited before its fd directory was read. Reading "gone" as "no sockets" would turn an unknown
+/// state into a claim. The cost: `browser status` reports `unknown` when a busy process churns its fds.
 pub fn socket_inodes_in(dir: &std::path::Path) -> Result<HashSet<u64>, &'static str> {
     let rd = std::fs::read_dir(dir).map_err(|_| UNKNOWN)?;
     let mut set = HashSet::new();

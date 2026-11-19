@@ -397,6 +397,15 @@ fn an_fd_table_at_the_scan_limit_is_read_in_full() {
 }
 
 #[test]
+fn a_pid_that_exits_before_its_fd_scan_is_unknown_never_no_sockets() {
+    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = child.id();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(socket_inodes(pid), Err(UNKNOWN));
+}
+
+#[test]
 fn socket_links_are_collected_and_other_fds_are_ignored() {
     let d = Scratch::new("fd-kinds");
     std::os::unix::fs::symlink("socket:[7]", d.0.join("3")).unwrap();
