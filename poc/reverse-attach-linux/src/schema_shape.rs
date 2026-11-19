@@ -13,6 +13,8 @@ pub(crate) const BANNED: &[&str] = &[
     "allOf",
     "not",
     "$ref",
+    "$dynamicRef",
+    "$recursiveRef",
     "$defs",
     "definitions",
 ];
@@ -49,8 +51,6 @@ const OTHER_KNOWN: &[&str] = &[
     "id",
     "$anchor",
     "$dynamicAnchor",
-    "$dynamicRef",
-    "$recursiveRef",
     "$recursiveAnchor",
     "$comment",
     "$vocabulary",

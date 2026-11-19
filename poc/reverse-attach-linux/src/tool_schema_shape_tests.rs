@@ -658,3 +658,21 @@ fn unknown_keyword_fails_closed() {
         assert_eq!(problems(&known, "t"), Vec::<String>::new(), "{keyword}");
     }
 }
+
+/// Round-5 F1: the dynamic and recursive reference keywords are refused like `$ref`; their anchors
+/// stay allowed, since an anchor does nothing without a reference.
+#[test]
+fn dynamic_and_recursive_refs_are_banned() {
+    for keyword in ["$dynamicRef", "$recursiveRef"] {
+        let schema = with_property_keyword(keyword, json!("#meta"));
+        assert_eq!(
+            problems(&schema, "t"),
+            vec![format!("t.properties.a.{keyword}")],
+            "{keyword}"
+        );
+    }
+    for keyword in ["$dynamicAnchor", "$recursiveAnchor"] {
+        let schema = with_property_keyword(keyword, json!("meta"));
+        assert_eq!(problems(&schema, "t"), Vec::<String>::new(), "{keyword}");
+    }
+}

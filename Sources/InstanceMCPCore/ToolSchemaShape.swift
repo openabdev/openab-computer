@@ -7,7 +7,8 @@ import Foundation
 /// `UpstreamTool.refusal`), and the tests use them over the local catalog.
 enum ToolSchemaShape {
     /// Keywords no served schema may use at a schema position.
-    static let banned: Set<String> = ["anyOf", "oneOf", "allOf", "not", "$ref", "$defs", "definitions"]
+    static let banned: Set<String> = ["anyOf", "oneOf", "allOf", "not", "$ref", "$dynamicRef", "$recursiveRef",
+                                      "$defs", "definitions"]
 
     /// Keywords whose value is a map of name to sub-schema.
     static let schemaMaps = ["properties", "patternProperties", "dependentSchemas", "dependencies"]
@@ -20,8 +21,8 @@ enum ToolSchemaShape {
     /// so a keyword this walker does not know cannot hide a sub-schema from it (fail closed).
     static let known: Set<String> = banned
         .union(schemaMaps).union(singleSchemas)
-        .union(["$schema", "$id", "id", "$anchor", "$dynamicAnchor", "$dynamicRef", "$recursiveRef",
-                "$recursiveAnchor", "$comment", "$vocabulary",
+        .union(["$schema", "$id", "id", "$anchor", "$dynamicAnchor", "$recursiveAnchor",
+                "$comment", "$vocabulary",
                 "items", "prefixItems",
                 "type", "enum", "const", "multipleOf", "maximum", "exclusiveMaximum", "minimum",
                 "exclusiveMinimum", "maxLength", "minLength", "pattern", "maxItems", "minItems",

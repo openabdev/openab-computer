@@ -366,6 +366,18 @@ final class ToolSchemaShapeTests: XCTestCase {
         XCTAssertEqual(Self.problems(fixture("$comment", "c"), root: "t"), [])
     }
 
+    // Round-5 F1: the dynamic and recursive reference keywords are refused like `$ref`; their
+    // anchors stay allowed, since an anchor does nothing without a reference.
+
+    func testDynamicAndRecursiveRefsAreBanned() {
+        for key in ["$dynamicRef", "$recursiveRef"] {
+            XCTAssertEqual(Self.problems(fixture(key, "#meta"), root: "t"), ["t.properties.a.\(key)"], key)
+        }
+        for key in ["$dynamicAnchor", "$recursiveAnchor"] {
+            XCTAssertEqual(Self.problems(fixture(key, "meta"), root: "t"), [], key)
+        }
+    }
+
     // Round-4 F3: only a string-or-null union is collapsed; any other union keeps its anyOf and is refused.
 
     func testEmulateMediaUnionWithANonNullBranchIsRefusedNotCollapsed() {
