@@ -41,13 +41,23 @@ public actor UpstreamMCP {
         do {
             let r = try await rpc("tools/list", params: nil)
             let list = (r["result"]?["tools"]?.arrayValue ?? []).map { t -> JSONValue in
-                guard var o = t.objectValue, let n = o["name"]?.stringValue else { return t }
+                // Forwarded on the upstream's own name, before the prefix is added, so a prefix cannot make
+                // a schema rewrite miss (browser_emulate_media).
+                let forwarded = UpstreamTool.forwardedDescriptor(t)
+                guard var o = forwarded.objectValue, let n = o["name"]?.stringValue else { return forwarded }
                 o["name"] = .string(prefix + n)
                 return .object(o)
             }
-            cachedTools = (Date(), list)
+            // A tool whose forwarded schema still breaks the shape rules is not served, and its call is
+            // not routed upstream (UpstreamTool.refusal). The name is logged.
+            let served = list.filter { t in
+                guard let why = UpstreamTool.refusal(t) else { return true }
+                log("upstream \(name): tool \(t["name"]?.stringValue ?? "?") is not served: \(why)")
+                return false
+            }
+            cachedTools = (Date(), served)
             lastError = nil
-            return list
+            return served
         } catch {
             lastError = "\(error)"
             log("upstream \(name): tools/list failed: \(error)")
@@ -59,6 +69,7 @@ public actor UpstreamMCP {
     /// Forward a `tools/call`. `name` is the prefixed name the caller used.
     public func call(_ name: String, arguments: JSONValue) async throws -> JSONValue {
         let upstreamName = name.hasPrefix(prefix) ? String(name.dropFirst(prefix.count)) : name
+        if let why = UpstreamTool.nullOverrideRefusal(upstreamName, arguments) { throw JSONRPCError.invalidParams(why) }
         let r = try await rpc("tools/call", params: ["name": .string(upstreamName), "arguments": arguments])
         if let e = r["error"] { throw JSONRPCError(code: e["code"]?.intValue ?? -32000, message: e["message"]?.stringValue ?? "upstream error") }
         return r["result"] ?? .null
@@ -155,8 +166,82 @@ struct UpstreamTool: Tool {
 
     var name: String { descriptorValue["name"]?.stringValue ?? "?" }
     var description: String { descriptorValue["description"]?.stringValue ?? "" }
-    var inputSchema: JSONValue { descriptorValue["inputSchema"] ?? ["type": "object"] }
-    var descriptor: JSONValue { descriptorValue }
+    var inputSchema: JSONValue { Self.forwardedSchema(name: name, descriptorValue["inputSchema"] ?? ["type": "object"]) }
+    /// What `tools/list` serves: the upstream descriptor with its inputSchema forwarded.
+    var descriptor: JSONValue { Self.forwardedDescriptor(descriptorValue) }
+
+    /// A descriptor with `inputSchema` run through `forwardedSchema`. Every field other than
+    /// `inputSchema` is kept, except that browser_emulate_media's description loses the sentence about
+    /// null, which option B no longer accepts. Used for the upstream tools and for the browser router's tools.
+    static func forwardedDescriptor(_ descriptor: JSONValue) -> JSONValue {
+        guard var o = descriptor.objectValue else { return descriptor }
+        let name = o["name"]?.stringValue ?? ""
+        if let schema = o["inputSchema"] { o["inputSchema"] = forwardedSchema(name: name, schema) }
+        if name == "browser_emulate_media", let d = o["description"]?.stringValue {
+            o["description"] = .string(d.replacingOccurrences(of: nullClause, with: ""))
+        }
+        return .object(o)
+    }
+
+    /// The sentence option B removes from browser_emulate_media's description.
+    private static let nullClause = "; null clears an override"
+
+    /// Why a forwarded descriptor must not be served, or nil. A schema that still has a banned
+    /// construct, or a `type` array, after `forwardedDescriptor` is refused: the tool is hidden from
+    /// tools/list and its call is not routed. The reason names the first offending path.
+    static func refusal(_ descriptor: JSONValue) -> String? {
+        let served = forwardedDescriptor(descriptor)
+        return ToolSchemaShape.problems(served["inputSchema"] ?? ["type": "object"],
+                                        root: served["name"]?.stringValue ?? "?").first
+    }
+
+    /// browser_emulate_media's five overrides are `anyOf: [enum string, null]`, a union that strict
+    /// MCP clients drop (#145). Owner decision on PR #146 (option B): such a property becomes its
+    /// plain string branch, the served schema no longer offers null, and `nullOverrideRefusal`
+    /// refuses a null at the call. Only an `anyOf` of exactly one string branch plus `{type: null}`
+    /// branches is collapsed; any other union is left as is, so `refusal` hides the tool and logs why
+    /// instead of silently dropping a branch. Every other upstream schema is forwarded unchanged.
+    static func forwardedSchema(name: String, _ schema: JSONValue) -> JSONValue {
+        guard name == "browser_emulate_media", var root = schema.objectValue,
+              var props = root["properties"]?.objectValue else { return schema }
+        for (key, prop) in props {
+            guard var p = prop.objectValue, let branches = p["anyOf"]?.arrayValue,
+                  let string = nullableStringBranch(branches) else { continue }
+            p.removeValue(forKey: "anyOf")
+            for (k, v) in string { p[k] = v }
+            props[key] = .object(p)
+        }
+        root["properties"] = .object(props)
+        return .object(root)
+    }
+
+    /// The string branch of `[string, null...]`, or nil when any other branch is not exactly
+    /// `{type: null}` or there is not exactly one string branch.
+    static func nullableStringBranch(_ branches: [JSONValue]) -> [String: JSONValue]? {
+        var string: [String: JSONValue]?
+        for b in branches {
+            guard let o = b.objectValue else { return nil }
+            if o["type"]?.stringValue == "string" {
+                guard string == nil else { return nil }
+                string = o
+            } else if o.count != 1 || o["type"]?.stringValue != "null" {
+                return nil
+            }
+        }
+        return string
+    }
+
+    /// Why a `tools/call` must not be forwarded, or nil: the served browser_emulate_media schema
+    /// offers no nullable property (option B), so an explicit null for any argument is refused before
+    /// anything is sent. This covers an override a later upstream adds, not only today's five. The
+    /// reason names the first such key in sorted order, never the value. Shared by the upstream path
+    /// and the browser router.
+    static func nullOverrideRefusal(_ name: String, _ arguments: JSONValue) -> String? {
+        guard name == "browser_emulate_media", let args = arguments.objectValue,
+              let key = args.keys.sorted().first(where: { args[$0]?.isNull == true })
+        else { return nil }
+        return "browser_emulate_media: \(key) cannot be null; omit it or send one of its enum values"
+    }
 
     func call(arguments: JSONValue) async throws -> ToolResult {
         let r = try await upstream.call(name, arguments: arguments)

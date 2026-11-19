@@ -37,6 +37,8 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
     var settableError: UIAXError?
     var performError: UIAXError?
     var setError: UIAXError?
+    /// A numeric or boolean control: a string value is refused with kAXErrorIllegalArgument.
+    var refusesStrings = false
     /// Actions performed and attributes set, in order.
     var performed: [String] = []
     var sets: [(String, UIAttrValue)] = []
@@ -140,6 +142,7 @@ final class FakeUIElement: UIElement, @unchecked Sendable {
         calls.append(("set " + name, timeouts.last))
         if spend() { return .failure(.timeout) }
         if let setError { return .failure(setError) }
+        if refusesStrings, case .string = value { return .failure(.other(UIAXError.illegalArgumentCode)) }
         sets.append((name, value))
         attrs[name] = value
         onPerform?()
@@ -677,7 +680,7 @@ final class UISnapshotTargetTests: XCTestCase {
         XCTAssertTrue(same(try pick(app, all: true), ws))
         XCTAssertThrowsError(try pick(app, .title("x"))) { e in
             XCTAssertEqual((e as? ToolError)?.description,
-                           #"window 'x' not found in TextEdit; windows: [0] "Notes", [1] "notes draft""#)
+                           #"window 'x' not found in TextEdit; match the window by its title (exact, else case-insensitive substring). Window titles: "Notes", "notes draft""#)
         }
         XCTAssertThrowsError(try pick(app, .index(5))) { e in
             XCTAssertTrue((e as? ToolError)?.description.hasPrefix("window '5' not found in TextEdit") == true)
@@ -688,6 +691,12 @@ final class UISnapshotTargetTests: XCTestCase {
             }
         }
         XCTAssertThrowsError(try pick(appElement(), all: true))
+    }
+
+    func testWindowNotFoundErrorIsTitleOnly() {
+        let text = UISnapshotTool.Errors.windowNotFound("x", app: "TextEdit", titles: ["Notes", "notes draft"])
+        XCTAssertTrue(text.contains("match the window by its title"))
+        XCTAssertFalse(text.contains("["), "no index brackets: strict clients cannot send indexes")
     }
 
     func testWindowLookupErrors() {
@@ -879,7 +888,7 @@ final class UISnapshotToolTests: XCTestCase {
         let cases: [(JSONValue, String)] = [(["app": "TextEdit", "pid": 20], "pass app or pid, not both"),
                             (["window": "x", "all_windows": true], "pass window or all_windows, not both"),
                             (["max_nodes": 1.5], "max_nodes must be an integer"),
-                            (["window": -1], "window must be a non-empty title or a window index ≥ 0"),
+                            (["window": -1], "window must be a non-empty title"),
                             (["app": ""], "app must be a non-empty string")]
         for (args, why) in cases {
             let r = await call(args)

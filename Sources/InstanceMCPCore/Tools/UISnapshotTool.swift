@@ -8,7 +8,7 @@ public struct UISnapshotTool: Tool {
     public let description = """
         Read the accessibility tree of a native macOS app window (read-only): roles, titles, values, \
         state and frames. Default target: the frontmost app's focused window; pass `app` (bundle id or \
-        name) or `pid`, and `window` (title or index) or `all_windows`. Frames are display POINTS relative \
+        name) or `pid`, and `window` (a title) or `all_windows`. Frames are display POINTS relative \
         to `display`, the same space `screenshot` and `mouse` use. Each node has a `ref` valid only within \
         this `snapshot_id`; `ui_action` acts on a node by `{snapshot_id, ref}` (the last 4 snapshots stay \
         usable for 5 minutes). Pass `include_menu_bar` to also walk the app's menu bar. Secure text fields \
@@ -20,8 +20,8 @@ public struct UISnapshotTool: Tool {
         "properties": [
             "app": ["type": "string", "description": "Bundle id (com.apple.TextEdit) or app name (TextEdit). Default: frontmost app."],
             "pid": ["type": "integer", "description": "Process id. Use instead of app when several apps match."],
-            "window": ["anyOf": [["type": "string"], ["type": "integer", "minimum": 0]],
-                       "description": "Window title (exact, else case-insensitive substring) or index into the app's window list. Default: focused window."],
+            "window": ["type": "string",
+                       "description": "Window title: exact match, else case-insensitive substring. A string is always read as a title, even when it looks like a number. Default: focused window."],
             "all_windows": ["type": "boolean", "description": "Walk every window of the app.", "default": false],
             "include_menu_bar": ["type": "boolean", "description": "Also walk the app's menu bar, after the windows (it shares max_nodes), so menu items get refs for ui_action.", "default": false],
             "max_depth": ["type": "integer", "description": "Levels below the window.",
@@ -55,8 +55,9 @@ public struct UISnapshotTool: Tool {
         }
         public static func noWindows(_ app: String) -> String { "\(app) has no open windows" }
         public static func windowNotFound(_ w: String, app: String, titles: [String]) -> String {
-            "window '\(w)' not found in \(app); windows: " +
-                titles.enumerated().map { "[\($0.offset)] \"\($0.element)\"" }.joined(separator: ", ")
+            "window '\(w)' not found in \(app); match the window by its title " +
+                "(exact, else case-insensitive substring). Window titles: " +
+                titles.map { "\"\($0)\"" }.joined(separator: ", ")
         }
         public static func appBusy(_ app: String) -> String {
             "\(app) did not answer the Accessibility request in time (it may be busy or hung); retry, or raise timeout_ms"
@@ -122,12 +123,16 @@ public struct UISnapshotTool: Tool {
             r.pid = Int32(p)
         }
         if let v = a["window"], !v.isNull {
+            // The schema advertises only a title string (#145, which replaced the anyOf
+            // schema). A native JSON integer is still read as an index for existing callers.
+            // This asymmetry is intentional: do not narrow this branch to the schema without
+            // checking those callers.
             if let i = v.intValue, i >= 0 {
                 r.window = .index(i)
             } else if let s = v.stringValue, !s.isEmpty {
                 r.window = .title(s)
             } else {
-                throw JSONRPCError.invalidParams("window must be a non-empty title or a window index ≥ 0")
+                throw JSONRPCError.invalidParams("window must be a non-empty title")
             }
         }
         if let v = a["all_windows"], !v.isNull {

@@ -19,9 +19,11 @@ final class FakeUpstream: @unchecked Sendable {
     /// nil ⇒ the default three `browser_*` tools plus a `screenshot` that collides
     /// with the local one.
     private let toolNames: [String]?
+    private let descriptors: [JSONValue]?
 
-    init(toolNames: [String]? = nil) throws {
+    init(toolNames: [String]? = nil, descriptors: [JSONValue]? = nil) throws {
         self.toolNames = toolNames
+        self.descriptors = descriptors
         listener = try NWListener(using: .tcp, on: .any)
         let sem = DispatchSemaphore(value: 0)
         listener.stateUpdateHandler = { [weak self] st in
@@ -77,6 +79,9 @@ final class FakeUpstream: @unchecked Sendable {
         }
         switch rpc.method {
         case "tools/list":
+            if let descriptors {
+                return sse(["jsonrpc": "2.0", "id": id, "result": ["tools": .array(descriptors)]])
+            }
             if let toolNames {
                 return sse(["jsonrpc": "2.0", "id": id, "result": ["tools": .array(toolNames.map {
                     ["name": .string($0), "description": "fixture", "inputSchema": ["type": "object"]]
@@ -146,6 +151,17 @@ final class UpstreamMCPTests: XCTestCase {
         let content = snap?.result?["content"]?.arrayValue
         XCTAssertEqual(content?.count, 2, "image block survives the relay")
         XCTAssertEqual(content?[1]["mimeType"]?.stringValue, "image/png")
+    }
+
+    func testNullEmulateMediaOverrideIsRefusedBeforeTheUpstreamSeesIt() async throws {
+        let up = UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:9/mcp")!, prefix: "pw_")
+        do {
+            _ = try await up.call("pw_browser_emulate_media", arguments: ["colorScheme": .null])
+            XCTFail("a null override was forwarded upstream")
+        } catch let e as JSONRPCError {
+            XCTAssertEqual(e.code, JSONRPCError.invalidParams)
+            XCTAssertEqual(e.message, "Invalid params: browser_emulate_media: colorScheme cannot be null; omit it or send one of its enum values")
+        }
     }
 
     func testDeniedUpstreamToolIsUnknownUnderObserve() async throws {

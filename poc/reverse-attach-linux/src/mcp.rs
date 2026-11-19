@@ -181,16 +181,119 @@ pub(crate) fn upstream_tools_for_with(
     let mut out = Vec::new();
     for up in ups {
         for t in up.tools() {
-            let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
+            let descriptor = forwarded_descriptor(t);
+            let Some(name) = descriptor.get("name").and_then(|n| n.as_str()) else {
                 continue;
             };
             if local_names.contains(&name) || !upstream_tool_allowed(name, profile) {
                 continue;
             }
-            out.push((up.clone(), t));
+            if let Some(why) = schema_refusal(&descriptor) {
+                eprintln!("upstream tool {name} is not served: {why}");
+                continue;
+            }
+            out.push((up.clone(), descriptor));
         }
     }
     out
+}
+
+/// Why a forwarded descriptor must not be served, or nil: its inputSchema still has a banned
+/// construct or a non-plain `type`. Takes the descriptor after `forwarded_descriptor`. A descriptor
+/// without an inputSchema is checked as an empty object schema, as on the Swift side.
+pub(crate) fn schema_refusal(descriptor: &Value) -> Option<String> {
+    let name = descriptor
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let schema = descriptor
+        .get("inputSchema")
+        .cloned()
+        .unwrap_or_else(|| json!({ "type": "object" }));
+    crate::schema_shape::problems(&schema, name)
+        .into_iter()
+        .next()
+}
+
+/// The sentence option B removes from browser_emulate_media's description.
+const NULL_CLAUSE: &str = "; null clears an override";
+
+/// browser_emulate_media's five overrides are `anyOf: [enum string, null]` upstream (#145). Option B
+/// (owner decision, PR #146): such a property becomes its plain string branch, so each override is
+/// its plain enum, and the description drops the sentence about null. Only an `anyOf` of exactly one
+/// string branch plus `{type: null}` branches is collapsed; any other union is left as is, so
+/// `schema_refusal` hides the tool and logs why instead of silently dropping a branch. Mirrors
+/// `UpstreamTool.forwardedDescriptor` on the Swift side. Every other descriptor passes unchanged.
+pub(crate) fn forwarded_descriptor(mut t: Value) -> Value {
+    if t.get("name").and_then(Value::as_str) != Some("browser_emulate_media") {
+        return t;
+    }
+    let description = t
+        .get("description")
+        .and_then(Value::as_str)
+        .map(|d| d.replace(NULL_CLAUSE, ""));
+    if let Some(d) = description {
+        t["description"] = Value::String(d);
+    }
+    let Some(props) = t
+        .get_mut("inputSchema")
+        .and_then(|s| s.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    else {
+        return t;
+    };
+    for prop in props.values_mut() {
+        let Some(obj) = prop.as_object_mut() else {
+            continue;
+        };
+        let Some(string) = obj.get("anyOf").and_then(nullable_string_branch) else {
+            continue;
+        };
+        obj.remove("anyOf");
+        for (k, v) in string {
+            obj.insert(k, v);
+        }
+    }
+    t
+}
+
+/// The string branch of an `anyOf` of `[string, null...]`, or `None` when any other branch is not
+/// exactly `{type: null}` or there is not exactly one string branch. Mirrors
+/// `UpstreamTool.nullableStringBranch` on the Swift side.
+fn nullable_string_branch(any_of: &Value) -> Option<serde_json::Map<String, Value>> {
+    let mut string = None;
+    for branch in any_of.as_array()? {
+        let obj = branch.as_object()?;
+        let kind = obj.get("type").and_then(Value::as_str);
+        if kind == Some("string") {
+            if string.is_some() {
+                return None;
+            }
+            string = Some(obj.clone());
+        } else if obj.len() != 1 || kind != Some("null") {
+            return None;
+        }
+    }
+    string
+}
+
+/// Why a `tools/call` must not be forwarded, or nil: the served browser_emulate_media schema offers
+/// no nullable property (option B), so an explicit null for any argument is refused. This covers an
+/// override a later upstream adds, not only today's five. Names the first such key in sorted order,
+/// never the value. Mirrors `UpstreamTool.nullOverrideRefusal` on the Swift side.
+pub(crate) fn null_override_refusal(name: &str, arguments: &Value) -> Option<String> {
+    if name != "browser_emulate_media" {
+        return None;
+    }
+    let key = arguments
+        .as_object()?
+        .iter()
+        .filter(|(_, v)| v.is_null())
+        .map(|(k, _)| k)
+        .min()?;
+    Some(format!(
+        "browser_emulate_media: {key} cannot be null; omit it or send one of its enum values"
+    ))
 }
 
 pub(crate) fn upstream_owning_with(
@@ -201,7 +304,21 @@ pub(crate) fn upstream_owning_with(
     if !upstream_tool_allowed(name, profile) {
         return None;
     }
-    ups.iter().find(|up| up.owns(name)).cloned()
+    ups.iter()
+        .find(|up| up.owns(name) && !refused_upstream_tool(up, name))
+        .cloned()
+}
+
+/// True when the last list `up` served has `name` and its forwarded schema is refused. Such a tool
+/// is neither served nor routed, so a call to it is not sent upstream. Decided from
+/// `Upstream::cached_tools`, never a new `tools/list`: a call does not pay for a listing, and a down
+/// backend answers the call with its own class. With nothing cached the tool is not refused here;
+/// a client cannot have been offered it, and the call fails or is answered upstream on its own.
+fn refused_upstream_tool(up: &Arc<dyn Upstream>, name: &str) -> bool {
+    up.cached_tools().into_iter().any(|t| {
+        t.get("name").and_then(Value::as_str) == Some(name)
+            && schema_refusal(&forwarded_descriptor(t)).is_some()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -569,7 +686,10 @@ pub(crate) fn handle_tool_call_with(
         // Not tied to `cancel`: a job outlives the attach that started it.
         n if JOB_TOOL_NAMES.contains(&n) => crate::jobs::tools::call(n, &arguments),
         other => match upstream_owning_with(other, profile, ups) {
-            Some(up) => up.call(other, arguments).map_err(|e| (-32000, e)),
+            Some(up) => match null_override_refusal(other, &arguments) {
+                Some(why) => Err((INVALID_PARAMS, format!("Invalid params: {why}"))),
+                None => up.call(other, arguments).map_err(|e| (-32000, e)),
+            },
             None => Err((
                 INVALID_PARAMS,
                 format!("Invalid params: unknown tool: {other}"),

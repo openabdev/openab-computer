@@ -202,11 +202,19 @@ struct UIActionEngine {
         // 4. The action. It gets the whole remaining budget: apps answer an AXPress only
         // after handling it.
         guard deadline.armAll(e) else { throw ToolError(E.appBusy(appName)) }
-        let done: Result<Void, UIAXError>
+        var done: Result<Void, UIAXError>
+        var retriedNative = false
         switch req.action {
         case .setValue:
             guard let v = req.value else { throw ToolError(E.unsupported(action: req.action.rawValue, ref: req.ref, role: role, supported: [])) }
             done = e.setValue(AXAttr.value, v)
+            // The schema advertises only strings, so a numeric or boolean control gets a
+            // string it refuses with kAXErrorIllegalArgument. A refused write changed nothing,
+            // so the same value is written once more as the native type the string spells.
+            if case .failure(.other(UIAXError.illegalArgumentCode)) = done, let native = Self.nativeValue(v) {
+                retriedNative = true
+                done = e.setValue(AXAttr.value, native)
+            }
         case .focus:
             done = e.setValue(AXAttr.focused, .bool(true))
         default:
@@ -217,6 +225,10 @@ struct UIActionEngine {
         case .failure(.timeout): throw ToolError(E.unconfirmed(action: req.action.rawValue, ref: req.ref, app: appName))
         case .failure(.invalidElement): throw stale("vanished before the action ran")
         case .failure(.apiDisabled): throw ToolError(E.notTrusted)
+        // Checked before `isUnsupported`: a refused value type is not a missing action.
+        case .failure(.other(UIAXError.illegalArgumentCode)) where req.action == .setValue:
+            // set_value always carries a value: the guard above rejects a missing one.
+            throw ToolError(E.valueTypeRejected(ref: req.ref, role: role, sent: req.value ?? .string(""), retried: retriedNative))
         case .failure(let err) where err.isUnsupported: throw try unsupported()
         case .failure(.other(let code)): throw ToolError(E.failed(action: req.action.rawValue, ref: req.ref, code: code))
         }
@@ -273,6 +285,17 @@ struct UIActionEngine {
         if gone { text += " The element is gone now (a menu or dialog closed)." }
         text += " Take a new ui_snapshot to confirm."
         return ToolResult(content: [.text(text)], structured: .object(o))
+    }
+
+    /// The native number or boolean a string spells (`"3"`, `"true"`), or nil. Surrounding
+    /// whitespace is ignored, so `" 3 "` retries as the number 3.
+    static func nativeValue(_ v: UIAttrValue) -> UIAttrValue? {
+        guard case .string(let raw) = v else { return nil }
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s == "true" { return .bool(true) }
+        if s == "false" { return .bool(false) }
+        if let d = Double(s), d.isFinite { return .number(d) }
+        return nil
     }
 
     private enum PostValue { case value(JSONValue, truncated: Bool), gone }

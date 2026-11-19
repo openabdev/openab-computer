@@ -395,6 +395,15 @@ impl External {
         }
         list
     }
+
+    /// The last list `tools` cached, at any age, without a request. Empty when nothing is cached.
+    pub fn cached_tools(&self) -> Vec<Value> {
+        self.cache
+            .lock()
+            .ok()
+            .and_then(|c| c.as_ref().map(|(_, t)| t.clone()))
+            .unwrap_or_default()
+    }
 }
 
 /// Why a paged listing failed: a request failed (already noted), or the pages were not acceptable.

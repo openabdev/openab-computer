@@ -49,6 +49,7 @@ mod procnet;
 #[cfg(test)]
 mod profile_conformance;
 mod run_record;
+mod schema_shape;
 mod signin;
 mod sigstop;
 mod state;
@@ -56,6 +57,8 @@ mod stdio_client;
 mod sweep;
 #[cfg(test)]
 mod test_exec;
+#[cfg(test)]
+mod tool_schema_shape_tests;
 mod tools;
 mod unit;
 #[cfg(test)]

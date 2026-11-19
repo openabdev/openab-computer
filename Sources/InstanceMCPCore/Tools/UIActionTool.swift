@@ -26,9 +26,8 @@ public struct UIActionTool: Tool {
             "snapshot_id": ["type": "string", "description": "The snapshot_id of the ui_snapshot the ref came from."],
             "ref": ["type": "string", "pattern": .string(UIActionTool.refPattern), "description": "A node ref from that snapshot (e1, e2, …)."],
             "action": ["type": "string", "enum": .array(UIActionKind.allCases.map { .string($0.rawValue) })],
-            "value": ["anyOf": [["type": "string", "maxLength": .number(Double(UIActionTool.maxValueLength))],
-                                ["type": "number"], ["type": "boolean"]],
-                      "description": "The new value; set_value only. Never logged or echoed."],
+            "value": ["type": "string", "maxLength": .number(Double(UIActionTool.maxValueLength)),
+                      "description": "The new value as a string, for example '3' or 'true'. set_value only. It replaces the whole value and is never logged or echoed."],
             "activate": ["type": "boolean", "default": false,
                          "description": "Bring the app to the front first (and raise the ref's window). Default false: no focus stealing."],
             "timeout_ms": ["type": "integer", "description": "Total time budget for the call; the action itself gets what is left after the checks.",
@@ -72,6 +71,26 @@ public struct UIActionTool: Tool {
             "\(ref) (\(role)) does not support \(action). " +
                 (supported.isEmpty ? "No ui_action action is supported on it; use screenshot + mouse"
                                    : "Supported on it: \(supported.joined(separator: ", "))")
+        }
+        /// AX refused the value's type (kAXErrorIllegalArgument) on `set_value`. Not an unsupported action,
+        /// so the supported list is not shown. -25201 is a generic error, so the cause named here is the
+        /// likely one, not a confirmed one. `sent` selects the wording: text says whether it has a number
+        /// or boolean form, and a native number or boolean gets the generic wording. The value is never
+        /// echoed.
+        public static func valueTypeRejected(ref: String, role: String, sent: UIAttrValue, retried: Bool) -> String {
+            let code = "AX error -25201, a generic illegal-argument error"
+            let likely = "The likely cause is a value type this control does not take."
+            if retried {
+                return "\(ref) (\(role)) rejected the `value` property as text and as a number or boolean (\(code)). "
+                    + "\(likely) Take a new ui_snapshot to check the control's current value type"
+            }
+            if case .string = sent {
+                return "\(ref) (\(role)) rejected the `value` property as text (\(code)). The text has no number "
+                    + "or boolean form to retry as. The likely cause is that this control does not take a text value. "
+                    + "Take a new ui_snapshot to check the control's current value type"
+            }
+            return "\(ref) (\(role)) rejected the `value` property (\(code)). \(likely) "
+                + "Take a new ui_snapshot to check the control's current value type"
         }
         public static func unconfirmed(action: String, ref: String, app: String) -> String {
             "ui_action \(action) [\(ref)]: \(app) did not confirm in time. The action may have happened (a press that opens a dialog or menu often answers late); take a new ui_snapshot to check, and do not repeat it blindly"
@@ -151,6 +170,10 @@ public struct UIActionTool: Tool {
         r.action = kind
         if let v = a["value"], !v.isNull {
             guard kind == .setValue else { throw JSONRPCError.invalidParams("value is only accepted with set_value") }
+            // The schema advertises only a string. A native JSON number or boolean is still
+            // parsed for existing callers (#145, which replaced the anyOf schema). This
+            // asymmetry is intentional: do not narrow this switch to the schema without
+            // checking those callers.
             switch v {
             case .string(let s):
                 guard s.count <= maxValueLength else {

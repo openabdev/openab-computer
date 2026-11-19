@@ -330,6 +330,121 @@ final class UIActionToolTests: XCTestCase {
         assertNothingDone(f)
     }
 
+    func testStringRefusedByNumericControlIsRetriedAsNumber() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.refusesStrings = true
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "3"])
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(f.textArea.sets.map(\.1), [.number(3)])
+        XCTAssertEqual(r.structured?["success"], true)
+    }
+
+    func testStringRefusedByNumericControlIsRetriedAsBool() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.refusesStrings = true
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "true"])
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(f.textArea.sets.map(\.1), [.bool(true)])
+    }
+
+    func testPaddedNumberStringIsRetriedAsNumber() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.refusesStrings = true
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": " 3 "])
+        XCTAssertFalse(r.isToolError, r.text)
+        XCTAssertEqual(f.textArea.sets.map(\.1), [.number(3)])
+    }
+
+    func testNativeFormIgnoresSurroundingWhitespaceOnly() {
+        XCTAssertEqual(UIActionEngine.nativeValue(.string(" 3 ")), .number(3))
+        XCTAssertEqual(UIActionEngine.nativeValue(.string("\ttrue\n")), .bool(true))
+        XCTAssertEqual(UIActionEngine.nativeValue(.string("  false")), .bool(false))
+        XCTAssertNil(UIActionEngine.nativeValue(.string("   ")))
+        XCTAssertNil(UIActionEngine.nativeValue(.string("3 x")))
+        XCTAssertNil(UIActionEngine.nativeValue(.string("nan")))
+        XCTAssertNil(UIActionEngine.nativeValue(.number(3)))
+    }
+
+    func testValueTypeRefusalIsNotReportedAsUnsupported() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.refusesStrings = true
+        // "hello" has no native form, so there is nothing to retry: the refusal is named as a type
+        // mismatch, not as an unsupported action, and the supported list is not shown.
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "hello"])
+        XCTAssertTrue(r.isToolError)
+        XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", sent: .string("hello"), retried: false))
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property as text (AX error -25201, a generic illegal-argument error). The text has no number or boolean form to retry as. The likely cause is that this control does not take a text value. Take a new ui_snapshot to check the control's current value type")
+        XCTAssertFalse(r.text.contains("JSON"), r.text)
+        XCTAssertFalse(r.text.contains("does not support"), r.text)
+        XCTAssertFalse(r.text.contains("Supported on it"), r.text)
+        assertNothingDone(f)
+    }
+
+    func testValueTypeRefusedForNativeNumberGivesTheGenericMessage() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.setError = .other(UIAXError.illegalArgumentCode)
+        // The caller sent a native number, which has no string form to retry. -25201 is generic, so the
+        // message names the likely cause without claiming the control refuses numbers.
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": .number(3)])
+        XCTAssertTrue(r.isToolError)
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property (AX error -25201, a generic illegal-argument error). The likely cause is a value type this control does not take. Take a new ui_snapshot to check the control's current value type")
+        XCTAssertFalse(r.text.contains("no number or boolean form"), r.text)
+        XCTAssertFalse(r.text.contains("does not accept"), r.text)
+        XCTAssertFalse(r.text.contains("3"), "the value is never echoed: \(r.text)")
+        assertNothingDone(f)
+    }
+
+    func testValueTypeRefusedForNativeBoolGivesTheGenericMessage() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.setError = .other(UIAXError.illegalArgumentCode)
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": .bool(true)])
+        XCTAssertTrue(r.isToolError)
+        XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property (AX error -25201, a generic illegal-argument error). The likely cause is a value type this control does not take. Take a new ui_snapshot to check the control's current value type")
+        XCTAssertFalse(r.text.contains("no number or boolean form"), r.text)
+        assertNothingDone(f)
+    }
+
+    func testValueTypeRefusedInBothFormsSaysSo() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        f.textArea.settable = ["AXValue"]
+        f.textArea.setError = .other(UIAXError.illegalArgumentCode)
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "3"])
+        XCTAssertTrue(r.isToolError)
+        XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", sent: .string("3"), retried: true))
+        XCTAssertFalse(r.text.contains("3"), "the value is never echoed: \(r.text)")
+        assertNothingDone(f)
+    }
+
+    func testValueTypeRejectedNamesTheValueField() {
+        for retried in [false, true] {
+            let text = UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", sent: .string("3"), retried: retried)
+            XCTAssertTrue(text.contains("the `value` property"), text)
+        }
+    }
+
+    func testValueParseErrorNamesTheAcceptedTypes() async {
+        let f = Fixture()
+        let id = await f.snapshot()
+        // The parser accepts a string, a number or a boolean, and the error names all three.
+        let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": ["a"]])
+        XCTAssertEqual(r.error?.code, JSONRPCError.invalidParams)
+        XCTAssertEqual(r.error?.message, "Invalid params: value must be a string, number or boolean")
+        assertNothingDone(f)
+    }
+
     func testNoSupportedActionPointsToMouse() async {
         let f = Fixture()
         let id = await f.snapshot()

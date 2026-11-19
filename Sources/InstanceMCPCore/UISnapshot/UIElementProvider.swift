@@ -62,6 +62,9 @@ public protocol UIElement: AnyObject {
 }
 
 extension UIAXError {
+    /// kAXErrorIllegalArgument. A numeric or boolean control refuses a string value with it.
+    static let illegalArgumentCode: Int32 = -25201
+
     /// The element does not support the attribute or action asked for (or rejects the
     /// argument): attributeUnsupported, actionUnsupported, notImplemented, illegalArgument.
     var isUnsupported: Bool {
