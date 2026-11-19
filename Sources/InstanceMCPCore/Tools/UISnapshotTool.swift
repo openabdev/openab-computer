@@ -55,8 +55,9 @@ public struct UISnapshotTool: Tool {
         }
         public static func noWindows(_ app: String) -> String { "\(app) has no open windows" }
         public static func windowNotFound(_ w: String, app: String, titles: [String]) -> String {
-            "window '\(w)' not found in \(app); windows: " +
-                titles.enumerated().map { "[\($0.offset)] \"\($0.element)\"" }.joined(separator: ", ")
+            "window '\(w)' not found in \(app); match the window by its title " +
+                "(exact, else case-insensitive substring). Window titles: " +
+                titles.map { "\"\($0)\"" }.joined(separator: ", ")
         }
         public static func appBusy(_ app: String) -> String {
             "\(app) did not answer the Accessibility request in time (it may be busy or hung); retry, or raise timeout_ms"

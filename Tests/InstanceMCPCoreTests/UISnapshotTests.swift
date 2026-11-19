@@ -680,7 +680,7 @@ final class UISnapshotTargetTests: XCTestCase {
         XCTAssertTrue(same(try pick(app, all: true), ws))
         XCTAssertThrowsError(try pick(app, .title("x"))) { e in
             XCTAssertEqual((e as? ToolError)?.description,
-                           #"window 'x' not found in TextEdit; windows: [0] "Notes", [1] "notes draft""#)
+                           #"window 'x' not found in TextEdit; match the window by its title (exact, else case-insensitive substring). Window titles: "Notes", "notes draft""#)
         }
         XCTAssertThrowsError(try pick(app, .index(5))) { e in
             XCTAssertTrue((e as? ToolError)?.description.hasPrefix("window '5' not found in TextEdit") == true)
@@ -691,6 +691,12 @@ final class UISnapshotTargetTests: XCTestCase {
             }
         }
         XCTAssertThrowsError(try pick(appElement(), all: true))
+    }
+
+    func testWindowNotFoundErrorIsTitleOnly() {
+        let text = UISnapshotTool.Errors.windowNotFound("x", app: "TextEdit", titles: ["Notes", "notes draft"])
+        XCTAssertTrue(text.contains("match the window by its title"))
+        XCTAssertFalse(text.contains("["), "no index brackets: strict clients cannot send indexes")
     }
 
     func testWindowLookupErrors() {
