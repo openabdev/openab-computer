@@ -119,5 +119,15 @@ else
   if printf '%s\n' "$rem" | grep -qE '(^|[[:space:];&|])(rm|sed|apparmor_parser|systemctl|mv)[[:space:]]|^[[:space:]]*```'; then bad "setup removal section repeats removal commands; keep one procedure in linux-cutover.md"; else ok "setup removal section repeats no removal commands"; fi
 fi
 
+# The drop-in removal logic is defined once in the cutover guide. A second copy would drift untested,
+# because the block test above reads only the first one.
+defs=$(awk '
+  /^ *```sh$/ { inb = 1; buf = ""; next }
+  /^ *```$/ && inb { if (buf ~ /dropin_is_ours\(\)/) n++; inb = 0; next }
+  inb { buf = buf $0 "\n" }
+  END { print n + 0 }
+' "$GUIDE")
+if [ "$defs" -eq 1 ]; then ok "exactly one sh block defines dropin_is_ours()"; else bad "$defs sh blocks define dropin_is_ours(); keep one copy in step 5.2"; fi
+
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

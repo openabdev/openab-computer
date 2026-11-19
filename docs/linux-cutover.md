@@ -572,27 +572,9 @@ points here and repeats none of these commands.
 1. Disable and delete the old unit files, then reload. No root. Step 5.2 owns the drop-in: it already
    removed the dedicated drop-in file, or only the `MCP_UPSTREAM` line from a shared one, and the
    backup from step 1 keeps the original for the rollback. As step 5.2 says, the block identifies a
-   drop-in by its content, so a hand-written file of the same shape is removed too. If you skipped the drop-in part of step 5.2, run
-   the same block from step 5.2 first (indented here), then the `daemon-reload` below:
-
-   ```sh
-   # Removes only the dedicated MCP_UPSTREAM drop-in (see step 5.2). Anything else is kept and reported.
-   dropin_is_ours() {
-     [ -f "$1" ] && [ ! -L "$1" ] || return 1
-     awk '
-       /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
-       /^\[Service\][[:space:]]*$/ { svc++; next }
-       /^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp[[:space:]]*$/ { line++; next }
-       { bad = 1 }
-       END { exit (bad || svc != 1 || line != 1) }
-     ' "$1"
-   }
-   for f in ~/.config/systemd/user/oab-computer.service.d/*.conf ~/.config/systemd/user/oab-instance-mcp.service.d/*.conf; do
-     [ -e "$f" ] || continue
-     grep -q 'MCP_UPSTREAM=' "$f" || continue
-     if dropin_is_ours "$f"; then rm -f -- "$f"; echo "removed $f"; else echo "kept $f: not exactly the dedicated drop-in, edit it by hand"; fi
-   done
-   ```
+   drop-in by its content, so a hand-written file of the same shape is removed too. If you skipped the
+   drop-in part of step 5.2, run the block in step 5.2 first, then the `daemon-reload` below. That block
+   is the only copy of the drop-in rule; do not paste a second one here.
 
    Then unload and delete the old unit files:
 
