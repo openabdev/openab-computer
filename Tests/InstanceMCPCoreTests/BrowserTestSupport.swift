@@ -24,8 +24,11 @@ final class FakeBrowserBackend: BrowserBackend, @unchecked Sendable {
     var calls: [String] { lock.withLock { _calls } }
 
     func status() async -> BrowserBackendStatus { lock.withLock { _statusCalls += 1 }; return status_ }
+    /// When set, `tools()` returns these descriptors verbatim (for schema-shape tests).
+    var served: [JSONValue]?
     func tools() async -> [JSONValue] {
-        lock.withLock { _names }.map { ["name": .string($0), "description": "fake", "inputSchema": ["type": "object"]] }
+        if let served { return served }
+        return lock.withLock { _names }.map { ["name": .string($0), "description": "fake", "inputSchema": ["type": "object"]] }
     }
     func call(_ name: String, arguments: JSONValue) async throws -> JSONValue {
         lock.withLock { _calls.append(name) }

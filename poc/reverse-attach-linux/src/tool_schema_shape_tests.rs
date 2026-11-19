@@ -1,17 +1,27 @@
 //! Schema shape guard for the tool lists this daemon serves: `tool_list_with` (the local
-//! tools and the job tools, for the owner and observe profiles) and `jobs::tools::tool_specs`
-//! on their own. The rules match the Swift `ToolSchemaShapeTests`: no union, negation or
-//! reference keyword, and no `type` array, at any schema position, and every schema position
-//! carries one plain `type` string. Upstream (Playwright) schemas are forwarded unchanged and
-//! are not in these lists; the Swift test covers them with fixtures. The live upstream
-//! tools/list was not queried.
+//! tools and the job tools, for the owner and observe profiles), `jobs::tools::tool_specs`
+//! on their own, and the owner list with the recorded Playwright upstream. The rules match
+//! the Swift `ToolSchemaShapeTests`: no union, negation or reference keyword, and no `type`
+//! array, at any schema position, and every schema position carries one plain `type` string.
+//! browser_emulate_media is also pinned to option B, as on the Swift side.
+
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 
+use crate::backend::{BackendStatus, Upstream};
 use crate::mcp::tool_list_with;
 
 /// Keywords no guarded schema may use at a schema position.
-const BANNED: &[&str] = &["anyOf", "oneOf", "allOf", "not", "$ref", "$defs", "definitions"];
+const BANNED: &[&str] = &[
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "not",
+    "$ref",
+    "$defs",
+    "definitions",
+];
 
 /// Schema positions under `schema`, as (path, node): the node itself, the values of
 /// `properties`, `items` (object or tuple form) and `additionalProperties`. Data keywords
@@ -67,19 +77,39 @@ fn problems(schema: &Value, root: &str) -> Vec<String> {
 /// A schema `{type: object, properties: {a: {type: string, <keyword>: value}}}`.
 fn with_property_keyword(keyword: &str, value: Value) -> Value {
     let mut a = json!({ "type": "string" });
-    a.as_object_mut().unwrap().insert(keyword.to_string(), value);
+    a.as_object_mut()
+        .unwrap()
+        .insert(keyword.to_string(), value);
     json!({ "type": "object", "properties": { "a": a } })
 }
 
 fn assert_tool_passes(tool: &Value, context: &str) {
     let name = tool["name"].as_str().unwrap_or("?");
-    assert_eq!(tool["inputSchema"]["type"], "object", "{context}/{name}: top-level type");
-    assert_eq!(problems(&tool["inputSchema"], name), Vec::<String>::new(), "{context}/{name}");
+    assert_eq!(
+        tool["inputSchema"]["type"], "object",
+        "{context}/{name}: top-level type"
+    );
+    assert_eq!(
+        problems(&tool["inputSchema"], name),
+        Vec::<String>::new(),
+        "{context}/{name}"
+    );
 }
 
 #[test]
 fn banned_set_is_exactly_the_seven_keywords() {
-    assert_eq!(BANNED, ["anyOf", "oneOf", "allOf", "not", "$ref", "$defs", "definitions"]);
+    assert_eq!(
+        BANNED,
+        [
+            "anyOf",
+            "oneOf",
+            "allOf",
+            "not",
+            "$ref",
+            "$defs",
+            "definitions"
+        ]
+    );
 }
 
 // One test per banned keyword, so dropping an entry from BANNED fails its own test.
@@ -108,22 +138,34 @@ bans! {
 #[test]
 fn bans_array_valued_type() {
     let schema = json!({ "type": "object", "properties": { "a": { "type": ["string", "null"] } } });
-    assert_eq!(problems(&schema, "t"), vec!["t.properties.a.type is an array".to_string()]);
+    assert_eq!(
+        problems(&schema, "t"),
+        vec!["t.properties.a.type is an array".to_string()]
+    );
 }
 
 #[test]
 fn plain_type_is_checked_at_every_depth() {
     let nested = json!({ "type": "object", "properties": { "outer": { "type": "object",
         "properties": { "inner": { "description": "no type" } } } } });
-    assert_eq!(problems(&nested, "t"), vec!["t.properties.outer.properties.inner has no single string type".to_string()]);
+    assert_eq!(
+        problems(&nested, "t"),
+        vec!["t.properties.outer.properties.inner has no single string type".to_string()]
+    );
 
     let items = json!({ "type": "object", "properties": { "list": { "type": "array",
         "items": { "properties": { "x": { "type": "string" } } } } } });
-    assert_eq!(problems(&items, "t"), vec!["t.properties.list.items has no single string type".to_string()]);
+    assert_eq!(
+        problems(&items, "t"),
+        vec!["t.properties.list.items has no single string type".to_string()]
+    );
 
     let extra = json!({ "type": "object", "properties": { "map": { "type": "object",
         "additionalProperties": { "description": "no type" } } } });
-    assert_eq!(problems(&extra, "t"), vec!["t.properties.map.additionalProperties has no single string type".to_string()]);
+    assert_eq!(
+        problems(&extra, "t"),
+        vec!["t.properties.map.additionalProperties has no single string type".to_string()]
+    );
 }
 
 #[test]
@@ -150,7 +192,10 @@ fn property_named_like_a_keyword_is_a_name() {
 
 #[test]
 fn root_must_be_an_object_schema() {
-    assert_eq!(problems(&json!("x"), "t"), vec!["t is not an object schema".to_string()]);
+    assert_eq!(
+        problems(&json!("x"), "t"),
+        vec!["t is not an object schema".to_string()]
+    );
 }
 
 #[test]
@@ -160,7 +205,10 @@ fn local_tool_lists_obey_the_schema_rules() {
     let owner = tool_list_with("owner", &[]);
     let owner = owner.as_array().expect("tools/list is an array");
     let names: Vec<&str> = owner.iter().filter_map(|t| t["name"].as_str()).collect();
-    assert!(names.contains(&"screenshot") && names.contains(&"exec_start"), "owner list: {names:?}");
+    assert!(
+        names.contains(&"screenshot") && names.contains(&"exec_start"),
+        "owner list: {names:?}"
+    );
     for tool in owner {
         assert_tool_passes(tool, "owner");
     }
@@ -176,8 +224,82 @@ fn local_tool_lists_obey_the_schema_rules() {
 #[test]
 fn job_tool_specs_obey_the_schema_rules() {
     let specs = crate::jobs::tools::tool_specs();
-    assert_eq!(specs.len(), 4, "exec_start, exec_poll, exec_list, exec_cancel");
+    assert_eq!(
+        specs.len(),
+        4,
+        "exec_start, exec_poll, exec_list, exec_cancel"
+    );
     for tool in &specs {
         assert_tool_passes(tool, "jobs");
     }
+}
+
+/// The recorded tools/list of the pinned @playwright/mcp 0.0.82. The same file the Swift tests read.
+const RECORDED_PLAYWRIGHT_TOOLS: &str =
+    include_str!("../../../Tests/Fixtures/playwright-mcp-0.0.82-tools-list.json");
+
+/// An upstream that serves a fixed descriptor list, as the managed Playwright backend does.
+struct RecordedUpstream(Vec<Value>);
+
+impl Upstream for RecordedUpstream {
+    fn tools(&self) -> Vec<Value> {
+        self.0.clone()
+    }
+    fn call(&self, _name: &str, _arguments: Value) -> Result<Value, String> {
+        Err("not called by this test".to_string())
+    }
+    fn status(&self) -> BackendStatus {
+        BackendStatus {
+            backend: "managed",
+            reason: String::new(),
+            containment: String::new(),
+            display: "",
+        }
+    }
+}
+
+/// browser_emulate_media as a client receives it: no anyOf, and each override is a plain
+/// string enum with no null branch (option B).
+fn assert_option_b_emulate_media(schema: &Value) {
+    let text = schema.to_string();
+    assert!(
+        !text.contains("anyOf"),
+        "served browser_emulate_media schema still has anyOf: {text}"
+    );
+    assert!(
+        problems(schema, "browser_emulate_media").is_empty(),
+        "served browser_emulate_media schema uses a banned construct: {:?}",
+        problems(schema, "browser_emulate_media")
+    );
+    let expected = [
+        ("colorScheme", json!(["light", "dark"])),
+        ("reducedMotion", json!(["reduce", "no-preference"])),
+        ("forcedColors", json!(["active", "none"])),
+        ("contrast", json!(["more", "no-preference"])),
+        ("media", json!(["screen", "print"])),
+    ];
+    for (key, values) in expected {
+        let prop = &schema["properties"][key];
+        assert_eq!(prop["type"], json!("string"), "{key} is not a plain string");
+        assert_eq!(prop["enum"], values, "{key} enum is not option B");
+    }
+}
+
+#[test]
+fn served_owner_list_carries_option_b_for_upstream_emulate_media() {
+    let fixture: Value = serde_json::from_str(RECORDED_PLAYWRIGHT_TOOLS).expect("fixture parses");
+    let tools = fixture["result"]["tools"]
+        .as_array()
+        .expect("fixture has result.tools")
+        .clone();
+    assert_eq!(tools.len(), 32);
+    let ups: Vec<Arc<dyn Upstream>> = vec![Arc::new(RecordedUpstream(tools))];
+    let owner = tool_list_with("owner", &ups);
+    let entry = owner
+        .as_array()
+        .expect("tools/list is an array")
+        .iter()
+        .find(|t| t["name"].as_str() == Some("browser_emulate_media"))
+        .expect("browser_emulate_media is served to owner");
+    assert_option_b_emulate_media(&entry["inputSchema"]);
 }

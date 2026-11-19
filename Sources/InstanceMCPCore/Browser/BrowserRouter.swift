@@ -74,9 +74,9 @@ public actor BrowserRouter {
     /// The catalog names the active backend serves now. Empty with no ready backend.
     public func tools(_ conn: BrowserConnection) async -> [JSONValue] {
         guard case .active(let b) = await select(conn) else { return [] }
-        return await b.tools().filter {
-            guard let n = $0["name"]?.stringValue else { return false }
-            return BrowserToolCatalog.allNameSet.contains(n)
+        return await b.tools().compactMap {
+            guard let n = $0["name"]?.stringValue, BrowserToolCatalog.allNameSet.contains(n) else { return nil }
+            return UpstreamTool.forwardedDescriptor($0)
         }
     }
 

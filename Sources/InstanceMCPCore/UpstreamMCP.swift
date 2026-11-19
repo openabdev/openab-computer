@@ -156,7 +156,16 @@ struct UpstreamTool: Tool {
     var name: String { descriptorValue["name"]?.stringValue ?? "?" }
     var description: String { descriptorValue["description"]?.stringValue ?? "" }
     var inputSchema: JSONValue { Self.forwardedSchema(name: name, descriptorValue["inputSchema"] ?? ["type": "object"]) }
-    var descriptor: JSONValue { descriptorValue }
+    /// What `tools/list` serves: the upstream descriptor with its inputSchema forwarded.
+    var descriptor: JSONValue { Self.forwardedDescriptor(descriptorValue) }
+
+    /// A descriptor with `inputSchema` run through `forwardedSchema`. Every field other than
+    /// `inputSchema` is kept. Used for the upstream tools and for the browser router's tools.
+    static func forwardedDescriptor(_ descriptor: JSONValue) -> JSONValue {
+        guard var o = descriptor.objectValue, let schema = o["inputSchema"] else { return descriptor }
+        o["inputSchema"] = forwardedSchema(name: o["name"]?.stringValue ?? "", schema)
+        return .object(o)
+    }
 
     /// browser_emulate_media's five overrides are `anyOf: [enum string, null]`, a union that strict
     /// MCP clients drop (#145). Only that branch is kept: each property becomes its plain enum

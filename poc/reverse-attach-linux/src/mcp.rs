@@ -187,10 +187,49 @@ pub(crate) fn upstream_tools_for_with(
             if local_names.contains(&name) || !upstream_tool_allowed(name, profile) {
                 continue;
             }
-            out.push((up.clone(), t));
+            out.push((up.clone(), forwarded_descriptor(t)));
         }
     }
     out
+}
+
+/// browser_emulate_media's five overrides are `anyOf: [enum string, null]` upstream (#145). Option B
+/// (owner decision, PR #146): only the string branch is kept, so each property becomes its plain enum.
+/// Mirrors `UpstreamTool.forwardedDescriptor` on the Swift side. Every other descriptor passes unchanged.
+pub(crate) fn forwarded_descriptor(mut t: Value) -> Value {
+    if t.get("name").and_then(Value::as_str) != Some("browser_emulate_media") {
+        return t;
+    }
+    let Some(props) = t
+        .get_mut("inputSchema")
+        .and_then(|s| s.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    else {
+        return t;
+    };
+    for prop in props.values_mut() {
+        let Some(obj) = prop.as_object_mut() else {
+            continue;
+        };
+        let string = obj
+            .get("anyOf")
+            .and_then(Value::as_array)
+            .and_then(|branches| {
+                branches
+                    .iter()
+                    .find(|b| b.get("type").and_then(Value::as_str) == Some("string"))
+            })
+            .and_then(Value::as_object)
+            .cloned();
+        let Some(string) = string else {
+            continue;
+        };
+        obj.remove("anyOf");
+        for (k, v) in string {
+            obj.insert(k, v);
+        }
+    }
+    t
 }
 
 pub(crate) fn upstream_owning_with(

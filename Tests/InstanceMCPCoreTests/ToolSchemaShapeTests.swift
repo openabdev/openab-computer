@@ -185,6 +185,50 @@ final class ToolSchemaShapeTests: XCTestCase {
         }
     }
 
+    static let emulateMediaEnums: [String: [String]] = [
+        "colorScheme": ["light", "dark"],
+        "reducedMotion": ["reduce", "no-preference"],
+        "forcedColors": ["active", "none"],
+        "contrast": ["more", "no-preference"],
+        "media": ["screen", "print"],
+    ]
+
+    /// Checks the browser_emulate_media entry of a `tools/list` result as a client receives it:
+    /// no anyOf anywhere, and each of the five overrides is a plain string enum with no null.
+    static func assertServedOptionB(_ result: JSONValue?, file: StaticString = #filePath, line: UInt = #line) {
+        guard let entry = result?["tools"]?.arrayValue?.first(where: { $0["name"]?.stringValue == "browser_emulate_media" }) else {
+            return XCTFail("browser_emulate_media is not in tools/list", file: file, line: line)
+        }
+        let schema = entry["inputSchema"] ?? .null
+        let text = String(decoding: (try? JSONCoding.encoder.encode(schema)) ?? Data(), as: UTF8.self)
+        XCTAssertFalse(text.contains("anyOf"), "served browser_emulate_media schema still has anyOf", file: file, line: line)
+        XCTAssertEqual(problems(schema, root: "browser_emulate_media"), [], "served schema uses a banned construct", file: file, line: line)
+        for (key, values) in emulateMediaEnums {
+            let prop = schema["properties"]?[key]
+            XCTAssertEqual(prop?["type"]?.stringValue, "string", "\(key) is not a plain string", file: file, line: line)
+            XCTAssertEqual(prop?["enum"]?.arrayValue?.map { $0.stringValue ?? "<non-string>" }, values,
+                           "\(key) enum is not option B", file: file, line: line)
+        }
+    }
+
+    // The real tools/list handler (MCPServer.handle), on the upstream path: the fake upstream
+    // serves the recorded Playwright list, and the server forwards it to the client.
+    func testServedToolsListCarriesOptionBForUpstreamEmulateMedia() async throws {
+        let up = try FakeUpstream(descriptors: try Self.recordedUpstreamTools()); defer { up.stop() }
+        let server = MCPServer(name: "t", version: "0", tools: [],
+                               upstreams: [UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:\(up.port)/mcp")!)])
+        Self.assertServedOptionB(try await serverRequest(server, "tools/list")?.result)
+    }
+
+    // The real tools/list handler, on the browser router path (Playwright backend, recorded list).
+    func testServedToolsListCarriesOptionBForBrowserRouterEmulateMedia() async throws {
+        let backend = FakeBrowserBackend(.playwright)
+        backend.served = try Self.recordedUpstreamTools()
+        let server = MCPServer(name: "t", version: "0", tools: [],
+                               browser: BrowserRouter(playwright: backend, store: MemoryPreferenceStore()))
+        Self.assertServedOptionB(try await serverRequest(server, "tools/list")?.result)
+    }
+
     func testOtherRecordedPlaywrightToolsAreForwardedUnchanged() throws {
         let upstream = UpstreamMCP(name: "browser", url: URL(string: "http://127.0.0.1:9/mcp")!)
         for d in try Self.recordedUpstreamTools() where d["name"]?.stringValue != "browser_emulate_media" {

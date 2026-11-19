@@ -19,9 +19,11 @@ final class FakeUpstream: @unchecked Sendable {
     /// nil ⇒ the default three `browser_*` tools plus a `screenshot` that collides
     /// with the local one.
     private let toolNames: [String]?
+    private let descriptors: [JSONValue]?
 
-    init(toolNames: [String]? = nil) throws {
+    init(toolNames: [String]? = nil, descriptors: [JSONValue]? = nil) throws {
         self.toolNames = toolNames
+        self.descriptors = descriptors
         listener = try NWListener(using: .tcp, on: .any)
         let sem = DispatchSemaphore(value: 0)
         listener.stateUpdateHandler = { [weak self] st in
@@ -77,6 +79,9 @@ final class FakeUpstream: @unchecked Sendable {
         }
         switch rpc.method {
         case "tools/list":
+            if let descriptors {
+                return sse(["jsonrpc": "2.0", "id": id, "result": ["tools": .array(descriptors)]])
+            }
             if let toolNames {
                 return sse(["jsonrpc": "2.0", "id": id, "result": ["tools": .array(toolNames.map {
                     ["name": .string($0), "description": "fixture", "inputSchema": ["type": "object"]]
