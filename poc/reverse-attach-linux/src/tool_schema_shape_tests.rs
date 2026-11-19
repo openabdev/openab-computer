@@ -133,6 +133,65 @@ fn property_named_like_a_keyword_is_a_name() {
     assert_eq!(problems(&schema, "t"), Vec::<String>::new());
 }
 
+/// F3: the keywords that hold a sub-schema are walked too.
+#[test]
+fn walks_property_names_and_pattern_properties() {
+    let value = json!({ "type": "string", "anyOf": [{ "type": "string" }] });
+    let names = with_property_keyword("propertyNames", value);
+    assert_eq!(
+        problems(&names, "t"),
+        vec!["t.properties.a.propertyNames.anyOf".to_string()]
+    );
+
+    let value = json!({ "p": { "description": "no type" } });
+    let pattern = with_property_keyword("patternProperties", value);
+    assert_eq!(
+        problems(&pattern, "t"),
+        vec!["t.properties.a.patternProperties.p has no single string type".to_string()]
+    );
+}
+
+#[test]
+fn walks_dependent_schemas_prefix_items_and_contains() {
+    let value = json!({ "p": { "type": "string", "not": { "type": "string" } } });
+    let dependent = with_property_keyword("dependentSchemas", value);
+    assert_eq!(
+        problems(&dependent, "t"),
+        vec!["t.properties.a.dependentSchemas.p.not".to_string()]
+    );
+
+    let value = json!([{ "type": "string", "oneOf": [{ "type": "string" }] }]);
+    let prefix = with_property_keyword("prefixItems", value);
+    assert_eq!(
+        problems(&prefix, "t"),
+        vec!["t.properties.a.prefixItems[0].oneOf".to_string()]
+    );
+
+    let contains = with_property_keyword("contains", json!({ "description": "no type" }));
+    assert_eq!(
+        problems(&contains, "t"),
+        vec!["t.properties.a.contains has no single string type".to_string()]
+    );
+}
+
+#[test]
+fn walks_if_then_and_else() {
+    let value = json!({ "type": "string", "allOf": [{ "type": "string" }] });
+    let branch = with_property_keyword("if", value);
+    assert_eq!(
+        problems(&branch, "t"),
+        vec!["t.properties.a.if.allOf".to_string()]
+    );
+
+    for keyword in ["then", "else"] {
+        let branch = with_property_keyword(keyword, json!({ "description": "no type" }));
+        assert_eq!(
+            problems(&branch, "t"),
+            vec![format!("t.properties.a.{keyword} has no single string type")]
+        );
+    }
+}
+
 #[test]
 fn root_must_be_an_object_schema() {
     assert_eq!(

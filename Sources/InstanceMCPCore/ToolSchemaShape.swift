@@ -25,14 +25,18 @@ enum ToolSchemaShape {
         return out
     }
 
-    /// Every schema node reachable from `schema` through a schema position: the node itself,
-    /// the values of `properties`, `items` (object or tuple form) and `additionalProperties`.
-    /// Data keywords (`default`, `enum`, `const`, `examples`) are never entered.
+    /// Every schema node reachable from `schema` through a schema position: the node itself, the
+    /// values of `properties`, `patternProperties` and `dependentSchemas`, `items` (object or tuple
+    /// form), `prefixItems`, and the single-schema keywords `additionalProperties`, `propertyNames`,
+    /// `contains`, `if`, `then` and `else`. Data keywords (`default`, `enum`, `const`, `examples`) are
+    /// never entered. A non-object sub-schema is not a node.
     static func nodes(_ schema: JSONValue, path: String) -> [(String, [String: JSONValue])] {
         guard case .object(let node) = schema else { return [] }
         var out: [(String, [String: JSONValue])] = [(path, node)]
-        for (name, sub) in (node["properties"]?.objectValue ?? [:]).sorted(by: { $0.key < $1.key }) {
-            out += nodes(sub, path: "\(path).properties.\(name)")
+        for key in ["properties", "patternProperties", "dependentSchemas"] {
+            for (name, sub) in (node[key]?.objectValue ?? [:]).sorted(by: { $0.key < $1.key }) {
+                out += nodes(sub, path: "\(path).\(key).\(name)")
+            }
         }
         if let items = node["items"] {
             if let tuple = items.arrayValue {
@@ -41,8 +45,11 @@ enum ToolSchemaShape {
                 out += nodes(items, path: "\(path).items")
             }
         }
-        if let extra = node["additionalProperties"] {
-            out += nodes(extra, path: "\(path).additionalProperties")
+        for (i, sub) in (node["prefixItems"]?.arrayValue ?? []).enumerated() {
+            out += nodes(sub, path: "\(path).prefixItems[\(i)]")
+        }
+        for key in ["additionalProperties", "propertyNames", "contains", "if", "then", "else"] {
+            if let sub = node[key] { out += nodes(sub, path: "\(path).\(key)") }
         }
         return out
     }

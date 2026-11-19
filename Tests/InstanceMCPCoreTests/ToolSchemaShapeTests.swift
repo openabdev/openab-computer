@@ -303,6 +303,47 @@ final class ToolSchemaShapeTests: XCTestCase {
         XCTAssertEqual(Self.problems(schema, root: "t"), [])
     }
 
+    // F3: the keywords that hold a sub-schema are walked too, so a banned keyword or a missing type there is found.
+
+    func testWalksPropertyNames() {
+        XCTAssertEqual(Self.problems(fixture("propertyNames", ["type": "string", "anyOf": [["type": "string"]]]), root: "t"),
+                       ["t.properties.a.propertyNames.anyOf"])
+    }
+
+    func testWalksPatternProperties() {
+        XCTAssertEqual(Self.problems(fixture("patternProperties", ["p": ["description": "no type"]]), root: "t"),
+                       ["t.properties.a.patternProperties.p has no single string type"])
+    }
+
+    func testWalksDependentSchemas() {
+        XCTAssertEqual(Self.problems(fixture("dependentSchemas", ["p": ["type": "string", "not": ["type": "string"]]]), root: "t"),
+                       ["t.properties.a.dependentSchemas.p.not"])
+    }
+
+    func testWalksPrefixItems() {
+        XCTAssertEqual(Self.problems(fixture("prefixItems", [["type": "string", "oneOf": [["type": "string"]]]]), root: "t"),
+                       ["t.properties.a.prefixItems[0].oneOf"])
+    }
+
+    func testWalksContains() {
+        XCTAssertEqual(Self.problems(fixture("contains", ["description": "no type"]), root: "t"),
+                       ["t.properties.a.contains has no single string type"])
+    }
+
+    func testWalksIfThenElse() {
+        XCTAssertEqual(Self.problems(fixture("if", ["type": "string", "allOf": [["type": "string"]]]), root: "t"),
+                       ["t.properties.a.if.allOf"])
+        XCTAssertEqual(Self.problems(fixture("then", ["description": "no type"]), root: "t"),
+                       ["t.properties.a.then has no single string type"])
+        XCTAssertEqual(Self.problems(fixture("else", ["description": "no type"]), root: "t"),
+                       ["t.properties.a.else has no single string type"])
+    }
+
+    /// The non-object root rule, the same as the Rust guard's `root_must_be_an_object_schema`.
+    func testNonObjectRootIsRefused() {
+        XCTAssertEqual(Self.problems(.bool(true), root: "t"), ["t is not an object schema"])
+    }
+
     // The runtime parsers keep the shapes the old schemas allowed, and the new integer field.
 
     func testSnapshotWindowAcceptsTitleAndIndex() throws {

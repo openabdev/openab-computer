@@ -17,18 +17,21 @@ pub(crate) const BANNED: &[&str] = &[
     "definitions",
 ];
 
-/// Schema positions under `schema`, as (path, node): the node itself, the values of
-/// `properties`, `items` (object or tuple form) and `additionalProperties`. Data keywords
-/// (`default`, `enum`, `const`, `examples`) are never entered, and a property named like a
-/// keyword is a name, not a keyword.
+/// Schema positions under `schema`, as (path, node): the node itself, the values of `properties`,
+/// `patternProperties` and `dependentSchemas`, `items` (object or tuple form), `prefixItems`, and
+/// the single-schema keywords `additionalProperties`, `propertyNames`, `contains`, `if`, `then` and
+/// `else`. Data keywords (`default`, `enum`, `const`, `examples`) are never entered, and a property
+/// named like a keyword is a name, not a keyword. A non-object sub-schema is not a node.
 fn schema_nodes<'a>(schema: &'a Value, path: String, out: &mut Vec<(String, &'a Value)>) {
     if !schema.is_object() {
         return;
     }
     out.push((path.clone(), schema));
-    if let Some(props) = schema.get("properties").and_then(Value::as_object) {
-        for (name, sub) in props {
-            schema_nodes(sub, format!("{path}.properties.{name}"), out);
+    for key in ["properties", "patternProperties", "dependentSchemas"] {
+        if let Some(map) = schema.get(key).and_then(Value::as_object) {
+            for (name, sub) in map {
+                schema_nodes(sub, format!("{path}.{key}.{name}"), out);
+            }
         }
     }
     match schema.get("items") {
@@ -40,8 +43,22 @@ fn schema_nodes<'a>(schema: &'a Value, path: String, out: &mut Vec<(String, &'a 
         Some(items) => schema_nodes(items, format!("{path}.items"), out),
         None => {}
     }
-    if let Some(extra) = schema.get("additionalProperties") {
-        schema_nodes(extra, format!("{path}.additionalProperties"), out);
+    if let Some(prefix) = schema.get("prefixItems").and_then(Value::as_array) {
+        for (i, sub) in prefix.iter().enumerate() {
+            schema_nodes(sub, format!("{path}.prefixItems[{i}]"), out);
+        }
+    }
+    for key in [
+        "additionalProperties",
+        "propertyNames",
+        "contains",
+        "if",
+        "then",
+        "else",
+    ] {
+        if let Some(sub) = schema.get(key) {
+            schema_nodes(sub, format!("{path}.{key}"), out);
+        }
     }
 }
 
