@@ -303,9 +303,14 @@ an ordinary character (systemd reads them as comments only at the start of a lin
 `Environment=FOO=1 # MCP_UPSTREAM=...` is matched and counted. For each file printed, run `cat FILE`
 and decide:
 
-- It holds only `[Service]`, that one `Environment=MCP_UPSTREAM=` line, comments and blank lines: it is
-  the dedicated drop-in. The block below removes it. The file is identified by its content, not by who
-  wrote it (see the owner decision below).
+- It is the dedicated drop-in only if the `dropin_is_ours` block below accepts it. That block accepts a line
+  only when it is blank, or its first non-blank character is `#` (leading spaces and tabs are allowed, and
+  a comment may sit anywhere in the file). Besides those lines, the file must have exactly one `[Service]`
+  header at the start of a line, and exactly one `Environment=MCP_UPSTREAM=browser=http://127.0.0.1:8794/mcp`
+  line at the start of a line; trailing spaces are allowed on those three lines. A line that starts with `;`
+  is not accepted, so a file that contains one is kept and reported. Keeping is the safe direction: edit it by
+  hand if you want it removed. The file is identified by its content, not by who wrote it (see the owner
+  decision below).
 - It holds any other setting: keep the file and delete only the line,
   `sed -i '/^Environment=MCP_UPSTREAM=browser=http:\/\/127\.0\.0\.1:8794\/mcp[[:space:]]*$/d' FILE`. If the
   line has another form (several variables, another URL), edit it by hand and keep everything else.
