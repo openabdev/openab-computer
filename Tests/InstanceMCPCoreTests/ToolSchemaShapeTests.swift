@@ -10,45 +10,12 @@ import XCTest
 /// Linux daemon's list in tool_schema_shape_tests.rs.
 final class ToolSchemaShapeTests: XCTestCase {
     /// Keywords no guarded schema may use at a schema position.
-    static let banned: Set<String> = ["anyOf", "oneOf", "allOf", "not", "$ref", "$defs", "definitions"]
+    static let banned: Set<String> = ToolSchemaShape.banned
 
-    /// Every schema node reachable from `schema` through a schema position: the node itself,
-    /// the values of `properties`, `items` (object or tuple form) and `additionalProperties`.
-    /// Data keywords (`default`, `enum`, `const`, `examples`) are never entered, so a payload
-    /// that happens to contain `anyOf` is not a finding. A property named `not` is a name, not
-    /// a keyword: only the values under `properties` are walked.
-    static func schemaNodes(_ schema: JSONValue, path: String) -> [(String, [String: JSONValue])] {
-        guard case .object(let node) = schema else { return [] }
-        var out: [(String, [String: JSONValue])] = [(path, node)]
-        for (name, sub) in (node["properties"]?.objectValue ?? [:]).sorted(by: { $0.key < $1.key }) {
-            out += schemaNodes(sub, path: "\(path).properties.\(name)")
-        }
-        if let items = node["items"] {
-            if let tuple = items.arrayValue {
-                for (i, sub) in tuple.enumerated() { out += schemaNodes(sub, path: "\(path).items[\(i)]") }
-            } else {
-                out += schemaNodes(items, path: "\(path).items")
-            }
-        }
-        if let extra = node["additionalProperties"] {
-            out += schemaNodes(extra, path: "\(path).additionalProperties")
-        }
-        return out
-    }
-
-    /// Findings for one guarded schema, by path: a banned keyword, a `type` array, or a schema
-    /// position without one plain `type` string.
+    /// Findings for one guarded schema, by path. The rules live in `ToolSchemaShape`, the same code the
+    /// runtime uses to refuse a forwarded tool.
     static func problems(_ schema: JSONValue, root: String) -> [String] {
-        var out: [String] = []
-        for (path, node) in schemaNodes(schema, path: root) {
-            for k in node.keys.sorted() where banned.contains(k) { out.append("\(path).\(k)") }
-            if node["type"]?.arrayValue != nil {
-                out.append("\(path).type is an array")
-            } else if node["type"]?.stringValue == nil {
-                out.append("\(path) has no single string type")
-            }
-        }
-        return out
+        ToolSchemaShape.problems(schema, root: root)
     }
 
     /// A one-property object schema whose property `a` carries `keyword`.

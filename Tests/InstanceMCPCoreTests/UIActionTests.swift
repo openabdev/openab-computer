@@ -360,7 +360,7 @@ final class UIActionToolTests: XCTestCase {
         // mismatch, not as an unsupported action, and the supported list is not shown.
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "hello"])
         XCTAssertTrue(r.isToolError)
-        XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: false))
+        XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", sent: .string("hello"), retried: false))
         XCTAssertEqual(r.text, "e2 (AXTextArea) rejected the `value` property's type (AX error -25201). The `value` is text with no number or boolean form, and this control cannot take text. Take a new ui_snapshot to check the control's current value")
         XCTAssertFalse(r.text.contains("JSON"), r.text)
         XCTAssertFalse(r.text.contains("does not support"), r.text)
@@ -402,14 +402,14 @@ final class UIActionToolTests: XCTestCase {
         f.textArea.setError = .other(UIAXError.illegalArgumentCode)
         let r = await f.act(["snapshot_id": .string(id), "ref": "e2", "action": "set_value", "value": "3"])
         XCTAssertTrue(r.isToolError)
-        XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: true))
+        XCTAssertEqual(r.text, UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", sent: .string("3"), retried: true))
         XCTAssertFalse(r.text.contains("3"), "the value is never echoed: \(r.text)")
         assertNothingDone(f)
     }
 
     func testValueTypeRejectedNamesTheValueField() {
         for retried in [false, true] {
-            let text = UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", retried: retried)
+            let text = UIActionTool.Errors.valueTypeRejected(ref: "e2", role: "AXTextArea", sent: .string("3"), retried: retried)
             XCTAssertTrue(text.contains("the `value` property"), text)
         }
     }

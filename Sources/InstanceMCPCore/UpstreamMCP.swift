@@ -45,9 +45,16 @@ public actor UpstreamMCP {
                 o["name"] = .string(prefix + n)
                 return .object(o)
             }
-            cachedTools = (Date(), list)
+            // A tool whose forwarded schema still breaks the shape rules is not served, and its call is
+            // not routed upstream (UpstreamTool.refusal). The name is logged.
+            let served = list.filter { t in
+                guard let why = UpstreamTool.refusal(t) else { return true }
+                log("upstream \(name): tool \(t["name"]?.stringValue ?? "?") is not served: \(why)")
+                return false
+            }
+            cachedTools = (Date(), served)
             lastError = nil
-            return list
+            return served
         } catch {
             lastError = "\(error)"
             log("upstream \(name): tools/list failed: \(error)")
@@ -160,11 +167,28 @@ struct UpstreamTool: Tool {
     var descriptor: JSONValue { Self.forwardedDescriptor(descriptorValue) }
 
     /// A descriptor with `inputSchema` run through `forwardedSchema`. Every field other than
-    /// `inputSchema` is kept. Used for the upstream tools and for the browser router's tools.
+    /// `inputSchema` is kept, except that browser_emulate_media's description loses the sentence about
+    /// null, which option B no longer accepts. Used for the upstream tools and for the browser router's tools.
     static func forwardedDescriptor(_ descriptor: JSONValue) -> JSONValue {
-        guard var o = descriptor.objectValue, let schema = o["inputSchema"] else { return descriptor }
-        o["inputSchema"] = forwardedSchema(name: o["name"]?.stringValue ?? "", schema)
+        guard var o = descriptor.objectValue else { return descriptor }
+        let name = o["name"]?.stringValue ?? ""
+        if let schema = o["inputSchema"] { o["inputSchema"] = forwardedSchema(name: name, schema) }
+        if name == "browser_emulate_media", let d = o["description"]?.stringValue {
+            o["description"] = .string(d.replacingOccurrences(of: nullClause, with: ""))
+        }
         return .object(o)
+    }
+
+    /// The sentence option B removes from browser_emulate_media's description.
+    private static let nullClause = "; null clears an override"
+
+    /// Why a forwarded descriptor must not be served, or nil. A schema that still has a banned
+    /// construct, or a `type` array, after `forwardedDescriptor` is refused: the tool is hidden from
+    /// tools/list and its call is not routed. The reason names the first offending path.
+    static func refusal(_ descriptor: JSONValue) -> String? {
+        let served = forwardedDescriptor(descriptor)
+        return ToolSchemaShape.problems(served["inputSchema"] ?? ["type": "object"],
+                                        root: served["name"]?.stringValue ?? "?").first
     }
 
     /// browser_emulate_media's five overrides are `anyOf: [enum string, null]`, a union that strict

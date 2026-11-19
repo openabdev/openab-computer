@@ -73,12 +73,21 @@ public struct UIActionTool: Tool {
                                    : "Supported on it: \(supported.joined(separator: ", "))")
         }
         /// AX refused the value's type (kAXErrorIllegalArgument) on `set_value`. Not an
-        /// unsupported action, so the supported list is not shown.
-        public static func valueTypeRejected(ref: String, role: String, retried: Bool) -> String {
+        /// unsupported action, so the supported list is not shown. `sent` is the value the caller
+        /// sent: the text names its type, and a native number or boolean is never described as
+        /// having no number or boolean form.
+        public static func valueTypeRejected(ref: String, role: String, sent: UIAttrValue, retried: Bool) -> String {
             if retried {
                 return "\(ref) (\(role)) rejected the `value` property as text and as a number or boolean (AX error -25201). Take a new ui_snapshot to check the control's current value type"
             }
-            return "\(ref) (\(role)) rejected the `value` property's type (AX error -25201). The `value` has no number or boolean form, so it does not fit this control. Take a new ui_snapshot to check the control's value type, then send a `value` of that type"
+            switch sent {
+            case .number:
+                return "\(ref) (\(role)) rejected the `value` property's number type (AX error -25201). This control does not accept a number `value`. Take a new ui_snapshot to check the control's current value"
+            case .bool:
+                return "\(ref) (\(role)) rejected the `value` property's boolean type (AX error -25201). This control does not accept a boolean `value`. Take a new ui_snapshot to check the control's current value"
+            default:
+                return "\(ref) (\(role)) rejected the `value` property's type (AX error -25201). The `value` is text with no number or boolean form, and this control cannot take text. Take a new ui_snapshot to check the control's current value"
+            }
         }
         public static func unconfirmed(action: String, ref: String, app: String) -> String {
             "ui_action \(action) [\(ref)]: \(app) did not confirm in time. The action may have happened (a press that opens a dialog or menu often answers late); take a new ui_snapshot to check, and do not repeat it blindly"
@@ -170,7 +179,7 @@ public struct UIActionTool: Tool {
                 r.value = .string(s)
             case .number(let d) where d.isFinite: r.value = .number(d)
             case .bool(let b): r.value = .bool(b)
-            default: throw JSONRPCError.invalidParams("value must be a string")
+            default: throw JSONRPCError.invalidParams("value must be a string, number or boolean")
             }
         } else if kind == .setValue {
             throw JSONRPCError.invalidParams("value is required for set_value")

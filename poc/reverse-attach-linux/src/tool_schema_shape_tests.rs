@@ -11,68 +11,7 @@ use serde_json::{json, Value};
 
 use crate::backend::{BackendStatus, Upstream};
 use crate::mcp::{tool_list_with, upstream_owning_with, upstream_tools_for_with};
-
-/// Keywords no guarded schema may use at a schema position.
-const BANNED: &[&str] = &[
-    "anyOf",
-    "oneOf",
-    "allOf",
-    "not",
-    "$ref",
-    "$defs",
-    "definitions",
-];
-
-/// Schema positions under `schema`, as (path, node): the node itself, the values of
-/// `properties`, `items` (object or tuple form) and `additionalProperties`. Data keywords
-/// (`default`, `enum`, `const`, `examples`) are never entered, and a property named like a
-/// keyword is a name, not a keyword.
-fn schema_nodes<'a>(schema: &'a Value, path: String, out: &mut Vec<(String, &'a Value)>) {
-    if !schema.is_object() {
-        return;
-    }
-    out.push((path.clone(), schema));
-    if let Some(props) = schema.get("properties").and_then(Value::as_object) {
-        for (name, sub) in props {
-            schema_nodes(sub, format!("{path}.properties.{name}"), out);
-        }
-    }
-    match schema.get("items") {
-        Some(Value::Array(tuple)) => {
-            for (i, sub) in tuple.iter().enumerate() {
-                schema_nodes(sub, format!("{path}.items[{i}]"), out);
-            }
-        }
-        Some(items) => schema_nodes(items, format!("{path}.items"), out),
-        None => {}
-    }
-    if let Some(extra) = schema.get("additionalProperties") {
-        schema_nodes(extra, format!("{path}.additionalProperties"), out);
-    }
-}
-
-/// Findings for one guarded schema, by path. An empty result means the schema passes.
-fn problems(schema: &Value, root: &str) -> Vec<String> {
-    if !schema.is_object() {
-        return vec![format!("{root} is not an object schema")];
-    }
-    let mut nodes = Vec::new();
-    schema_nodes(schema, root.to_string(), &mut nodes);
-    let mut out = Vec::new();
-    for (path, node) in nodes {
-        for keyword in BANNED {
-            if node.get(*keyword).is_some() {
-                out.push(format!("{path}.{keyword}"));
-            }
-        }
-        match node.get("type") {
-            Some(Value::String(_)) => {}
-            Some(Value::Array(_)) => out.push(format!("{path}.type is an array")),
-            _ => out.push(format!("{path} has no single string type")),
-        }
-    }
-    out
-}
+use crate::schema_shape::{problems, BANNED};
 
 /// A schema `{type: object, properties: {a: {type: string, <keyword>: value}}}`.
 fn with_property_keyword(keyword: &str, value: Value) -> Value {

@@ -227,7 +227,8 @@ struct UIActionEngine {
         case .failure(.apiDisabled): throw ToolError(E.notTrusted)
         // Checked before `isUnsupported`: a refused value type is not a missing action.
         case .failure(.other(UIAXError.illegalArgumentCode)) where req.action == .setValue:
-            throw ToolError(E.valueTypeRejected(ref: req.ref, role: role, retried: retriedNative))
+            // set_value always carries a value: the guard above rejects a missing one.
+            throw ToolError(E.valueTypeRejected(ref: req.ref, role: role, sent: req.value ?? .string(""), retried: retriedNative))
         case .failure(let err) where err.isUnsupported: throw try unsupported()
         case .failure(.other(let code)): throw ToolError(E.failed(action: req.action.rawValue, ref: req.ref, code: code))
         }

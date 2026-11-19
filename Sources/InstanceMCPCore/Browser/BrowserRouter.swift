@@ -76,6 +76,10 @@ public actor BrowserRouter {
         guard case .active(let b) = await select(conn) else { return [] }
         return await b.tools().compactMap {
             guard let n = $0["name"]?.stringValue, BrowserToolCatalog.allNameSet.contains(n) else { return nil }
+            if let why = UpstreamTool.refusal($0) {
+                log("browser backend \(b.id.rawValue): tool \(n) is not served: \(why)")
+                return nil
+            }
             return UpstreamTool.forwardedDescriptor($0)
         }
     }
@@ -97,7 +101,7 @@ public actor BrowserRouter {
                 + "OAB-Browser-Backend header.", backend: nil)
         case .active(let b): backend = b
         }
-        let served = await backend.tools().compactMap { $0["name"]?.stringValue }
+        let served = await backend.tools().filter { UpstreamTool.refusal($0) == nil }.compactMap { $0["name"]?.stringValue }
         guard served.contains(name) else {
             return Self.errorResult("\(name) is not available with the \(backend.id.rawValue) backend. "
                 + "Install Playwright or select it in OpenAB Computer, Browser tools.", backend: backend.id)

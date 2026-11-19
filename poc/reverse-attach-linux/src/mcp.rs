@@ -181,24 +181,57 @@ pub(crate) fn upstream_tools_for_with(
     let mut out = Vec::new();
     for up in ups {
         for t in up.tools() {
-            let Some(name) = t.get("name").and_then(|n| n.as_str()) else {
+            let descriptor = forwarded_descriptor(t);
+            let Some(name) = descriptor.get("name").and_then(|n| n.as_str()) else {
                 continue;
             };
             if local_names.contains(&name) || !upstream_tool_allowed(name, profile) {
                 continue;
             }
-            out.push((up.clone(), forwarded_descriptor(t)));
+            if let Some(why) = schema_refusal(&descriptor) {
+                eprintln!("upstream tool {name} is not served: {why}");
+                continue;
+            }
+            out.push((up.clone(), descriptor));
         }
     }
     out
 }
 
+/// Why a forwarded descriptor must not be served, or nil: its inputSchema still has a banned
+/// construct or a non-plain `type`. Takes the descriptor after `forwarded_descriptor`. A descriptor
+/// without an inputSchema is checked as an empty object schema, as on the Swift side.
+pub(crate) fn schema_refusal(descriptor: &Value) -> Option<String> {
+    let name = descriptor
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let schema = descriptor
+        .get("inputSchema")
+        .cloned()
+        .unwrap_or_else(|| json!({ "type": "object" }));
+    crate::schema_shape::problems(&schema, name)
+        .into_iter()
+        .next()
+}
+
+/// The sentence option B removes from browser_emulate_media's description.
+const NULL_CLAUSE: &str = "; null clears an override";
+
 /// browser_emulate_media's five overrides are `anyOf: [enum string, null]` upstream (#145). Option B
-/// (owner decision, PR #146): only the string branch is kept, so each property becomes its plain enum.
-/// Mirrors `UpstreamTool.forwardedDescriptor` on the Swift side. Every other descriptor passes unchanged.
+/// (owner decision, PR #146): only the string branch is kept, so each property becomes its plain enum,
+/// and the description drops the sentence about null. Mirrors `UpstreamTool.forwardedDescriptor` on
+/// the Swift side. Every other descriptor passes unchanged.
 pub(crate) fn forwarded_descriptor(mut t: Value) -> Value {
     if t.get("name").and_then(Value::as_str) != Some("browser_emulate_media") {
         return t;
+    }
+    let description = t
+        .get("description")
+        .and_then(Value::as_str)
+        .map(|d| d.replace(NULL_CLAUSE, ""));
+    if let Some(d) = description {
+        t["description"] = Value::String(d);
     }
     let Some(props) = t
         .get_mut("inputSchema")
@@ -240,7 +273,18 @@ pub(crate) fn upstream_owning_with(
     if !upstream_tool_allowed(name, profile) {
         return None;
     }
-    ups.iter().find(|up| up.owns(name)).cloned()
+    ups.iter()
+        .find(|up| up.owns(name) && !refused_upstream_tool(up, name))
+        .cloned()
+}
+
+/// True when `up` lists `name` and its forwarded schema is refused. Such a tool is neither served nor
+/// routed, so a call to it is not sent upstream.
+fn refused_upstream_tool(up: &Arc<dyn Upstream>, name: &str) -> bool {
+    up.tools().iter().any(|t| {
+        t.get("name").and_then(Value::as_str) == Some(name)
+            && schema_refusal(&forwarded_descriptor(t.clone())).is_some()
+    })
 }
 
 // ---------------------------------------------------------------------------

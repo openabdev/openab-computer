@@ -9,10 +9,9 @@ has the summary. Both tools are macOS only; the Linux AT-SPI port is deferred
 Accessibility tree of a native app's window (AXUIElement), read-only. `owner` only.
 
 - **Target.** Default: the frontmost app's focused window. `app` (bundle id or name) or `pid`
-  selects an app. Windows are matched by title only: `window` (a title string) or `all_windows`
-  selects windows. Strict clients can only send a title, so they cannot pick an untitled or
-  duplicate-title window by index. A native JSON integer in `window` still selects an index for
-  existing callers (#145).
+  selects an app. `window` (a title string) or `all_windows` selects windows. Strict clients match
+  windows by title only, so they cannot pick an untitled or duplicate-title window by index. A
+  native JSON integer in `window` is still read as an index for existing callers (#145).
   `include_menu_bar` also walks the app's menu bar, so menu items get refs.
 - **Per node.** Role, subrole, title, value (secure fields always masked), state, frame in
   display points (the `screenshot`/`mouse` space, with display index), and a `ref` valid within
@@ -31,7 +30,7 @@ Acts on a `ui_snapshot` node by ref through the Accessibility API, without movin
 - **Arguments.** `snapshot_id` + `ref` + `action`.
 - **Actions.**
   - `press` (AXPress).
-  - `set_value` (AXValue, with `value`, advertised and passed as a string, e.g. `"3"` or `"true"`; existing callers' native JSON number or bool are still accepted; replaces the whole value).
+  - `set_value` (AXValue, with `value`, advertised and passed as a string, e.g. `"3"` or `"true"`; existing callers' native JSON number or bool are still accepted; replaces the whole value). A string the control refuses (AX error -25201) is retried once as the native number or boolean it spells, and only if that also refuses does the call fail with the value-type error. A refused write changes nothing.
   - `focus` (sets AXFocused; never raises a window; refused where AXFocused is not settable).
   - `show_menu`, `confirm`, `cancel`, `increment`, `decrement`.
 - **Unsupported actions.** An action the element does not support is refused before anything is

@@ -45,6 +45,7 @@ mod procnet;
 #[cfg(test)]
 mod profile_conformance;
 mod run_record;
+mod schema_shape;
 mod sigstop;
 mod state;
 mod stdio_client;
