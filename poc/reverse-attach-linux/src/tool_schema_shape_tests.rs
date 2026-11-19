@@ -441,15 +441,37 @@ fn upstream_does_not_own_a_call_to_a_banned_schema_tool() {
     );
 }
 
-/// An upstream that counts the calls it receives and answers each with an empty result.
+/// An upstream that counts the calls and the listings it receives and answers each call with an
+/// empty result. Like the managed backend, it owns a name without listing, and its cached list is
+/// read without a listing.
 struct CountingUpstream {
     tools: Vec<Value>,
     calls: AtomicUsize,
+    lists: AtomicUsize,
+}
+
+impl CountingUpstream {
+    fn new(tools: Vec<Value>) -> Arc<CountingUpstream> {
+        Arc::new(CountingUpstream {
+            tools,
+            calls: AtomicUsize::new(0),
+            lists: AtomicUsize::new(0),
+        })
+    }
 }
 
 impl Upstream for CountingUpstream {
     fn tools(&self) -> Vec<Value> {
+        self.lists.fetch_add(1, Ordering::SeqCst);
         self.tools.clone()
+    }
+    fn cached_tools(&self) -> Vec<Value> {
+        self.tools.clone()
+    }
+    fn owns(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .any(|t| t.get("name").and_then(Value::as_str) == Some(name))
     }
     fn call(&self, _name: &str, _arguments: Value) -> Result<Value, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
@@ -469,10 +491,7 @@ impl Upstream for CountingUpstream {
 /// upstream never sees it. The reason names the key only.
 #[test]
 fn emulate_media_null_override_is_refused_before_the_upstream_call() {
-    let upstream = Arc::new(CountingUpstream {
-        tools: recorded_tools(),
-        calls: AtomicUsize::new(0),
-    });
+    let upstream = CountingUpstream::new(recorded_tools());
     let ups: Vec<Arc<dyn Upstream>> = vec![upstream.clone()];
     let params = json!({ "name": "browser_emulate_media",
         "arguments": { "colorScheme": null, "media": "print" } });
@@ -493,13 +512,149 @@ fn emulate_media_null_override_is_refused_before_the_upstream_call() {
 /// The enum values still reach the upstream, so the refusal is only for null.
 #[test]
 fn emulate_media_enum_value_still_reaches_the_upstream() {
-    let upstream = Arc::new(CountingUpstream {
-        tools: recorded_tools(),
-        calls: AtomicUsize::new(0),
-    });
+    let upstream = CountingUpstream::new(recorded_tools());
     let ups: Vec<Arc<dyn Upstream>> = vec![upstream.clone()];
     let params = json!({ "name": "browser_emulate_media", "arguments": { "colorScheme": "dark" } });
     let ok = handle_tool_call_with(&params, "owner", None, &ups);
     assert!(ok.is_ok(), "{ok:?}");
     assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
+}
+
+/// Round-4 F1: a routed call decides refusal from the cached list, so it never sends a tools/list.
+#[test]
+fn a_routed_call_does_not_list_the_upstream() {
+    let upstream = CountingUpstream::new(recorded_tools());
+    let ups: Vec<Arc<dyn Upstream>> = vec![upstream.clone()];
+    let params = json!({ "name": "browser_navigate", "arguments": { "url": "https://a.test" } });
+    let ok = handle_tool_call_with(&params, "owner", None, &ups);
+    assert!(ok.is_ok(), "{ok:?}");
+    assert_eq!(upstream.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        upstream.lists.load(Ordering::SeqCst),
+        0,
+        "a tools/call sent a tools/list"
+    );
+}
+
+/// Round-4 F1: a refused tool in the cached list is still not routed, without a listing.
+#[test]
+fn a_cached_refused_tool_is_not_routed_and_not_listed() {
+    let upstream = CountingUpstream::new(banned_upstream_tools());
+    let ups: Vec<Arc<dyn Upstream>> = vec![upstream.clone()];
+    for name in BANNED_NAMES {
+        assert!(
+            upstream_owning_with(name, "owner", &ups).is_none(),
+            "{name} is routed"
+        );
+    }
+    assert_eq!(upstream.lists.load(Ordering::SeqCst), 0);
+}
+
+/// Round-4 F2: a null is refused for any browser_emulate_media argument, including one a later
+/// upstream adds, not only the five overrides of 0.0.82.
+#[test]
+fn emulate_media_null_for_a_sixth_property_is_refused() {
+    let mut tools = recorded_tools();
+    let media = tools
+        .iter_mut()
+        .find(|t| t["name"].as_str() == Some("browser_emulate_media"))
+        .expect("fixture has browser_emulate_media");
+    media["inputSchema"]["properties"]["zoom"] = json!({
+        "anyOf": [{ "type": "string", "enum": ["in", "out"] }, { "type": "null" }]
+    });
+    let upstream = CountingUpstream::new(tools);
+    let ups: Vec<Arc<dyn Upstream>> = vec![upstream.clone()];
+    let params = json!({ "name": "browser_emulate_media", "arguments": { "zoom": null } });
+    let refused = handle_tool_call_with(&params, "owner", None, &ups);
+    let err = refused.expect_err("null is refused");
+    assert_eq!(err.0, INVALID_PARAMS);
+    assert_eq!(
+        err.1,
+        "Invalid params: browser_emulate_media: zoom cannot be null; omit it or send one of its enum values"
+    );
+    assert_eq!(upstream.calls.load(Ordering::SeqCst), 0);
+}
+
+/// Round-4 F3: a union with a branch other than null keeps its anyOf, so the tool is refused
+/// instead of losing that branch.
+#[test]
+fn emulate_media_union_with_a_non_null_branch_is_refused_not_collapsed() {
+    let tool = json!({ "name": "browser_emulate_media", "description": "fixture", "inputSchema": {
+        "type": "object",
+        "properties": { "zoom": { "anyOf": [{ "type": "string", "enum": ["in"] }, { "type": "number" }] } }
+    } });
+    let served = crate::mcp::forwarded_descriptor(tool);
+    assert!(
+        served["inputSchema"]["properties"]["zoom"]["anyOf"].is_array(),
+        "a non-null branch was dropped: {served}"
+    );
+    assert_eq!(
+        crate::mcp::schema_refusal(&served).as_deref(),
+        Some("browser_emulate_media.properties.zoom.anyOf")
+    );
+}
+
+/// Round-4 F3: a string-or-null union is still collapsed to its string branch.
+#[test]
+fn emulate_media_string_or_null_union_is_collapsed() {
+    let tool = json!({ "name": "browser_emulate_media", "description": "fixture", "inputSchema": {
+        "type": "object",
+        "properties": { "zoom": { "anyOf": [{ "type": "string", "enum": ["in"] }, { "type": "null" }] } }
+    } });
+    let served = crate::mcp::forwarded_descriptor(tool);
+    let zoom = &served["inputSchema"]["properties"]["zoom"];
+    assert_eq!(zoom["type"], json!("string"));
+    assert!(zoom.get("anyOf").is_none(), "{served}");
+    assert_eq!(crate::mcp::schema_refusal(&served), None);
+}
+
+/// Round-4 F4: the draft-7 `dependencies` schema form is walked; its list form is not a schema.
+#[test]
+fn walks_dependencies_schema_form_and_skips_its_list_form() {
+    let union = json!({ "type": "string", "anyOf": [{ "type": "string" }] });
+    let value = json!({ "p": union, "q": ["r", "s"] });
+    let schema = with_property_keyword("dependencies", value);
+    assert_eq!(
+        problems(&schema, "t"),
+        vec!["t.properties.a.dependencies.p.anyOf".to_string()]
+    );
+}
+
+/// Round-4 F4: the remaining single sub-schema keywords are walked.
+#[test]
+fn walks_additional_and_unevaluated_items_and_properties() {
+    for keyword in [
+        "additionalItems",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "contentSchema",
+    ] {
+        let value = json!({ "type": "string", "oneOf": [{ "type": "string" }] });
+        let schema = with_property_keyword(keyword, value);
+        assert_eq!(
+            problems(&schema, "t"),
+            vec![format!("t.properties.a.{keyword}.oneOf")],
+            "{keyword}"
+        );
+    }
+}
+
+/// Round-4 F4: a keyword outside the known vocabulary fails closed, because it may hold a
+/// sub-schema the walker would not enter.
+#[test]
+fn unknown_keyword_fails_closed() {
+    let hidden = with_property_keyword("x-schema", json!({ "anyOf": [{ "type": "string" }] }));
+    assert_eq!(
+        problems(&hidden, "t"),
+        vec!["t.properties.a.x-schema is not a known schema keyword".to_string()]
+    );
+    let nullable = with_property_keyword("nullable", json!(true));
+    assert_eq!(
+        problems(&nullable, "t"),
+        vec!["t.properties.a.nullable is not a known schema keyword".to_string()]
+    );
+    for (keyword, value) in [("format", json!("uri")), ("$comment", json!("c"))] {
+        let known = with_property_keyword(keyword, value);
+        assert_eq!(problems(&known, "t"), Vec::<String>::new(), "{keyword}");
+    }
 }

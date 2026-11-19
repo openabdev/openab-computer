@@ -17,18 +17,95 @@ pub(crate) const BANNED: &[&str] = &[
     "definitions",
 ];
 
-/// Schema positions under `schema`, as (path, node): the node itself, the values of `properties`,
-/// `patternProperties` and `dependentSchemas`, `items` (object or tuple form), `prefixItems`, and
-/// the single-schema keywords `additionalProperties`, `propertyNames`, `contains`, `if`, `then` and
-/// `else`. Data keywords (`default`, `enum`, `const`, `examples`) are never entered, and a property
-/// named like a keyword is a name, not a keyword. A non-object sub-schema is not a node.
+/// Keywords whose value is a map of name to sub-schema.
+const SCHEMA_MAPS: &[&str] = &[
+    "properties",
+    "patternProperties",
+    "dependentSchemas",
+    "dependencies",
+];
+
+/// Keywords whose value is one sub-schema.
+const SINGLE_SCHEMAS: &[&str] = &[
+    "additionalProperties",
+    "additionalItems",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "propertyNames",
+    "contains",
+    "contentSchema",
+    "if",
+    "then",
+    "else",
+];
+
+/// Every other keyword a schema node may carry: the rest of the JSON Schema 2020-12 vocabularies
+/// plus the draft-7 `id`. With `BANNED`, `SCHEMA_MAPS` and `SINGLE_SCHEMAS` this is the known set;
+/// anything else is reported, so a keyword this walker does not know cannot hide a sub-schema from
+/// it (fail closed). Same set as `ToolSchemaShape.known` on the Swift side.
+const OTHER_KNOWN: &[&str] = &[
+    "$schema",
+    "$id",
+    "id",
+    "$anchor",
+    "$dynamicAnchor",
+    "$dynamicRef",
+    "$recursiveRef",
+    "$recursiveAnchor",
+    "$comment",
+    "$vocabulary",
+    "items",
+    "prefixItems",
+    "type",
+    "enum",
+    "const",
+    "multipleOf",
+    "maximum",
+    "exclusiveMaximum",
+    "minimum",
+    "exclusiveMinimum",
+    "maxLength",
+    "minLength",
+    "pattern",
+    "maxItems",
+    "minItems",
+    "uniqueItems",
+    "maxContains",
+    "minContains",
+    "maxProperties",
+    "minProperties",
+    "required",
+    "dependentRequired",
+    "title",
+    "description",
+    "default",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "examples",
+    "format",
+    "contentEncoding",
+    "contentMediaType",
+];
+
+fn is_known(keyword: &str) -> bool {
+    [BANNED, SCHEMA_MAPS, SINGLE_SCHEMAS, OTHER_KNOWN]
+        .iter()
+        .any(|set| set.contains(&keyword))
+}
+
+/// Schema positions under `schema`, as (path, node): the node itself, the values of `SCHEMA_MAPS`,
+/// `items` (object or tuple form), `prefixItems`, and `SINGLE_SCHEMAS`. Data keywords (`default`,
+/// `enum`, `const`, `examples`) are never entered, and a property named like a keyword is a name,
+/// not a keyword. A non-object sub-schema is not a node (a boolean schema, or a draft-7
+/// `dependencies` array of names).
 fn schema_nodes<'a>(schema: &'a Value, path: String, out: &mut Vec<(String, &'a Value)>) {
     if !schema.is_object() {
         return;
     }
     out.push((path.clone(), schema));
-    for key in ["properties", "patternProperties", "dependentSchemas"] {
-        if let Some(map) = schema.get(key).and_then(Value::as_object) {
+    for key in SCHEMA_MAPS {
+        if let Some(map) = schema.get(*key).and_then(Value::as_object) {
             for (name, sub) in map {
                 schema_nodes(sub, format!("{path}.{key}.{name}"), out);
             }
@@ -48,21 +125,15 @@ fn schema_nodes<'a>(schema: &'a Value, path: String, out: &mut Vec<(String, &'a 
             schema_nodes(sub, format!("{path}.prefixItems[{i}]"), out);
         }
     }
-    for key in [
-        "additionalProperties",
-        "propertyNames",
-        "contains",
-        "if",
-        "then",
-        "else",
-    ] {
-        if let Some(sub) = schema.get(key) {
+    for key in SINGLE_SCHEMAS {
+        if let Some(sub) = schema.get(*key) {
             schema_nodes(sub, format!("{path}.{key}"), out);
         }
     }
 }
 
-/// Findings for one schema, by path. An empty result means the schema passes.
+/// Findings for one schema, by path: a banned keyword, an unknown keyword, a `type` array, or a
+/// schema position without one plain `type` string. An empty result means the schema passes.
 pub(crate) fn problems(schema: &Value, root: &str) -> Vec<String> {
     if !schema.is_object() {
         return vec![format!("{root} is not an object schema")];
@@ -74,6 +145,13 @@ pub(crate) fn problems(schema: &Value, root: &str) -> Vec<String> {
         for keyword in BANNED {
             if node.get(*keyword).is_some() {
                 out.push(format!("{path}.{keyword}"));
+            }
+        }
+        if let Some(map) = node.as_object() {
+            let mut unknown: Vec<&String> = map.keys().filter(|k| !is_known(k)).collect();
+            unknown.sort();
+            for keyword in unknown {
+                out.push(format!("{path}.{keyword} is not a known schema keyword"));
             }
         }
         match node.get("type") {

@@ -339,6 +339,63 @@ final class ToolSchemaShapeTests: XCTestCase {
                        ["t.properties.a.else has no single string type"])
     }
 
+    // Round-4 F4: the remaining draft-7 and 2020-12 sub-schema keywords are walked too.
+
+    func testWalksDependenciesSchemaFormAndSkipsItsListForm() {
+        XCTAssertEqual(Self.problems(fixture("dependencies", ["p": ["type": "string", "anyOf": [["type": "string"]]],
+                                                               "q": ["r", "s"]]), root: "t"),
+                       ["t.properties.a.dependencies.p.anyOf"])
+    }
+
+    func testWalksAdditionalAndUnevaluatedItemsAndProperties() {
+        for key in ["additionalItems", "unevaluatedItems", "unevaluatedProperties", "contentSchema"] {
+            XCTAssertEqual(Self.problems(fixture(key, ["type": "string", "oneOf": [["type": "string"]]]), root: "t"),
+                           ["t.properties.a.\(key).oneOf"], key)
+        }
+    }
+
+    /// A keyword outside the known vocabulary fails closed: it may hold a sub-schema the walker
+    /// would not enter, so it is reported instead of passing silently.
+    func testUnknownKeywordFailsClosed() {
+        XCTAssertEqual(Self.problems(fixture("x-schema", ["anyOf": [["type": "string"]]]), root: "t"),
+                       ["t.properties.a.x-schema is not a known schema keyword"])
+        XCTAssertEqual(Self.problems(fixture("nullable", true), root: "t"),
+                       ["t.properties.a.nullable is not a known schema keyword"])
+        // Known annotation and validation keywords still pass.
+        XCTAssertEqual(Self.problems(fixture("format", "uri"), root: "t"), [])
+        XCTAssertEqual(Self.problems(fixture("$comment", "c"), root: "t"), [])
+    }
+
+    // Round-4 F3: only a string-or-null union is collapsed; any other union keeps its anyOf and is refused.
+
+    func testEmulateMediaUnionWithANonNullBranchIsRefusedNotCollapsed() {
+        let d = Self.descriptor("browser_emulate_media", [
+            "zoom": ["anyOf": [["type": "string", "enum": ["in"]], ["type": "number"]]],
+        ], required: [])
+        let served = UpstreamTool.forwardedDescriptor(d)
+        XCTAssertNotNil(served["inputSchema"]?["properties"]?["zoom"]?["anyOf"], "a non-null branch was dropped")
+        XCTAssertEqual(UpstreamTool.refusal(d), "browser_emulate_media.properties.zoom.anyOf")
+    }
+
+    func testEmulateMediaStringOrNullUnionIsStillCollapsed() {
+        let d = Self.descriptor("browser_emulate_media", [
+            "zoom": ["anyOf": [["type": "string", "enum": ["in"]], ["type": "null"]], "description": "z"],
+        ], required: [])
+        XCTAssertNil(UpstreamTool.refusal(d))
+        let zoom = UpstreamTool.forwardedDescriptor(d)["inputSchema"]?["properties"]?["zoom"]
+        XCTAssertEqual(zoom?["type"]?.stringValue, "string")
+        XCTAssertNil(zoom?["anyOf"])
+    }
+
+    // Round-4 F2: a null is refused for any browser_emulate_media argument, not a fixed key list.
+
+    func testNullIsRefusedForAnEmulateMediaPropertyAddedLater() {
+        XCTAssertEqual(UpstreamTool.nullOverrideRefusal("browser_emulate_media", ["zoom": .null]),
+                       "browser_emulate_media: zoom cannot be null; omit it or send one of its enum values")
+        XCTAssertNil(UpstreamTool.nullOverrideRefusal("browser_emulate_media", ["zoom": "in"]))
+        XCTAssertNil(UpstreamTool.nullOverrideRefusal("browser_click", ["zoom": .null]))
+    }
+
     /// The non-object root rule, the same as the Rust guard's `root_must_be_an_object_schema`.
     func testNonObjectRootIsRefused() {
         XCTAssertEqual(Self.problems(.bool(true), root: "t"), ["t is not an object schema"])

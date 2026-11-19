@@ -51,6 +51,12 @@ pub struct BackendStatus {
 pub trait Upstream: Send + Sync {
     /// The tools this upstream serves right now (empty when it is down).
     fn tools(&self) -> Vec<Value>;
+    /// The last list `tools` returned, without a request and without starting anything. Empty when
+    /// nothing is cached. The call path reads this, so a `tools/call` never costs a `tools/list`.
+    /// The default is `tools()`, for upstreams that hold their list in memory.
+    fn cached_tools(&self) -> Vec<Value> {
+        self.tools()
+    }
     /// Whether `name` is a tool this upstream serves.
     fn owns(&self, name: &str) -> bool {
         self.tools()
@@ -65,6 +71,9 @@ pub trait Upstream: Send + Sync {
 impl Upstream for External {
     fn tools(&self) -> Vec<Value> {
         External::tools(self)
+    }
+    fn cached_tools(&self) -> Vec<Value> {
+        External::cached_tools(self)
     }
     fn call(&self, name: &str, arguments: Value) -> Result<Value, String> {
         self.rpc(
@@ -157,6 +166,15 @@ impl Upstream for Managed {
                 Vec::new()
             }
         }
+    }
+
+    /// The cached list at any age, so the call path neither lists nor starts the child.
+    fn cached_tools(&self) -> Vec<Value> {
+        self.cache
+            .lock()
+            .ok()
+            .and_then(|c| c.as_ref().map(|(_, t)| t.clone()))
+            .unwrap_or_default()
     }
 
     /// A catalog name is owned without asking the child, so a call while the child is down answers

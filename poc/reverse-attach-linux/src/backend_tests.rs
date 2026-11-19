@@ -301,5 +301,5 @@ fn a_down_backend_answers_with_its_class_not_unknown_tool() {
         &ups,
     )
     .unwrap_err();
-    assert_eq!(err, (-32000, "backoff".to_string()));
+    assert_eq!(err, (-32000, "start_failed".to_string()));
 }

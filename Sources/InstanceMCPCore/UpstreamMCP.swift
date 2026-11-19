@@ -196,16 +196,17 @@ struct UpstreamTool: Tool {
     }
 
     /// browser_emulate_media's five overrides are `anyOf: [enum string, null]`, a union that strict
-    /// MCP clients drop (#145). Only that branch is kept: each property becomes its plain enum
-    /// string. Owner decision on PR #146 (option B): the served schema no longer offers null, and
-    /// `nullOverrideRefusal` refuses a null at the call. Every other upstream schema is forwarded unchanged.
+    /// MCP clients drop (#145). Owner decision on PR #146 (option B): such a property becomes its
+    /// plain string branch, the served schema no longer offers null, and `nullOverrideRefusal`
+    /// refuses a null at the call. Only an `anyOf` of exactly one string branch plus `{type: null}`
+    /// branches is collapsed; any other union is left as is, so `refusal` hides the tool and logs why
+    /// instead of silently dropping a branch. Every other upstream schema is forwarded unchanged.
     static func forwardedSchema(name: String, _ schema: JSONValue) -> JSONValue {
         guard name == "browser_emulate_media", var root = schema.objectValue,
               var props = root["properties"]?.objectValue else { return schema }
         for (key, prop) in props {
             guard var p = prop.objectValue, let branches = p["anyOf"]?.arrayValue,
-                  let string = branches.first(where: { $0["type"]?.stringValue == "string" })?.objectValue
-            else { continue }
+                  let string = nullableStringBranch(branches) else { continue }
             p.removeValue(forKey: "anyOf")
             for (k, v) in string { p[k] = v }
             props[key] = .object(p)
@@ -214,15 +215,30 @@ struct UpstreamTool: Tool {
         return .object(root)
     }
 
-    /// The five browser_emulate_media overrides, which take a string from their enum (option B).
-    static let emulateMediaOverrides = ["colorScheme", "reducedMotion", "forcedColors", "contrast", "media"]
+    /// The string branch of `[string, null...]`, or nil when any other branch is not exactly
+    /// `{type: null}` or there is not exactly one string branch.
+    static func nullableStringBranch(_ branches: [JSONValue]) -> [String: JSONValue]? {
+        var string: [String: JSONValue]?
+        for b in branches {
+            guard let o = b.objectValue else { return nil }
+            if o["type"]?.stringValue == "string" {
+                guard string == nil else { return nil }
+                string = o
+            } else if o.count != 1 || o["type"]?.stringValue != "null" {
+                return nil
+            }
+        }
+        return string
+    }
 
-    /// Why a `tools/call` must not be forwarded, or nil: browser_emulate_media's overrides are not
-    /// nullable any more, so an explicit null is refused before anything is sent. The reason names
-    /// the key, never the value. Shared by the upstream path and the browser router.
+    /// Why a `tools/call` must not be forwarded, or nil: the served browser_emulate_media schema
+    /// offers no nullable property (option B), so an explicit null for any argument is refused before
+    /// anything is sent. This covers an override a later upstream adds, not only today's five. The
+    /// reason names the first such key in sorted order, never the value. Shared by the upstream path
+    /// and the browser router.
     static func nullOverrideRefusal(_ name: String, _ arguments: JSONValue) -> String? {
         guard name == "browser_emulate_media", let args = arguments.objectValue,
-              let key = emulateMediaOverrides.first(where: { args[$0]?.isNull == true })
+              let key = args.keys.sorted().first(where: { args[$0]?.isNull == true })
         else { return nil }
         return "browser_emulate_media: \(key) cannot be null; omit it or send one of its enum values"
     }
