@@ -26,11 +26,15 @@ Capture over stdio from a fresh process. Do not use the running service, and do 
    cp <repo>/release/playwright-pins/package.json <repo>/release/playwright-pins/package-lock.json .
    ```
 
-2. Install exactly the locked tree. This is the install `scripts/playwright-pins.py` uses, without
-   install scripts:
+2. Install exactly the locked tree, isolated from the developer's npm config. This matches the
+   smoke check in `scripts/playwright-pins.py`: empty user and global npmrc files, a scratch cache,
+   and `HOME` set to the scratch directory. Install scripts are skipped.
 
    ```sh
-   npm ci --ignore-scripts --omit=dev --no-audit --no-fund --registry https://registry.npmjs.org/
+   cd /tmp/pw-mcp-capture && touch user.npmrc global.npmrc && mkdir -p cache
+   HOME=/tmp/pw-mcp-capture npm ci --ignore-scripts --omit=dev --no-audit --no-fund \
+     --userconfig /tmp/pw-mcp-capture/user.npmrc --globalconfig /tmp/pw-mcp-capture/global.npmrc \
+     --cache /tmp/pw-mcp-capture/cache --registry https://registry.npmjs.org/
    ```
 
 3. Launch the server over stdio with the flags named in the fixture's `source` field:
