@@ -708,12 +708,16 @@ mod paging {
             drop(held);
         });
         let e = External::for_test("browser", &url).with_deadline(Duration::from_millis(500));
-        let big = json!({"cursor": "a".repeat(64 << 20)});
+        // 16 MB is more than the loopback socket buffers hold. It is small enough that serialising
+        // it in a debug build (`post` does that inside the deadline) takes about a second, not four.
+        let big = json!({"cursor": "a".repeat(16 << 20)});
         let started = Instant::now();
         let r = e.post(&big, Some(Duration::from_secs(30)));
         assert_eq!(r.err().as_deref(), Some("upstream_timeout"));
+        // The request deadline is 500 ms. The server releases the socket after 4 s, so a request that
+        // ignored its deadline would take at least 4 s; 3 s separates the two.
         assert!(
-            started.elapsed() < Duration::from_millis(1500),
+            started.elapsed() < Duration::from_secs(3),
             "{:?}",
             started.elapsed()
         );
