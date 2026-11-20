@@ -3,11 +3,14 @@
 
 Run: python3 scripts/test-playwright-pins.py
 """
+import ast
 import contextlib
 import importlib.util
 import io
 import json
 import os
+import re
+import shlex
 import shutil
 import tarfile
 import tempfile
@@ -18,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+README = os.path.join(ROOT, "Tests", "Fixtures", "README.md")
 spec = importlib.util.spec_from_file_location("playwright_pins", os.path.join(HERE, "playwright-pins.py"))
 pins = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pins)
@@ -582,21 +586,91 @@ class SourceChoice(unittest.TestCase):
             pins.choose_chromium_source("9.9", "7", "darwin-arm64")
 
 
+def run_smoke_npm_ci(src):
+    """Return (run_smoke function node, the subprocess call that runs npm ci inside it)."""
+    fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == "run_smoke")
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.List):
+            if [e.value for e in node.args[0].elts[:2] if isinstance(e, ast.Constant)] == ["npm", "ci"]:
+                return fn, node
+    raise AssertionError("run_smoke has no npm ci call")
+
+
+def readme_npm_ci_command(doc):
+    """Return the raw text of the one npm ci command in the fixture README, with its line continuations."""
+    blocks = [b for b in re.findall(r"```[^\n]*\n(.*?)```", doc, re.S) if "npm ci" in b]
+    if len(blocks) != 1:
+        raise AssertionError("expected one npm ci block, found %d" % len(blocks))
+    lines = blocks[0].split("\n")
+    start = next(i for i, line in enumerate(lines) if "npm ci" in line)
+    while start > 0 and lines[start - 1].rstrip().endswith("\\"):
+        start -= 1
+    end = next(i for i, line in enumerate(lines) if "npm ci" in line)
+    while lines[end].rstrip().endswith("\\"):
+        end += 1
+    return "\n".join(lines[start:end + 1])
+
+
 class FixtureReadme(unittest.TestCase):
-    """The npm ci step in Tests/Fixtures/README.md must carry the isolation settings run_smoke uses."""
+    """The npm ci command in Tests/Fixtures/README.md and in run_smoke must both isolate npm."""
 
-    ISOLATION = ["npm ci", "--ignore-scripts", "--userconfig", "--globalconfig", "--cache",
-                 "--registry https://registry.npmjs.org/", "HOME="]
+    FLAGS = ("--ignore-scripts", "--userconfig", "--globalconfig", "--cache")
 
-    def test_the_readme_npm_ci_step_names_every_isolation_setting(self):
-        doc = read(os.path.join(ROOT, "Tests", "Fixtures", "README.md"))
-        self.assertEqual([s for s in self.ISOLATION if s not in doc], [])
+    @classmethod
+    def readme_gaps(cls, doc):
+        words = shlex.split(re.sub(r"\\\n\s*", " ", readme_npm_ci_command(doc)))
+        gaps = [f for f in cls.FLAGS if f not in words]
+        if not words[0].startswith("HOME="):
+            gaps.append("HOME")
+        if not any(words[i:i + 2] == ["--registry", "https://registry.npmjs.org/"] for i in range(len(words))):
+            gaps.append("--registry")
+        return gaps
 
-    def test_run_smoke_passes_the_same_isolation_flags(self):
+    @classmethod
+    def smoke_gaps(cls, src):
+        fn, call = run_smoke_npm_ci(src)
+        words = {e.value for e in call.args[0].elts if isinstance(e, ast.Constant)}
+        gaps = [f for f in cls.FLAGS if f not in words]
+        home_set = any(isinstance(n, ast.Assign) and isinstance(n.value, ast.Dict)
+                       and any(isinstance(k, ast.Constant) and k.value == "HOME" for k in n.value.keys)
+                       for n in ast.walk(fn))
+        if not home_set or not any(k.arg == "env" for k in call.keywords):
+            gaps.append("HOME")
+        return gaps
+
+    def test_the_readme_npm_ci_command_carries_every_isolation_setting(self):
+        self.assertEqual(self.readme_gaps(read(README)), [])
+
+    def test_removing_a_flag_from_the_readme_command_is_caught(self):
+        doc = read(README)
+        command = readme_npm_ci_command(doc)
+        for flag in self.FLAGS:
+            with self.subTest(flag=flag):
+                mutated_command = command.replace(flag + " ", "", 1)
+                self.assertNotEqual(mutated_command, command)
+                mutated = doc.replace(command, mutated_command, 1)
+                self.assertIn(flag, self.readme_gaps(mutated))
+
+    def test_run_smoke_npm_ci_carries_every_isolation_setting(self):
+        self.assertEqual(self.smoke_gaps(read(os.path.join(HERE, "playwright-pins.py"))), [])
+
+    def test_removing_a_flag_from_the_run_smoke_npm_ci_call_is_caught(self):
         src = read(os.path.join(HERE, "playwright-pins.py"))
-        for flag in ("--ignore-scripts", "--userconfig", "--globalconfig", "--cache", "--registry"):
-            self.assertIn(flag, src)
-        self.assertIn('"HOME": work', src)
+        _, call = run_smoke_npm_ci(src)
+        text = ast.get_source_segment(src, call)
+        for flag in self.FLAGS:
+            with self.subTest(flag=flag):
+                mutated_text = text.replace('"%s", ' % flag, "", 1)
+                self.assertNotEqual(mutated_text, text)
+                self.assertIn(flag, self.smoke_gaps(src.replace(text, mutated_text, 1)))
+
+    def test_removing_home_from_the_run_smoke_env_is_caught(self):
+        src = read(os.path.join(HERE, "playwright-pins.py"))
+        fn, _ = run_smoke_npm_ci(src)
+        text = ast.get_source_segment(src, fn)
+        mutated_text = text.replace('"HOME": work', '"HOME_X": work', 1)
+        self.assertNotEqual(mutated_text, text)
+        self.assertIn("HOME", self.smoke_gaps(src.replace(text, mutated_text, 1)))
 
 
 class Generate(unittest.TestCase):
