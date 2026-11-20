@@ -582,6 +582,23 @@ class SourceChoice(unittest.TestCase):
             pins.choose_chromium_source("9.9", "7", "darwin-arm64")
 
 
+class FixtureReadme(unittest.TestCase):
+    """The npm ci step in Tests/Fixtures/README.md must carry the isolation settings run_smoke uses."""
+
+    ISOLATION = ["npm ci", "--ignore-scripts", "--userconfig", "--globalconfig", "--cache",
+                 "--registry https://registry.npmjs.org/", "HOME="]
+
+    def test_the_readme_npm_ci_step_names_every_isolation_setting(self):
+        doc = read(os.path.join(ROOT, "Tests", "Fixtures", "README.md"))
+        self.assertEqual([s for s in self.ISOLATION if s not in doc], [])
+
+    def test_run_smoke_passes_the_same_isolation_flags(self):
+        src = read(os.path.join(HERE, "playwright-pins.py"))
+        for flag in ("--ignore-scripts", "--userconfig", "--globalconfig", "--cache", "--registry"):
+            self.assertIn(flag, src)
+        self.assertIn('"HOME": work', src)
+
+
 class Generate(unittest.TestCase):
     def test_generate_refuses_to_run_without_a_node_team_id(self):
         err = io.StringIO()
