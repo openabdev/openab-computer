@@ -335,7 +335,9 @@ fn a_detached_grandchild_of_a_recorded_leader_is_claimed_and_a_stray_is_not() {
     assert!(claimed(helper, &live), "the parent chain did not claim it");
     assert!(!claimed(stray.id(), &live), "a stray was claimed");
     let _ = rustix::process::kill_process(
-        rustix::process::Pid::from_raw(helper as i32).unwrap(),
+        crate::proc::checked_pid(helper)
+            .and_then(rustix::process::Pid::from_raw)
+            .unwrap(),
         rustix::process::Signal::KILL,
     );
     leader.kill().unwrap();
