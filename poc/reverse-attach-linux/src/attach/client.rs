@@ -65,6 +65,28 @@ fn redact(text: &str, credential: &str) -> String {
     }
 }
 
+/// Decodes `%XX` escapes, or returns None when an escape is not two hex digits.
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = bytes.get(i + 1..i + 3)?;
+            if !hex.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            let byte = u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
 pub(crate) fn mint(
     runtime: &str,
     session: &str,
@@ -111,10 +133,22 @@ fn mint_inner(
     let rest = strip_trailing_slashes(rest);
     // The runtime string is never echoed below: it must not carry userinfo, a query or a
     // fragment, so nothing in it can be a second credential or a redirect of the request.
+    // Percent escapes are allowed in the path prefix only. The decoded path must pass the
+    // same check, so `%40` or `%3F` cannot smuggle userinfo or a query past it.
+    let has_bad_char = |s: &str| {
+        s.chars().any(|c| {
+            c.is_control() || c.is_whitespace() || matches!(c, '@' | '?' | '#' | '\\')
+        })
+    };
+    let host_part = rest.split('/').next().unwrap_or(rest);
+    let decoded = percent_decode(rest);
     if rest.is_empty()
         || rest.starts_with('/')
-        || rest.chars().any(|c| {
-            c.is_control() || c.is_whitespace() || matches!(c, '@' | '?' | '#' | '\\' | '%')
+        || host_part.contains('%')
+        || has_bad_char(rest)
+        || decoded.as_deref().map_or(true, |d| {
+            d.chars()
+                .any(|c| c.is_control() || matches!(c, '@' | '?' | '#' | '\\'))
         })
     {
         return Err(
@@ -130,7 +164,9 @@ fn mint_inner(
     // admin credential must not be a substring of either: refuse before any request, and
     // without echoing either value.
     if !admin_credential.is_empty()
-        && (runtime.contains(admin_credential) || session.contains(admin_credential))
+        && (runtime.contains(admin_credential)
+            || decoded.as_deref().is_some_and(|d| d.contains(admin_credential))
+            || session.contains(admin_credential))
     {
         return Err(
             "runtime and session must not contain the admin credential; the runtime address \

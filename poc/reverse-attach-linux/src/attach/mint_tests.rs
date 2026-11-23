@@ -573,3 +573,45 @@ fn only_ws_and_wss_runtimes_are_accepted() {
         assert!(err.contains("unsupported runtime scheme"), "{err}");
     }
 }
+
+#[test]
+fn wss_mint_accepts_a_percent_encoded_runtime_prefix() {
+    // A valid percent-encoded path prefix is sent as written, not refused.
+    let p = pki();
+    let server = fake(Some(&p), ok_reply);
+    let runtime = format!("wss://127.0.0.1:{}/pod%20a", server.port);
+    mint_with(&trust_for(&p), &runtime, "s", CRED, 60).expect("wss mint with %20 prefix");
+    assert!(server.requests()[0].starts_with("POST /pod%20a/admin/sessions/s/tools-attach "));
+}
+
+#[test]
+fn a_percent_encoded_credential_inside_the_runtime_is_refused_before_any_request() {
+    // The runtime is persisted in grants.json, so the credential must be caught in its
+    // decoded form too.
+    let p = pki();
+    let server = fake(None, ok_reply);
+    let encoded: String = CRED.bytes().map(|b| format!("%{b:02X}")).collect();
+    let runtime = format!("ws://127.0.0.1:{}/{encoded}", server.port);
+    let err = mint_with(&trust_for(&p), &runtime, "s", CRED, 60).unwrap_err();
+    assert!(err.contains("must not contain"), "{err}");
+    assert_no_credential(&err);
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn a_malformed_or_smuggling_percent_escape_in_the_runtime_is_refused() {
+    let p = pki();
+    let server = fake(None, ok_reply);
+    for runtime in [
+        format!("ws://127.0.0.1:{}/pod%zz", server.port),
+        format!("ws://127.0.0.1:{}/pod%2", server.port),
+        format!("ws://127.0.0.1:{}/pod%40evil", server.port),
+        format!("ws://127.0.0.1:{}/pod%3Fq", server.port),
+        format!("ws://127.0.0.1:{}/pod%00", server.port),
+        format!("ws://127.0.0.1%3A{}", server.port),
+    ] {
+        let err = mint_with(&trust_for(&p), &runtime, "s", CRED, 60).unwrap_err();
+        assert!(err.contains("no user info, query or fragment"), "{err}");
+    }
+    assert!(server.requests().is_empty());
+}
