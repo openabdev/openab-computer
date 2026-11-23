@@ -136,9 +136,8 @@ fn mint_inner(
     // Percent escapes are allowed in the path prefix only. The decoded path must pass the
     // same check, so `%40` or `%3F` cannot smuggle userinfo or a query past it.
     let has_bad_char = |s: &str| {
-        s.chars().any(|c| {
-            c.is_control() || c.is_whitespace() || matches!(c, '@' | '?' | '#' | '\\')
-        })
+        s.chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '@' | '?' | '#' | '\\'))
     };
     let host_part = rest.split('/').next().unwrap_or(rest);
     let decoded = percent_decode(rest);
@@ -165,7 +164,9 @@ fn mint_inner(
     // without echoing either value.
     if !admin_credential.is_empty()
         && (runtime.contains(admin_credential)
-            || decoded.as_deref().is_some_and(|d| d.contains(admin_credential))
+            || decoded
+                .as_deref()
+                .is_some_and(|d| d.contains(admin_credential))
             || session.contains(admin_credential))
     {
         return Err(
