@@ -325,6 +325,15 @@ fn a_pid_that_does_not_exist_signals_nothing_and_does_not_panic() {
     assert!(!kill_pid_checked(top + 1, &|_| true));
 }
 
+#[test]
+fn checked_pid_keeps_valid_pids_and_rejects_the_rest() {
+    assert_eq!(checked_pid(1), Some(1));
+    assert_eq!(checked_pid(2_147_483_647), Some(i32::MAX));
+    assert_eq!(checked_pid(0), None);
+    assert_eq!(checked_pid(2_147_483_648), None);
+    assert_eq!(checked_pid(u32::MAX), None);
+}
+
 /// Pids above `i32::MAX` (2^31, and `u32::MAX`, which `as i32` makes `-1`) name no process. The
 /// call must answer "no" without reaching rustix with a negative id, so debug and release agree.
 #[cfg(target_os = "linux")]

@@ -222,13 +222,17 @@ fn finish(g: &mut Inner, status: Option<ExitStatus>, timed_out: bool, late: Opti
 /// The job's shell (our child `pid`) has exited. It is not reaped (`WNOWAIT`),
 /// so its pid stays reserved.
 fn shell_exited(pid: u32) -> bool {
+    // A pid that names no process has no child to wait for: same answer as ECHILD below.
+    let Some(id) = crate::proc::checked_pid(pid) else {
+        return true;
+    };
     // siginfo_t is 128 bytes on Linux; `si_signo` (first int) is set only when
     // a child was found, so a zeroed buffer distinguishes WNOHANG's "not yet".
     let mut info = [0i32; 32];
     let r = unsafe {
         waitid(
             P_PID,
-            pid,
+            id as u32,
             info.as_mut_ptr().cast(),
             WEXITED | WNOHANG | WNOWAIT,
         )
