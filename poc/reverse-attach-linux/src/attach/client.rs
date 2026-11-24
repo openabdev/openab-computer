@@ -145,7 +145,7 @@ fn mint_inner(
         || rest.starts_with('/')
         || host_part.contains('%')
         || has_bad_char(rest)
-        || decoded.as_deref().map_or(true, |d| {
+        || decoded.as_deref().is_none_or(|d| {
             d.chars()
                 .any(|c| c.is_control() || matches!(c, '@' | '?' | '#' | '\\'))
         })
