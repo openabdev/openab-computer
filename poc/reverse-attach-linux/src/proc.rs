@@ -33,6 +33,13 @@ use rustix::process::{Pid, Signal};
 
 pub const RING_CAP: usize = 64 * 1024;
 
+/// A `u32` pid as the signed id the kernel and rustix use. `None` when it does not fit in `i32`,
+/// or is zero or negative: such a value names no process, so callers take their no-such-process
+/// path. A bare `as i32` would turn `u32::MAX` into `-1`, which rustix rejects in debug builds.
+pub(crate) fn checked_pid(pid: u32) -> Option<i32> {
+    i32::try_from(pid).ok().filter(|p| *p > 0)
+}
+
 pub struct Spec {
     pub exe: PathBuf,
     pub args: Vec<String>,
@@ -269,7 +276,7 @@ impl Child {
         if self.reaped {
             return true;
         }
-        let Some(pid) = Pid::from_raw(self.child.id() as i32) else {
+        let Some(pid) = checked_pid(self.child.id()).and_then(Pid::from_raw) else {
             return true;
         };
         matches!(
@@ -372,7 +379,7 @@ impl Child {
         let pgid = if self.reaped {
             None
         } else {
-            Pid::from_raw(self.child.id() as i32)
+            checked_pid(self.child.id()).and_then(Pid::from_raw)
         };
         if let Some(g) = pgid {
             let _ = rustix::process::kill_process_group(g, Signal::TERM);
@@ -460,7 +467,7 @@ pub fn kill_matching(matches: &dyn Fn(&Path) -> bool, protect: &dyn Fn(u32) -> b
 /// (or fail with `ESRCH` if it has exited). A process that fails the recheck is never signalled.
 #[cfg(target_os = "linux")]
 pub fn kill_pid_checked(pid: u32, recheck: &dyn Fn(u32) -> bool) -> bool {
-    let Some(p) = Pid::from_raw(pid as i32) else {
+    let Some(p) = checked_pid(pid).and_then(Pid::from_raw) else {
         return false;
     };
     let Ok(fd) = rustix::process::pidfd_open(p, rustix::process::PidfdFlags::empty()) else {

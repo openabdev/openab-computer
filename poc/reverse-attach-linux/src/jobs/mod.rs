@@ -162,7 +162,9 @@ impl Job {
             }
             g.late_signal = Some(sig);
         }
-        unsafe { kill(-(self.pid as i32), sig) };
+        if let Some(pgid) = crate::proc::checked_pid(self.pid) {
+            unsafe { kill(-pgid, sig) };
+        }
         true
     }
 
@@ -181,7 +183,9 @@ impl Job {
             if exited {
                 g.late_signal = Some(SIGKILL);
             }
-            unsafe { kill(-(self.pid as i32), SIGKILL) };
+            if let Some(pgid) = crate::proc::checked_pid(self.pid) {
+                unsafe { kill(-pgid, SIGKILL) };
+            }
             g.timed_out = true;
         }
         if !exited {

@@ -51,7 +51,7 @@ pub fn tool_bash(arguments: &Value, cancel: Option<&AtomicBool>) -> Result<Value
 
     let started = std::time::Instant::now();
     let mut child = cmd.spawn().map_err(|e| (-32000, format!("spawn: {e}")))?;
-    let pid = child.id() as i32;
+    let pid = crate::proc::checked_pid(child.id());
 
     // Drain both pipes on threads so a chatty child cannot block on a full pipe.
     fn drain(mut r: impl Read + Send + 'static, cap: usize) -> thread::JoinHandle<(Vec<u8>, bool)> {
@@ -95,8 +95,11 @@ pub fn tool_bash(arguments: &Value, cancel: Option<&AtomicBool>) -> Result<Value
                 if expired || is_cancelled() {
                     timed_out = expired;
                     cancelled = !expired;
-                    unsafe {
-                        kill(-pid, 9); // whole process group (setsid made pid the leader)
+                    if let Some(pgid) = pid {
+                        // whole process group (setsid made pid the leader)
+                        unsafe {
+                            kill(-pgid, 9);
+                        }
                     }
                     break child.wait().ok();
                 }
