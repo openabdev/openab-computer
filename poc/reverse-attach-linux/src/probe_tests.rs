@@ -107,7 +107,18 @@ fn a_tree_that_listens_is_reported_by_kind_and_a_silent_one_as_none() {
     let dir = root.abs_path().join("pw-1/node/bin");
     let mut c = detached(&sleeper_at(&dir, "node"));
     let real = crate::procnet::Proc;
-    let x = gather(&t.base(), false, None, &real, &nothing);
+    // `spawn` returns right after `exec`, while the dynamic loader may still open and close
+    // library files. An fd that vanishes during the scan is `unknown` by design (see
+    // `socket_inodes_in`), so wait for the stub to settle instead of racing its startup.
+    // A tree that stays `unknown` still fails the assertion below.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let x = loop {
+        let x = gather(&t.base(), false, None, &real, &nothing);
+        if x.listeners != "unknown" || std::time::Instant::now() >= end {
+            break x;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     assert_eq!(x.listeners, "none", "{x:?}");
     c.kill().unwrap();
     c.wait().unwrap();
