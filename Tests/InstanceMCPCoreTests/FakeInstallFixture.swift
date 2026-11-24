@@ -179,7 +179,7 @@ final class FakeInstallFixture {
                    lockTries: Int = 50, npmTimeout: TimeInterval = 30, healthTimeout: TimeInterval = 20,
                    now: @escaping @Sendable () -> Date = { Date() },
                    downloader: (any ArtifactDownloader)? = nil, lockfile: String? = nil,
-                   chromeChecker: any InstalledChromeChecking = InstalledChromeChecker()) -> PlaywrightInstaller {
+                   chromeChecker: any InstalledChromeChecking = InstalledChromeChecker(directories: [])) -> PlaywrightInstaller {
         let man = m ?? manifest!
         return PlaywrightInstaller(
             root: root, manifest: man, archProvider: FixedArch(.arm64),

@@ -91,6 +91,7 @@ public actor PlaywrightBackend: BrowserBackend {
         switch m.locator.locate() {
         case .failure(let e):
             health = nil; toolCache = nil
+            if InstalledChromeProblem.classes.contains(e.errorClass) { log("browser: chrome_check_failed class=\(e.errorClass)") }
             await shutdown()
             return .failure(e)
         case .success(let spec):
