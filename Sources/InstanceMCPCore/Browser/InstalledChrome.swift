@@ -79,7 +79,8 @@ public struct SecurityFrameworkChromeVerifier: ChromeSignatureVerifying {
 public protocol InstalledChromeChecking: Sendable {
     /// Cheap: a `Google Chrome.app` exists in an allowed folder. No signature check; used to decide whether to offer.
     func isInstalled() -> Bool
-    /// The first allowed `Google Chrome.app`, fully checked.
+    /// The first allowed `Google Chrome.app` that passes every check, in priority order. If none passes, the
+    /// problem of the first existing copy.
     func check() -> Result<InstalledChrome, InstalledChromeProblem>
     /// A recorded path, fully checked. A path that is not one of the allowed locations is refused.
     func check(appPath: String) -> Result<InstalledChrome, InstalledChromeProblem>

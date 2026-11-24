@@ -31,7 +31,7 @@ final class BrowserWizardWiringTests: InstallerTestCase {
     // MARK: BrowserToolsController.remove()
 
     func testRemoveCopySaysTheChoiceGoesOnlyWhenInstallJSONIsRemoved() {
-        let text = WizardCopy.removalConfirmation(path: "/tmp/oab-playwright", home: "/Users/someone")
+        let text = WizardCopy.removalConfirmation(path: "/tmp/oab-playwright", home: "/home/example")
         XCTAssertTrue(text.contains("that choice is removed too when install.json is removed"), text)
         XCTAssertFalse(text.contains("that choice is removed too, and"), text)
     }

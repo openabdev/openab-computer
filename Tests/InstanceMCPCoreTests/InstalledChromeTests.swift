@@ -147,10 +147,11 @@ final class InstalledChromeCheckerTests: XCTestCase {
         let both = InstalledChromeChecker(directories: [system.applications, home.applications], verifier: v)
         guard case .success(let chrome) = both.check() else { return XCTFail("the ~/Applications copy is valid and must be used") }
         XCTAssertEqual(chrome.appPath, home.app.standardizedFileURL.path)
-        // With no valid copy anywhere, the class is still the one from the first existing copy.
-        let systemOnly = InstalledChromeChecker(directories: [system.applications, home.applications],
-                                                verifier: StubChromeVerifier(false))
-        XCTAssertEqual(systemOnly.check(), .failure(.invalidSignature))
+        // Both copies fail with different classes: the system copy is first in priority, so its class is reported.
+        try system.write(version: "100.0.0")
+        let oldFirst = InstalledChromeChecker(directories: [system.applications, home.applications],
+                                              verifier: PathVerifier(valid: system.app.standardizedFileURL.path))
+        XCTAssertEqual(oldFirst.check(), .failure(.tooOld(found: 100, minimum: 120)))
     }
 
     func testChromeProblemDuringBrowserUseIsLoggedWithItsClass() async throws {
