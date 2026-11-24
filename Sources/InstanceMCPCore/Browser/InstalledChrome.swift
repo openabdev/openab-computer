@@ -121,8 +121,15 @@ public final class InstalledChromeChecker: InstalledChromeChecking, @unchecked S
     }
 
     public func check() -> Result<InstalledChrome, InstalledChromeProblem> {
-        guard let first = candidates().first(where: { Self.kind($0.path) != nil }) else { return .failure(.notFound) }
-        return check(appPath: first.path)
+        // The first existing copy in priority order that passes; otherwise the first existing copy's problem.
+        var firstProblem: InstalledChromeProblem?
+        for candidate in candidates() where Self.kind(candidate.path) != nil {
+            switch check(appPath: candidate.path) {
+            case .success(let chrome): return .success(chrome)
+            case .failure(let problem): firstProblem = firstProblem ?? problem
+            }
+        }
+        return .failure(firstProblem ?? .notFound)
     }
 
     private func plist(_ app: URL) -> [String: Any]? {

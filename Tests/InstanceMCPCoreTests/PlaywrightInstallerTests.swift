@@ -78,6 +78,13 @@ final class PlaywrightInstallerTests: InstallerTestCase {
         }
     }
 
+    func testFixtureDefaultCheckerNeverReadsRealApplications() throws {
+        let fx = try FakeInstallFixture()
+        let installer = fx.installer(root: root)
+        XCTAssertFalse(installer.chromeChecker.isInstalled())
+        XCTAssertEqual(installer.chromeChecker.check(), .failure(.notFound))
+    }
+
     func testFullInstall() async throws {
         let fx = try FakeInstallFixture()
         let logs = MutableBox<[String]>([])

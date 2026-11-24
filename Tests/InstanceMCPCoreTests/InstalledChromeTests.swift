@@ -136,6 +136,37 @@ final class InstalledChromeCheckerTests: XCTestCase {
         XCTAssertEqual(v.calls.value, 5)
     }
 
+    func testAValidCopyInHomeApplicationsIsUsedWhenTheSystemCopyFails() throws {
+        struct PathVerifier: ChromeSignatureVerifying {
+            let valid: String
+            func verify(app: URL) -> Bool { app.standardizedFileURL.path == valid }
+        }
+        let system = try FakeChromeBundle()
+        let home = try FakeChromeBundle()
+        let v = PathVerifier(valid: home.app.standardizedFileURL.path)
+        let both = InstalledChromeChecker(directories: [system.applications, home.applications], verifier: v)
+        guard case .success(let chrome) = both.check() else { return XCTFail("the ~/Applications copy is valid and must be used") }
+        XCTAssertEqual(chrome.appPath, home.app.standardizedFileURL.path)
+        // With no valid copy anywhere, the class is still the one from the first existing copy.
+        let systemOnly = InstalledChromeChecker(directories: [system.applications, home.applications],
+                                                verifier: StubChromeVerifier(false))
+        XCTAssertEqual(systemOnly.check(), .failure(.invalidSignature))
+    }
+
+    func testChromeProblemDuringBrowserUseIsLoggedWithItsClass() async throws {
+        let tree = try InstallTree()
+        let chrome = try FakeChromeBundle()
+        let record = "{\"version\":\"1.0\",\"chromiumExecutable\":\"chromium/chrome\","
+            + "\"systemChrome\":{\"appPath\":\"\(chrome.app.path)\",\"versionAtConsent\":\"157.0.8103.79\"}}"
+        try record.write(to: tree.root.appendingPathComponent("install.json"), atomically: true, encoding: .utf8)
+        let logs = MutableBox<[String]>([])
+        let backend = PlaywrightBackend(managed: ManagedPlaywrightLocator(root: tree.root, chrome: chrome.checker(StubChromeVerifier(false))),
+                                        log: { logs.value += [$0] })
+        _ = try? await backend.call("browser_navigate", arguments: .object([:]))
+        XCTAssertTrue(logs.value.contains("browser: chrome_check_failed class=chrome_invalid_signature"), "\(logs.value)")
+        XCTAssertFalse(logs.value.joined().contains(chrome.app.path), "no path in a log line")
+    }
+
     func testTheRequirementNamesGoogleLLCAndTheRealVerifierRefusesAnUnsignedBundle() throws {
         let r = InstalledChromePolicy.requirement
         XCTAssertTrue(r.contains("anchor apple generic"))
